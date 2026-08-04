@@ -1,0 +1,51 @@
+<?php
+
+namespace App\Services\Retrieval;
+
+use App\Models\DocumentChunk;
+use App\Models\LegalChunk;
+use App\Models\User;
+use App\Services\Ai\EmbeddingService;
+
+class RetrievalService
+{
+    public function __construct(
+        private readonly EmbeddingService $embeddings,
+    ) {
+        //
+    }
+
+    /**
+     * Embed the query and retrieve context from both the shared legal
+     * knowledge base (priority 1) and the user's own documents (priority 2).
+     */
+    public function retrieve(User $user, string $query): RetrievalResult
+    {
+        $embedding = $this->embeddings->embed($query);
+
+        $legalChunks = LegalChunk::query()
+            ->select(['id', 'crawled_page_id', 'chunk_index', 'content'])
+            ->with(['crawledPage.legalSource:id,name,base_domain'])
+            ->whereVectorSimilarTo(
+                'embedding',
+                $embedding,
+                minSimilarity: config('saligan.retrieval.min_similarity'),
+            )
+            ->limit(config('saligan.retrieval.max_legal_chunks'))
+            ->get();
+
+        $documentChunks = DocumentChunk::query()
+            ->select(['id', 'document_id', 'user_id', 'chunk_index', 'content'])
+            ->where('user_id', $user->id)
+            ->with('document:id,title,original_filename')
+            ->whereVectorSimilarTo(
+                'embedding',
+                $embedding,
+                minSimilarity: config('saligan.retrieval.min_similarity'),
+            )
+            ->limit(config('saligan.retrieval.max_document_chunks'))
+            ->get();
+
+        return new RetrievalResult($legalChunks, $documentChunks);
+    }
+}

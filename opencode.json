@@ -1,0 +1,15 @@
+{
+    "$schema": "https://opencode.ai/config.json",
+    "mcp": {
+        "laravel-boost": {
+            "type": "local",
+            "enabled": true,
+            "command": [
+                "wsl.exe",
+                "/home/mightyowl/.config/herd-lite/bin/php",
+                "/home/mightyowl/Projects/saligan.ai/api-saligan.ai/artisan",
+                "boost:mcp"
+            ]
+        }
+    }
+}
