@@ -25,7 +25,7 @@ class TodoController extends Controller
             $query->where('status', $request->input('status'));
         }
 
-        $todos = $query->orderBy('created_at', 'desc')->get();
+        $todos = $query->orderBy('order')->orderBy('created_at')->get();
 
         return response()->json(['data' => $todos]);
     }
@@ -38,13 +38,20 @@ class TodoController extends Controller
         $validated = $request->validate([
             'conversation_id' => ['required', 'uuid', 'exists:conversations,id'],
             'title' => ['required', 'string', 'max:255'],
+            'description' => ['nullable', 'string'],
             'status' => ['sometimes', 'in:pending,on-going,completed'],
             'priority' => ['nullable', 'in:low,medium,high'],
             'due_hint' => ['nullable', 'string', 'max:255'],
+            'due_date' => ['nullable', 'date'],
+            'assignee' => ['nullable', 'string', 'max:255'],
         ]);
 
         $conversation = Conversation::findOrFail($validated['conversation_id']);
         abort_unless($conversation->user_id === $request->user()->id, 403);
+
+        $validated['order'] = Todo::query()
+            ->where('conversation_id', $conversation->id)
+            ->max('order') + 1;
 
         $todo = Todo::create($validated);
 
@@ -59,12 +66,48 @@ class TodoController extends Controller
         abort_unless($todo->conversation->user_id === $request->user()->id, 403);
 
         $validated = $request->validate([
-            'status' => 'sometimes|in:pending,on-going,completed',
+            'title' => ['sometimes', 'string', 'max:255'],
+            'description' => ['nullable', 'string'],
+            'status' => ['sometimes', 'in:pending,on-going,completed'],
+            'priority' => ['nullable', 'in:low,medium,high'],
+            'due_hint' => ['nullable', 'string', 'max:255'],
+            'due_date' => ['nullable', 'date'],
+            'assignee' => ['nullable', 'string', 'max:255'],
+            'order' => ['nullable', 'integer', 'min:0'],
         ]);
 
         $todo->update($validated);
 
         return response()->json(['data' => $todo]);
+    }
+
+    /**
+     * Persist a new manual ordering for a conversation's todos.
+     */
+    public function reorder(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'conversation_id' => ['required', 'uuid', 'exists:conversations,id'],
+            'ordered_ids' => ['required', 'array'],
+            'ordered_ids.*' => ['uuid'],
+        ]);
+
+        $conversation = Conversation::findOrFail($validated['conversation_id']);
+        abort_unless($conversation->user_id === $request->user()->id, 403);
+
+        $todos = $conversation->todos;
+
+        foreach ($validated['ordered_ids'] as $index => $todoId) {
+            $todo = $todos->firstWhere('id', $todoId);
+
+            if ($todo === null) {
+                continue;
+            }
+
+            $todo->update(['order' => $index + 1]);
+        }
+
+        return response()->json(['message' => 'Order updated']);
     }
 
     /**

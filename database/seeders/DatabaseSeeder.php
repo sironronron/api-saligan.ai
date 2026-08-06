@@ -18,6 +18,7 @@ class DatabaseSeeder extends Seeder
         $this->call([
             SystemPromptSeeder::class,
             LegalSourceSeeder::class,
+            TemplateSeeder::class,
         ]);
 
         User::factory()->create([

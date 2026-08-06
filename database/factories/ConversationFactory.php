@@ -22,6 +22,7 @@ class ConversationFactory extends Factory
         return [
             'user_id' => User::factory(),
             'title' => fake()->words(4, true),
+            'purpose' => fake()->optional()->randomElement(['General', 'Draft a letter', 'Legal research', 'Summarize facts']),
             'provider' => ChatProvider::Ollama,
         ];
     }

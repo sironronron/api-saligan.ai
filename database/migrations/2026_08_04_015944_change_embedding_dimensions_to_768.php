@@ -32,8 +32,12 @@ return new class extends Migration
     {
         $index = "{$table}_embedding_hnsw_index";
 
+        // pgvector has no implicit cast between differing vector dimensions, so
+        // a plain ALTER COLUMN TYPE fails on non-empty tables ("expected N
+        // dimensions, not M"). The explicit USING cast truncates (larger -> smaller)
+        // or zero-pads (smaller -> larger) each stored embedding.
         DB::statement("DROP INDEX IF EXISTS {$index}");
-        DB::statement("ALTER TABLE {$table} ALTER COLUMN embedding TYPE halfvec({$dimensions})");
+        DB::statement("ALTER TABLE {$table} ALTER COLUMN embedding TYPE halfvec({$dimensions}) USING embedding::halfvec({$dimensions})");
         DB::statement("CREATE INDEX {$index} ON {$table} USING hnsw (embedding halfvec_cosine_ops)");
     }
 };

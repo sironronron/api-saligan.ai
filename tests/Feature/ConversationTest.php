@@ -2,6 +2,7 @@
 
 use App\Enums\ChatProvider;
 use App\Models\Conversation;
+use App\Models\LegalCase;
 use App\Models\User;
 
 beforeEach(function () {
@@ -36,6 +37,23 @@ it('creates a conversation with the default provider', function () {
         'user_id' => $this->user->id,
         'provider' => ChatProvider::Ollama->value,
     ]);
+});
+
+it('creates a conversation with a purpose', function () {
+    $response = $this->actingAs($this->user)
+        ->postJson('/api/conversations', ['purpose' => 'Legal research'])
+        ->assertCreated();
+
+    expect($response->json('data.purpose'))->toBe('Legal research')
+        ->and($response->json('data.title'))->toBe('Legal research');
+});
+
+it('forbids attaching a conversation to another users case', function () {
+    $case = LegalCase::factory()->for(User::factory())->create();
+
+    $this->actingAs($this->user)
+        ->postJson('/api/conversations', ['case_id' => $case->id])
+        ->assertForbidden();
 });
 
 it('creates a conversation with an explicit provider', function () {

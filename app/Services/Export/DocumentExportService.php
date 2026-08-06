@@ -5,6 +5,7 @@ namespace App\Services\Export;
 use Barryvdh\DomPDF\Facade\Pdf;
 use PhpOffice\PhpWord\IOFactory;
 use PhpOffice\PhpWord\PhpWord;
+use PhpOffice\PhpWord\SimpleType\NumberFormat;
 
 class DocumentExportService
 {
@@ -13,7 +14,22 @@ class DocumentExportService
      */
     public function toWord(string $markdown, string $title): string
     {
+        $markdown = $this->extractDocument($markdown);
+
         $phpWord = new PhpWord;
+
+        $phpWord->addNumberingStyle('bulletedList', [
+            'type' => 'hybridMultilevel',
+            'levels' => [
+                ['format' => NumberFormat::BULLET, 'text' => '•', 'alignment' => 'left', 'tabPos' => 720, 'left' => 720, 'hanging' => 360],
+            ],
+        ]);
+        $phpWord->addNumberingStyle('numberedList', [
+            'type' => 'multilevel',
+            'levels' => [
+                ['format' => NumberFormat::DECIMAL, 'text' => '%1.', 'alignment' => 'left', 'tabPos' => 720, 'left' => 720, 'hanging' => 360],
+            ],
+        ]);
 
         $section = $phpWord->addSection();
         $style = [
@@ -25,22 +41,22 @@ class DocumentExportService
 
         foreach ($lines as $line) {
             if (str_starts_with($line, '### ')) {
-                $section->addHeading(substr($line, 4), 3);
+                $section->addTitle(substr($line, 4), 3);
             } elseif (str_starts_with($line, '## ')) {
-                $section->addHeading(substr($line, 3), 2);
+                $section->addTitle(substr($line, 3), 2);
             } elseif (str_starts_with($line, '# ')) {
-                $section->addHeading(substr($line, 2), 1);
+                $section->addTitle(substr($line, 2), 1);
             } elseif (str_starts_with($line, '- ')) {
                 $text = $this->parseInlineFormatting(substr($line, 2));
-                $section->addListItem($text, 0, $style, 'disc');
-            } elseif (preg_match('/^(\d+)\. (.+)$', $line, $matches)) {
+                $section->addListItem($text, 0, $style, 'bulletedList');
+            } elseif (preg_match('/^(\d+)\. (.+)$/', $line, $matches)) {
                 $text = $this->parseInlineFormatting($matches[2]);
-                $section->addListItem($text, 0, $style, 'decimal');
+                $section->addListItem($text, 0, $style, 'numberedList');
             } elseif (trim($line) === '') {
-                $section->addParagraph('');
+                $section->addTextBreak();
             } else {
                 $text = $this->parseInlineFormatting($line);
-                $section->addParagraph($text, $style);
+                $section->addText($text, $style);
             }
         }
 
@@ -56,6 +72,8 @@ class DocumentExportService
      */
     public function toPdf(string $markdown, string $title): string
     {
+        $markdown = $this->extractDocument($markdown);
+
         $html = $this->markdownToHtml($markdown);
 
         $fullHtml = <<<HTML
@@ -90,6 +108,21 @@ HTML;
         $pdf->save($tempFile);
 
         return $tempFile;
+    }
+
+    /**
+     * Extract only the marked document from a drafted reply. Chat-only content
+     * before the opening marker and after the closing marker is dropped. When
+     * no markers are present, the full content is used so legacy messages
+     * still export in full.
+     */
+    public function extractDocument(string $content): string
+    {
+        if (preg_match('/\[\[DOCUMENT_START\]\]\s*(.*?)\s*\[\[DOCUMENT_END\]\]/s', $content, $matches) === 1) {
+            return trim($matches[1]);
+        }
+
+        return $content;
     }
 
     /**

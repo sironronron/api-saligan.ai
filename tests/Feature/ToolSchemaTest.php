@@ -3,6 +3,7 @@
 use App\Ai\Tools\CreateTodoTool;
 use App\Ai\Tools\RequestIntakeFormTool;
 use Illuminate\JsonSchema\JsonSchemaTypeFactory;
+use Laravel\Ai\Tools\Request;
 use Laravel\Ai\Tools\ToolNameResolver;
 
 it('resolves the intake form tool name to request_intake_form', function () {
@@ -16,12 +17,37 @@ it('resolves the create todo tool name to create_todo', function () {
 it('request intake form schema serializes to a valid tool definition', function () {
     $schema = (new RequestIntakeFormTool)->schema(new JsonSchemaTypeFactory);
 
-    expect($schema['fields']->toArray())
+    expect($schema)->toHaveKey('document_type')
+        ->and($schema['document_type']->toArray())
+        ->toHaveKey('type', 'string')
+        ->and($schema['fields']->toArray())
         ->toHaveKey('type', 'array')
         ->and($schema['fields']->toArray()['items'])
         ->toHaveKey('type', 'object')
         ->and($schema['fields']->toArray()['items']['properties'])
         ->toHaveKeys(['key', 'label', 'type', 'options', 'required']);
+});
+
+it('request intake form handle echoes the declared document type', function () {
+    $result = (new RequestIntakeFormTool)->handle(new Request([
+        'document_type' => 'special power of attorney',
+        'fields' => [['key' => 'principal_name', 'label' => 'Principal', 'type' => 'text', 'required' => true]],
+    ]));
+
+    expect($result)->toBe(json_encode([
+        'document_type' => 'special power of attorney',
+        'fields' => [['key' => 'principal_name', 'label' => 'Principal', 'type' => 'text', 'required' => true]],
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+});
+
+it('request intake form handle tolerates a missing document type', function () {
+    $result = (new RequestIntakeFormTool)->handle(new Request([
+        'fields' => [['key' => 'facts', 'label' => 'Facts', 'type' => 'textarea', 'required' => true]],
+    ]));
+
+    expect(json_decode($result, true))
+        ->toHaveKey('document_type', null)
+        ->toHaveKey('fields');
 });
 
 it('create todo schema serializes to a valid tool definition', function () {

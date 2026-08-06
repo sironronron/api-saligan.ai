@@ -20,7 +20,9 @@ class ConversationResource extends JsonResource
     {
         return [
             'id' => $this->id,
+            'case_id' => $this->case_id,
             'title' => $this->title,
+            'purpose' => $this->purpose,
             'provider' => $this->provider->value,
             'messages_count' => $this->whenCounted('messages', fn (int $count) => $count),
             'last_message_at' => $this->last_message_at,

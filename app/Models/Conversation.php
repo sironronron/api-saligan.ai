@@ -13,7 +13,9 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 #[Fillable([
     'user_id',
+    'case_id',
     'title',
+    'purpose',
     'provider',
 ])]
 class Conversation extends Model
@@ -44,10 +46,26 @@ class Conversation extends Model
     }
 
     /**
+     * The case this conversation is scoped to, when it belongs to one.
+     */
+    public function case(): BelongsTo
+    {
+        return $this->belongsTo(LegalCase::class, 'case_id');
+    }
+
+    /**
      * The messages in this conversation.
      */
     public function messages(): HasMany
     {
         return $this->hasMany(Message::class)->orderBy('created_at');
+    }
+
+    /**
+     * The tasks in this conversation.
+     */
+    public function todos(): HasMany
+    {
+        return $this->hasMany(Todo::class)->orderBy('order')->orderBy('created_at');
     }
 }

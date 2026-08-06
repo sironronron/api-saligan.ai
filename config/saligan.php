@@ -36,6 +36,7 @@ return [
         'ollama_model' => env('OLLAMA_CHAT_MODEL', 'qwen3.6:latest'),
         'ollama_model_alt' => env('OLLAMA_CHAT_MODEL_ALT', 'qwen3.5:latest'),
         'gemini_model' => env('GEMINI_CHAT_MODEL', 'gemini-3.6-flash'),
+        'openai_model' => env('OPENAI_CHAT_MODEL', 'gpt-4o'),
     ],
 
     /*

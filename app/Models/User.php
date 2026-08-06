@@ -51,6 +51,22 @@ class User extends Authenticatable
     }
 
     /**
+     * The cases owned by this user.
+     */
+    public function cases(): HasMany
+    {
+        return $this->hasMany(LegalCase::class);
+    }
+
+    /**
+     * The custom letter templates saved by this user.
+     */
+    public function templates(): HasMany
+    {
+        return $this->hasMany(Template::class);
+    }
+
+    /**
      * The todos across all conversations.
      */
     public function todos(): HasManyThrough

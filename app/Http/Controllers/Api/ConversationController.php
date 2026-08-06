@@ -10,6 +10,7 @@ use App\Models\Message;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Validation\Rule;
 
 class ConversationController extends Controller
 {
@@ -40,11 +41,22 @@ class ConversationController extends Controller
     {
         $validated = $request->validate([
             'title' => ['nullable', 'string', 'max:255'],
+            'purpose' => ['nullable', 'string', 'max:100'],
+            'case_id' => ['nullable', 'uuid', 'exists:cases,id'],
+            'provider' => ['nullable', Rule::enum(ChatProvider::class)],
         ]);
 
+        $case = $validated['case_id'] ?? null;
+
+        if ($case !== null) {
+            abort_unless($request->user()->cases()->whereKey($case)->exists(), 403);
+        }
+
         $conversation = $request->user()->conversations()->create([
-            'title' => $validated['title'] ?? null,
-            'provider' => app()->environment('production') ? ChatProvider::Gemini : ChatProvider::Ollama,
+            'title' => $validated['title'] ?? $validated['purpose'] ?? null,
+            'purpose' => $validated['purpose'] ?? null,
+            'case_id' => $case,
+            'provider' => $validated['provider'] ?? ChatProvider::fromConfig(),
         ]);
 
         return (new ConversationResource($conversation))->response()->setStatusCode(201);
@@ -71,6 +83,8 @@ class ConversationController extends Controller
 
         $validated = $request->validate([
             'title' => ['nullable', 'string', 'max:255'],
+            'purpose' => ['nullable', 'string', 'max:100'],
+            'provider' => ['nullable', Rule::enum(ChatProvider::class)],
         ]);
 
         $conversation->update($validated);

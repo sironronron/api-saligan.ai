@@ -30,9 +30,11 @@ class RequestIntakeFormTool implements Tool
      */
     public function handle(Request $request): string
     {
+        $documentType = $request->string('document_type') ?? null;
         $fields = $request->array('fields') ?? [];
 
         return json_encode([
+            'document_type' => $documentType,
             'fields' => $fields,
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
@@ -45,11 +47,13 @@ class RequestIntakeFormTool implements Tool
     public function schema(JsonSchema $schema): array
     {
         return [
+            'document_type' => $schema->string()
+                ->description('The type of document being drafted, e.g. "government transaction letter", "formal letter", "agreement", "deed", "complaint", "affidavit", or "special power of attorney"'),
             'fields' => $schema->array()
                 ->description('Array of form fields to collect from the user')
                 ->items(
                     $schema->object([
-                        'key' => $schema->string()->description('Unique field identifier (e.g., plaintiff_name, incident_date)'),
+                        'key' => $schema->string()->description('Unique field identifier (e.g., sender_name, incident_date)'),
                         'label' => $schema->string()->description('Human-readable label for the field'),
                         'type' => $schema->string()->description('Field type: text, date, number, select, textarea, radio, or checkbox'),
                         'options' => $schema->array()->description('For select type: array of option values'),

@@ -9,6 +9,8 @@ use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\DocumentController;
 use App\Http\Controllers\Api\ExportController;
 use App\Http\Controllers\Api\GeneratedDocumentController;
+use App\Http\Controllers\Api\LegalCaseController;
+use App\Http\Controllers\Api\TemplateController;
 use App\Http\Controllers\Api\TodoController;
 use Illuminate\Support\Facades\Route;
 
@@ -32,6 +34,16 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::post('/messages/{message}/export/pdf', [ExportController::class, 'pdf']);
 
     Route::apiResource('todos', TodoController::class)->only(['index', 'store', 'update', 'destroy']);
+    Route::post('/todos/reorder', [TodoController::class, 'reorder']);
+
+    Route::get('/templates', [TemplateController::class, 'index']);
+    Route::post('/templates', [TemplateController::class, 'store']);
+
+    Route::apiResource('cases', LegalCaseController::class);
+    Route::post('/cases/{case}/conversations', [LegalCaseController::class, 'storeConversation']);
+    Route::post('/cases/{case}/duplicate', [LegalCaseController::class, 'duplicate']);
+    Route::post('/cases/{case}/restore', [LegalCaseController::class, 'restore']);
+    Route::delete('/cases/{case}/force', [LegalCaseController::class, 'forceDestroy']);
 
     Route::prefix('admin')->middleware('is_admin')->group(function (): void {
         Route::apiResource('legal-sources', LegalSourceController::class)->only(['index', 'store', 'destroy']);

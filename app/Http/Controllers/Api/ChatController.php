@@ -62,6 +62,12 @@ class ChatController extends Controller
                     fn (string $status) => $this->sse('status', ['status' => $status]),
                 );
 
+                Log::info('Chat streaming started', [
+                    'conversation_id' => $conversation->id,
+                    'message_length' => strlen($message),
+                    'message' => $message,
+                ]);
+
                 $this->sse('status', ['status' => 'composing']);
 
                 foreach ($stream as $event) {
@@ -83,18 +89,41 @@ class ChatController extends Controller
                     }
 
                     if ($event instanceof ToolCall) {
+                        if ($event->toolCall->name === 'request_intake_form') {
+                            $intakeRequested = true;
+
+                            // The form fields are authoritative server-side so
+                            // they match the selected template or the document
+                            // category instead of whatever fields the model
+                            // happened to invent.
+                            $this->sse('tool_call', [
+                                'name' => 'request_intake_form',
+                                'arguments' => [
+                                    'document_type' => $event->toolCall->arguments['document_type'] ?? null,
+                                    'fields' => $this->chatService->intakeFieldsFor(
+                                        $conversation,
+                                        $message,
+                                        $event->toolCall->arguments['document_type'] ?? null,
+                                    ),
+                                ],
+                            ]);
+
+                            // The facts have not been collected yet, so the
+                            // draft must wait until the intake form is
+                            // submitted. Breaking out of the stream keeps any
+                            // premature text from reaching the client and from
+                            // being persisted as an assistant message.
+                            if (! $isIntakeSubmission) {
+                                break;
+                            }
+
+                            continue;
+                        }
+
                         $this->sse('tool_call', [
                             'name' => $event->toolCall->name,
                             'arguments' => $event->toolCall->arguments,
                         ]);
-
-                        if ($event->toolCall->name === 'request_intake_form') {
-                            $intakeRequested = true;
-
-                            // Stop the stream so the user can fill in the
-                            // intake form before the draft continues.
-                            break;
-                        }
 
                         if ($event->toolCall->name === 'create_todo') {
                             $todoRequested = true;
@@ -119,6 +148,10 @@ class ChatController extends Controller
                     'trace' => $exception->getTraceAsString(),
                 ]);
 
+                // Roll back the user message persisted before streaming so a
+                // client retry does not duplicate it in the conversation.
+                $this->chatService->discardCurrentUserMessage();
+
                 $error = 'The AI provider could not complete the response. Please try again.';
             }
 
@@ -127,10 +160,17 @@ class ChatController extends Controller
             } else {
                 if (! $intakeRequested && ! $isIntakeSubmission && $isDraftingRequest) {
                     // The model skipped the mandatory intake step. Emit a
-                    // synthetic tool call so the form still appears.
+                    // synthetic tool call so the form still appears, guessing
+                    // the document category from the user's message so the
+                    // fields match the document instead of a generic set.
+                    $documentType = DraftingIntent::documentTypeFor($message);
+
                     $this->sse('tool_call', [
                         'name' => 'request_intake_form',
-                        'arguments' => ['fields' => DraftingIntent::defaultFields()],
+                        'arguments' => [
+                            'document_type' => $documentType,
+                            'fields' => $this->chatService->intakeFieldsFor($conversation, $message, $documentType),
+                        ],
                     ]);
                 }
 

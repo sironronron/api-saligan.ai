@@ -14,9 +14,13 @@ class Todo extends Model
     protected $fillable = [
         'conversation_id',
         'title',
+        'description',
         'status',
         'priority',
         'due_hint',
+        'due_date',
+        'assignee',
+        'order',
     ];
 
     /**
@@ -26,6 +30,18 @@ class Todo extends Model
     public function setTitleAttribute(string $value): void
     {
         $this->attributes['title'] = mb_strimwidth($value, 0, 255, '…');
+    }
+
+    /**
+     * Get the attributes that should be cast.
+     *
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'due_date' => 'date',
+        ];
     }
 
     /**

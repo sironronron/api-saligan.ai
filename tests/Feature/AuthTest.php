@@ -75,6 +75,9 @@ it('logs the user out and destroys the session', function () {
         'password' => 'secret123',
     ])->assertOk();
 
+    // Login regenerates the session, which rotates the CSRF token.
+    $this->withHeader('X-CSRF-TOKEN', csrf_token());
+
     $this->postJson('/api/logout')->assertNoContent();
 
     // Sanctum's RequestGuard caches the resolved user on the guard instance,

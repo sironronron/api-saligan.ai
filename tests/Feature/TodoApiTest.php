@@ -115,3 +115,59 @@ it('deletes a todo', function () {
 
     $this->assertDatabaseMissing('todos', ['id' => $todo->id]);
 });
+
+it('creates a todo with case-style fields', function () {
+    $response = $this->actingAs($this->user)
+        ->postJson('/api/todos', [
+            'conversation_id' => $this->conversation->id,
+            'title' => 'Follow up with the claimant',
+            'description' => 'Send a reminder before the deadline.',
+            'due_date' => '2026-09-05',
+            'assignee' => 'Maria Santos',
+        ]);
+
+    $response->assertCreated()
+        ->assertJsonPath('data.description', 'Send a reminder before the deadline.')
+        ->assertJsonPath('data.assignee', 'Maria Santos')
+        ->assertJsonPath('data.order', 1);
+
+    expect($response->json('data.due_date'))->toContain('2026-09-05');
+});
+
+it('updates a todo title and description', function () {
+    $todo = Todo::factory()->for($this->conversation)->create(['title' => 'Old title']);
+
+    $this->actingAs($this->user)
+        ->patchJson("/api/todos/{$todo->id}", ['title' => 'New title', 'description' => 'A note'])
+        ->assertOk()
+        ->assertJsonPath('data.title', 'New title')
+        ->assertJsonPath('data.description', 'A note');
+});
+
+it('persists a new manual order', function () {
+    $first = Todo::factory()->for($this->conversation)->create(['order' => 1]);
+    $second = Todo::factory()->for($this->conversation)->create(['order' => 2]);
+    $third = Todo::factory()->for($this->conversation)->create(['order' => 3]);
+
+    $this->actingAs($this->user)
+        ->postJson('/api/todos/reorder', [
+            'conversation_id' => $this->conversation->id,
+            'ordered_ids' => [$third->id, $first->id, $second->id],
+        ])
+        ->assertOk();
+
+    expect($third->fresh()->order)->toBe(1)
+        ->and($first->fresh()->order)->toBe(2)
+        ->and($second->fresh()->order)->toBe(3);
+});
+
+it('does not allow reordering another users todos', function () {
+    $other = Todo::factory()->for(Conversation::factory()->for(User::factory()))->create(['order' => 1]);
+
+    $this->actingAs($this->user)
+        ->postJson('/api/todos/reorder', [
+            'conversation_id' => $other->conversation_id,
+            'ordered_ids' => [$other->id],
+        ])
+        ->assertForbidden();
+});

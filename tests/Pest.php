@@ -22,6 +22,8 @@ pest()->extend(TestCase::class)
         // Sending one on every feature request makes the SPA session-auth
         // path testable.
         $this->withHeader('Origin', config('app.frontend_url', 'http://localhost:3000'));
+        $this->startSession();
+        $this->withHeader('X-CSRF-TOKEN', csrf_token());
     })
     ->in('Feature');
 

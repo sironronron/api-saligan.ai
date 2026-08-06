@@ -27,7 +27,7 @@ class CreateTodoTool implements Tool
      */
     public function description(): string
     {
-        return 'MANDATORY after drafting any legal document. Create one or more todo items representing concrete next steps the user must take for their case (e.g., file the complaint, pay filing fees, have the document notarized, gather evidence, send the demand letter, comply by the deadline). Call this tool immediately after you finish drafting — never skip it. If there are no follow-up actions, call it with a single item describing the next step anyway.';
+        return 'MANDATORY after drafting any legal document. Create todo items for the concrete next steps the user must take for this specific document or case — one item per real action, verb-first and self-contained (e.g., "File the complaint with the RTC", "Pay the filing fees", "Serve the demand letter with proof of receipt", "Have the deed notarized"). Mirror the document\'s own "Next Steps" checklist item for item; do not replace it with generic advice. Set priority (low/medium/high) and due_hint only when the document states a deadline or period (e.g., "Within 15 days of receipt") — never invent them. Order by urgency and merge near-duplicate steps. Call this tool immediately after drafting — never skip it; if there are no follow-up actions, call it with a single item describing the next step anyway.';
     }
 
     /**
@@ -73,10 +73,10 @@ class CreateTodoTool implements Tool
                 ->description('Array of todo items to create')
                 ->items(
                     $schema->object([
-                        'title' => $schema->string()->description('Title or description of the action item'),
+                        'title' => $schema->string()->description('Short, verb-first title of one concrete action item (e.g., "Pay the filing fees"). Keep it scannable; do not paste whole paragraphs.'),
                         'status' => $schema->string()->description('Initial status: pending, on-going, or completed'),
-                        'priority' => $schema->string()->description('Priority level: low, medium, or high'),
-                        'due_hint' => $schema->string()->description('Suggested timeframe (e.g., "Within 15 days", "Before hearing date")'),
+                        'priority' => $schema->string()->description('Priority level: low, medium, or high. Base it on deadlines or the consequence of missing the step.'),
+                        'due_hint' => $schema->string()->description('Timeframe only when the document states one (e.g., "Within 15 days of receipt", "Before the August 5 hearing"). Omit if no deadline or period is given.'),
                     ])
                 ),
         ];
