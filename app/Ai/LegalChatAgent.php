@@ -19,11 +19,13 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
     /**
      * @param  iterable<int, AiMessage>  $messages
      * @param  array<int, Tool|ProviderTool>  $tools
+     * @param  string|null  $cachedContent  Gemini CachedContent resource name.
      */
     public function __construct(
         public string $instructions = '',
         public iterable $messages = [],
         public array $tools = [],
+        public ?string $cachedContent = null,
     ) {
         //
     }
@@ -44,8 +46,12 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
     }
 
     /**
-     * Disable Ollama thinking mode so the response lands in the content
-     * field instead of the thinking field. Only applies when using Ollama.
+     * Per-provider request options.
+     *
+     * For Gemini, reference the cached static system prompt so its tokens are
+     * billed at the cached-input rate. The cached content is a prefix of the
+     * request: the same static instructions text always leads the system
+     * instruction, with per-turn instructions appended after it.
      *
      * @return array<string, mixed>
      */
@@ -53,6 +59,10 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
     {
         if ($provider === Lab::Ollama || $provider === 'ollama') {
             return ['think' => false];
+        }
+
+        if (($provider === Lab::Gemini || $provider === 'gemini') && $this->cachedContent !== null) {
+            return ['cachedContent' => $this->cachedContent];
         }
 
         return [];

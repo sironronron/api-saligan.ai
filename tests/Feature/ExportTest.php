@@ -3,10 +3,14 @@
 use App\Enums\MessageRole;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\User;
 
 beforeEach(function () {
     $this->user = User::factory()->create();
+    $this->pro = Plan::factory()->pro()->create();
+    Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
 });
 
 it('exports a marked document as a valid PDF', function () {
@@ -67,7 +71,10 @@ it('forbids exporting another users message', function () {
         'content' => 'REPUBLIC OF THE PHILIPPINES',
     ]);
 
-    $this->actingAs(User::factory()->create())
+    $other = User::factory()->create();
+    Subscription::factory()->for($other)->create(['plan_id' => $this->pro->id]);
+
+    $this->actingAs($other)
         ->post("/api/messages/{$message->id}/export/pdf")
         ->assertStatus(403);
 });

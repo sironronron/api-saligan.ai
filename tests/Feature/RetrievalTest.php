@@ -3,6 +3,7 @@
 use App\Models\CrawledPage;
 use App\Models\Document;
 use App\Models\DocumentChunk;
+use App\Models\LegalCase;
 use App\Models\LegalChunk;
 use App\Models\LegalSource;
 use App\Models\User;
@@ -62,6 +63,32 @@ it('filters chunks below the minimum similarity threshold', function () {
     $result = app(RetrievalService::class)->retrieve($this->user, 'agrarian reform');
 
     expect($result->isEmpty())->toBeTrue();
+});
+
+it('scopes document retrieval to the documents attached to a case', function () {
+    $case = LegalCase::factory()->for($this->user)->create();
+    $otherCase = LegalCase::factory()->for($this->user)->create();
+
+    $inCase = Document::factory()->for($this->user)->create(['case_id' => $case->id]);
+    $inOtherCase = Document::factory()->for($this->user)->create(['case_id' => $otherCase->id]);
+
+    $caseChunk = DocumentChunk::factory()->for($inCase)->for($this->user)->create([
+        'content' => 'Agrarian reform notes inside this case.',
+        'embedding' => array_fill(0, 768, 1.0),
+    ]);
+    DocumentChunk::factory()->for($inOtherCase)->for($this->user)->create([
+        'content' => 'Agrarian reform notes in another case.',
+        'embedding' => array_fill(0, 768, 1.0),
+    ]);
+
+    Http::fake([
+        '*/api/embed' => Http::response(['embeddings' => [array_fill(0, 768, 1.0)]], 200),
+    ]);
+
+    $result = app(RetrievalService::class)->retrieve($this->user, 'agrarian reform', $case);
+
+    expect($result->documentChunks)->toHaveCount(1)
+        ->and($result->documentChunks->first()->id)->toBe($caseChunk->id);
 });
 
 it('builds a context block with source labels', function () {

@@ -20,8 +20,11 @@ final class MessageSources
      * Resolve the source cards actually cited by a message.
      *
      * Only sources referenced inline by the model as [Source N] (official
-     * legal pages) or [User Doc N] (uploaded documents) are returned, so the
-     * UI never shows retrieved context the model did not rely on.
+     * legal pages), [User Doc N] (uploaded documents), or [Web N] (web search
+     * fallback) are returned, so the UI never shows retrieved context the
+     * model did not rely on. Every card carries the citation index it is
+     * tied to (1-based, in context order) so inline badges and sidebar cards
+     * can be linked.
      *
      * @return array<int, array<string, mixed>>
      */
@@ -54,7 +57,7 @@ final class MessageSources
                 continue;
             }
 
-            $sources[] = self::legalSource($chunk);
+            $sources[] = self::legalSource($chunk, $index);
         }
 
         $index = 0;
@@ -80,8 +83,10 @@ final class MessageSources
                 continue;
             }
 
-            $sources[] = self::documentSource($chunk);
+            $sources[] = self::documentSource($chunk, $index);
         }
+
+        $sources = array_merge($sources, self::webSources($message, $citations['web']));
 
         return $sources;
     }
@@ -89,13 +94,14 @@ final class MessageSources
     /**
      * Parse the inline citation markers the model is instructed to use.
      *
-     * @return array{source: array<int>, doc: array<int>}
+     * @return array{source: array<int>, doc: array<int>, web: array<int>}
      */
     protected static function citedIndices(string $content): array
     {
         $citations = [
             'source' => [],
             'doc' => [],
+            'web' => [],
         ];
 
         if (preg_match_all('/\[Source\s+(\d+)\]/i', $content, $matches)) {
@@ -106,7 +112,58 @@ final class MessageSources
             $citations['doc'] = array_map('intval', $matches[1]);
         }
 
+        if (preg_match_all('/\[Web\s+(\d+)\]/i', $content, $matches)) {
+            $citations['web'] = array_map('intval', $matches[1]);
+        }
+
         return $citations;
+    }
+
+    /**
+     * Web-search fallback citations captured from the provider at stream time
+     * (stored in message metadata) and referenced inline as [Web N].
+     *
+     * @param  array{source: array<int>, doc: array<int>, web: array<int>}  $citations
+     * @return array<int, array<string, mixed>>
+     */
+    protected static function webSources(Message $message, array $citedIndices): array
+    {
+        $webCitations = $message->metadata['web_citations'] ?? [];
+
+        if (! is_array($webCitations) || $webCitations === [] || $citedIndices === []) {
+            return [];
+        }
+
+        $sources = [];
+
+        foreach ($webCitations as $index => $citation) {
+            $number = $index + 1;
+
+            if (! in_array($number, $citedIndices, true)) {
+                continue;
+            }
+
+            $url = $citation['url'] ?? $citation['link'] ?? null;
+
+            if (! is_string($url) || $url === '') {
+                continue;
+            }
+
+            $sources[] = [
+                'type' => 'web',
+                'index' => $number,
+                'label' => $citation['title'] ?? null,
+                'title' => $citation['title'] ?? null,
+                'source_name' => null,
+                'url' => $url,
+                'domain' => parse_url($url, PHP_URL_HOST) ?: null,
+                'excerpt' => isset($citation['snippet']) && is_string($citation['snippet'])
+                    ? Str::limit($citation['snippet'], 300)
+                    : null,
+            ];
+        }
+
+        return $sources;
     }
 
     /**
@@ -134,12 +191,15 @@ final class MessageSources
     /**
      * @return array<string, mixed>
      */
-    protected static function legalSource(LegalChunk $chunk): array
+    protected static function legalSource(LegalChunk $chunk, int $index): array
     {
         $page = $chunk->crawledPage;
 
         return [
             'type' => 'legal',
+            'index' => $index,
+            'id' => $chunk->id,
+            'chunk_index' => $chunk->chunk_index,
             'label' => $page?->law_name ?: ($page?->gr_number ?: $page?->legalSource?->name ?: 'Legal source'),
             'title' => $page?->title,
             'law_name' => $page?->law_name,
@@ -147,6 +207,7 @@ final class MessageSources
             'promulgation_date' => $page?->promulgation_date?->toDateString(),
             'source_name' => $page?->legalSource?->name,
             'url' => $page?->url,
+            'domain' => $page?->url !== null ? parse_url($page->url, PHP_URL_HOST) : null,
             'excerpt' => Str::limit($chunk->content, 300),
         ];
     }
@@ -154,14 +215,20 @@ final class MessageSources
     /**
      * @return array<string, mixed>
      */
-    protected static function documentSource(DocumentChunk $chunk): array
+    protected static function documentSource(DocumentChunk $chunk, int $index): array
     {
         return [
             'type' => 'document',
+            'index' => $index,
+            'id' => $chunk->id,
+            'chunk_index' => $chunk->chunk_index,
+            'document_id' => $chunk->document_id,
             'label' => $chunk->document?->original_filename ?? 'Uploaded document',
             'title' => $chunk->document?->title,
             'url' => null,
+            'domain' => null,
             'excerpt' => Str::limit($chunk->content, 300),
+            'content' => $chunk->content,
         ];
     }
 }

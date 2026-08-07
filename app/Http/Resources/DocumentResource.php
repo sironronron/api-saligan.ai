@@ -20,6 +20,8 @@ class DocumentResource extends JsonResource
     {
         return [
             'id' => $this->id,
+            'user_id' => $this->user_id,
+            'case_id' => $this->case_id,
             'title' => $this->title,
             'original_filename' => $this->original_filename,
             'mime_type' => $this->mime_type,

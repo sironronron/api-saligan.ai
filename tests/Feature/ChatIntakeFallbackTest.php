@@ -2,7 +2,11 @@
 
 use App\Enums\MessageRole;
 use App\Models\Conversation;
+use App\Models\Document;
+use App\Models\LegalCase;
 use App\Models\Message;
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\Template;
 use App\Models\Todo;
 use App\Models\User;
@@ -26,11 +30,13 @@ function makeFakeChatService(array $events): ChatService
 
         public function stream(Conversation $conversation, string $question, ?callable $onStatus = null): StreamableAgentResponse
         {
-            Message::create([
+            $message = Message::create([
                 'conversation_id' => $conversation->id,
                 'role' => MessageRole::User,
                 'content' => $question,
             ]);
+
+            $this->createdUserMessageId = $message->id;
 
             $events = $this->events;
 
@@ -41,11 +47,13 @@ function makeFakeChatService(array $events): ChatService
             }, new Meta(provider: 'ollama', model: 'test-model'));
 
             $response->then(function (StreamedAgentResponse $streamed) use ($conversation): void {
-                Message::create([
+                $message = Message::create([
                     'conversation_id' => $conversation->id,
                     'role' => MessageRole::Assistant,
                     'content' => trim((string) $streamed->text),
                 ]);
+
+                $this->lastAssistantMessageId = $message->id;
             });
 
             return $response;
@@ -85,6 +93,9 @@ function makeToolCallEvent(string $name, array $arguments): ToolCallEvent
 
 beforeEach(function () {
     $this->user = User::factory()->create();
+    Subscription::factory()->for($this->user)->create([
+        'plan_id' => Plan::factory()->pro()->create()->id,
+    ]);
 });
 
 it('stops the stream when the model calls the intake form tool', function () {
@@ -141,7 +152,346 @@ it('emits a synthetic intake form when the model skips the mandatory tool', func
         ->toContain('event: tool_call')
         ->toContain('"name":"request_intake_form"')
         ->toContain('"plaintiff_name"')
+        ->not->toContain('I need your details first.')
         ->toContain('event: done');
+
+    $this->assertDatabaseCount('messages', 1);
+    $this->assertDatabaseHas('messages', ['role' => MessageRole::User]);
+});
+
+it('discards a premature bracketed draft and collects its placeholders in the form', function () {
+    $draft = "Republic of the Philippines\nDAR Provincial Office\n\nRe: Request for Certified Copy of CLOA\n\nPlease release the certified copy of CLOA No. [CLOA Number] of my late father, [Father's Full Name], who died on [Date of Death].\n\nSincerely,\n[Your Full Name]";
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        new TextDelta(id: 'a', messageId: 'm1', delta: $draft, timestamp: 1),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
+    ]));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => "I need to write DAR requesting a certified copy of my late father's CLOA.",
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->not->toContain('Please release the certified copy of CLOA')
+        ->toContain('event: tool_call')
+        ->toContain('"name":"request_intake_form"')
+        ->toContain('"document_type":"government transaction letter"')
+        ->toContain('"sender_name"')
+        ->toContain('"reference_number"')
+        ->toContain('"deceased_name"')
+        ->toContain('"date_of_death"')
+        // Bracket placeholders that duplicate a base fact collapse onto the
+        // canonical field instead of being asked again.
+        ->not->toContain('"cloa_number"')
+        ->not->toContain('"your_full_name"')
+        ->toContain('event: done');
+
+    $this->assertDatabaseCount('messages', 1);
+    $this->assertDatabaseHas('messages', ['role' => MessageRole::User]);
+});
+
+it('streams a complete placeholder-free draft without the intake form', function () {
+    $draft = "[[DOCUMENT_START]]\nRe: Request for Certified Copy of CLOA\n\nPlease release the certified copy of CLOA No. 01-123-456.\n[[DOCUMENT_END]]";
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        new TextDelta(id: 'a', messageId: 'm1', delta: $draft, timestamp: 1),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
+    ]));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => "I need to write DAR requesting a certified copy of my late father's CLOA.",
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->toContain('Please release the certified copy of CLOA No. 01-123-456')
+        ->not->toContain('"name":"request_intake_form"')
+        ->toContain('event: done');
+
+    $this->assertDatabaseCount('messages', 2);
+    $this->assertDatabaseHas('messages', ['role' => MessageRole::Assistant]);
+});
+
+it('extracts bracketed placeholders into canonical intake fields', function () {
+    $fields = DraftingIntent::extractBracketFields(
+        "CLOA No. [CLOA Number] of my late father, [Father's Full Name], who died on [Date of Death].\n"
+        .'Sincerely, [Your Full Name] [Your Complete Address]'
+    );
+
+    $keys = array_column($fields, 'key');
+
+    expect($keys)->toContain('reference_number')
+        ->and(collect($fields)->keyBy('key')->get('reference_number')['label'])
+        ->toBe('Reference / document number (e.g. CLOA No., TCT/CCT No., case No.)')
+        ->and(collect($fields)->keyBy('key')->get('reference_number')['type'])->toBe('text')
+        ->and($keys)->toContain('deceased_name')
+        ->and($keys)->toContain('date_of_death')
+        ->and($keys)->toContain('sender_name')
+        ->and($keys)->toContain('sender_address')
+        ->and(count($fields))->toBe(5);
+});
+
+it('ignores protocol markers when detecting or extracting bracketed placeholders', function () {
+    $text = "[[DOCUMENT_START]]\n[[TODO_START]]\n[Intake Form Submission]\n[Template: barangay_complaint]\n\nSincerely, [Your Full Name]\n[[TODO_END]]\n[[DOCUMENT_END]]";
+
+    expect(DraftingIntent::containsBrackets($text))->toBeTrue()
+        ->and(array_column(DraftingIntent::extractBracketFields($text), 'key'))->toBe(['sender_name'])
+        ->and(DraftingIntent::containsBrackets('[Intake Form Submission]'))->toBeFalse()
+        ->and(DraftingIntent::containsBrackets('No unknown facts here.'))->toBeFalse();
+});
+
+it('detects a complete marked document by its opening marker alone', function () {
+    expect(DraftingIntent::isCompleteDocument("[[DOCUMENT_START]]\nBody.\n[[DOCUMENT_END]]"))->toBeTrue()
+        ->and(DraftingIntent::isCompleteDocument("[[DOCUMENT_START]]\nNo closing marker"))->toBeTrue()
+        ->and(DraftingIntent::isCompleteDocument('A partial reply.'))->toBeFalse();
+});
+
+it('streams a complete draft missing the closing marker without the intake form', function () {
+    $draft = "[[DOCUMENT_START]]\nRe: Request for Certified Copy of CLOA\n\nPlease release the certified copy of CLOA No. 01-123-456.";
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        new TextDelta(id: 'a', messageId: 'm1', delta: $draft, timestamp: 1),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
+    ]));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => "I need to write DAR requesting a certified copy of my late father's CLOA.",
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->toContain('Please release the certified copy of CLOA No. 01-123-456')
+        ->not->toContain('"name":"request_intake_form"')
+        ->toContain('event: done');
+
+    $this->assertDatabaseCount('messages', 2);
+    $this->assertDatabaseHas('messages', ['role' => MessageRole::Assistant]);
+});
+
+it('pre-fills the intake form with the last intake submission on regeneration', function () {
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    Message::create([
+        'conversation_id' => $conversation->id,
+        'role' => MessageRole::User,
+        'content' => "[Intake Form Submission]\nsender_name: Ron Asistores\nreference_number: 198532356\nfacts: The CLOA was not released despite the award.",
+    ]);
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        new TextDelta(id: 'a', messageId: 'm1', delta: 'I can draft that for you.', timestamp: 1),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
+    ]));
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'Draft the DAR request letter again.',
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->toContain('event: tool_call')
+        ->toContain('"name":"request_intake_form"')
+        ->toContain('"default_values"')
+        ->toContain('Ron Asistores')
+        ->toContain('198532356')
+        ->toContain('The CLOA was not released despite the award.')
+        ->toContain('event: done');
+});
+
+it('returns no default values when there is no prior intake submission', function () {
+    $service = new class extends ChatService
+    {
+        public function __construct() {}
+    };
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    Message::create([
+        'conversation_id' => $conversation->id,
+        'role' => MessageRole::User,
+        'content' => 'Draft a demand letter.',
+    ]);
+
+    expect($service->recentIntakeValues($conversation))->toBe([]);
+});
+
+it('ignores the current message when resolving prior intake values', function () {
+    $service = new class extends ChatService
+    {
+        public function __construct() {}
+
+        public function resolve(Conversation $conversation, ?string $currentMessageId): array
+        {
+            $this->createdUserMessageId = $currentMessageId;
+
+            return $this->recentIntakeValues($conversation);
+        }
+    };
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    Message::create([
+        'conversation_id' => $conversation->id,
+        'role' => MessageRole::User,
+        'content' => "[Intake Form Submission]\nsender_name: Ron Asistores",
+    ]);
+
+    $current = Message::create([
+        'conversation_id' => $conversation->id,
+        'role' => MessageRole::User,
+        'content' => 'Draft it again.',
+    ]);
+
+    expect($service->resolve($conversation, $current->id))->toBe(['sender_name' => 'Ron Asistores']);
+});
+
+it('canonicalizes prior intake values through the service', function () {
+    $service = new class extends ChatService
+    {
+        public function __construct() {}
+
+        public function resolve(Conversation $conversation, ?string $currentMessageId): array
+        {
+            $this->createdUserMessageId = $currentMessageId;
+
+            return $this->recentIntakeValues($conversation);
+        }
+    };
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    Message::create([
+        'conversation_id' => $conversation->id,
+        'role' => MessageRole::User,
+        'content' => "[Intake Form Submission]\ncloa_number: 198532356\nemail_address: ron@example.com",
+    ]);
+
+    $current = Message::create([
+        'conversation_id' => $conversation->id,
+        'role' => MessageRole::User,
+        'content' => 'Draft it again.',
+    ]);
+
+    expect($service->resolve($conversation, $current->id))
+        ->toBe(['reference_number' => '198532356', 'email' => 'ron@example.com']);
+});
+
+it('merges bracket fields into the base intake fields by canonical key', function () {
+    $base = [
+        ['key' => 'sender_name', 'label' => 'Your full name', 'type' => 'text', 'required' => true],
+        ['key' => 'reference_number', 'label' => 'Reference number', 'type' => 'text', 'required' => false],
+    ];
+
+    $merged = DraftingIntent::mergeIntakeFields(
+        $base,
+        DraftingIntent::extractBracketFields('[Your Full Name] and CLOA No. [CLOA Number] and [Date of Death]'),
+    );
+
+    $keys = array_column($merged, 'key');
+
+    // [Your Full Name] collapses into sender_name and [CLOA Number] into
+    // reference_number, so only the genuinely new date_of_death is appended.
+    expect($keys)->toBe(['sender_name', 'reference_number', 'date_of_death'])
+        ->and(count($merged))->toBe(3);
+});
+
+it('dedupes the case-intake fields into a single reference number entry point', function () {
+    $fields = DraftingIntent::extractBracketFields(
+        'CLOA No. [Insert CLOA Number If Known] of my late father, who died on [Date of Death]. '
+        .'Ref [Reference Number]; another copy under [Number If Known Otherwise See Attached Details].'
+    );
+
+    $keys = array_column($fields, 'key');
+
+    expect(array_count_values($keys)['reference_number'] ?? 0)->toBe(1)
+        ->and($keys)->not->toContain('cloa_number')
+        ->and($keys)->not->toContain('insert_cloa_number_if_known')
+        ->and($keys)->not->toContain('number_if_known_otherwise_see_attached_details');
+});
+
+it('groups contact information and canonicalizes vague labels', function () {
+    $fields = DraftingIntent::extractBracketFields(
+        '[Your Full Name] [Email Address] [Contact Number] [Facts] [Dates] [Relief Or Action Sought]'
+    );
+
+    $byKey = collect($fields)->keyBy('key');
+
+    expect($byKey->get('email')['section'] ?? null)->toBe('Contact Information')
+        ->and($byKey->get('contact_number')['section'] ?? null)->toBe('Contact Information')
+        ->and($byKey->get('facts')['label'])->toBe('Statement of facts')
+        ->and($byKey->get('dates')['label'])->toBe('Relevant date(s)')
+        ->and($byKey->get('relief_sought')['label'])->toBe('Requested relief / action')
+        ->and($byKey->get('sender_name')['label'])->toBe('Your full name')
+        ->and(DraftingIntent::labelFor('relief_or_action_sought'))->toBe('Requested relief / action')
+        ->and(DraftingIntent::canonicalLabelOf('facts'))->toBe('Statement of facts');
+});
+
+it('marks transaction-specific fields as conditional on the transaction type', function () {
+    $fields = collect(DraftingIntent::fieldsForDocumentType('government transaction letter'))->keyBy('key');
+
+    expect($fields->get('reference_number')['conditional'] ?? null)
+        ->toEqual([
+            'field' => 'transaction_type',
+            'values' => ['Request for Certification/Document', 'Appeal', 'Protest', 'Motion for Reconsideration', 'Compliance Submission'],
+        ])
+        ->and($fields->get('deadline_or_reglementary_period')['conditional']['values'] ?? [])->toContain('Appeal');
+
+    $death = DraftingIntent::extractBracketFields('[Date of Death]');
+
+    expect($death[0]['conditional'] ?? null)
+        ->toEqual(['field' => 'transaction_type', 'values' => ['Request for Certification/Document']]);
+});
+
+it('canonicalizes prior intake values so prefills match the canonical keys', function () {
+    $values = DraftingIntent::canonicalizeIntakeValues([
+        'your_full_name' => 'Ron Asistores',
+        'cloa_number' => '13423212',
+        'email_address' => 'ron@example.com',
+        'sender_address' => 'PK1 General Trias Cavite',
+        'facts' => 'Death certificate attached.',
+    ]);
+
+    expect($values)->toBe([
+        'sender_name' => 'Ron Asistores',
+        'reference_number' => '13423212',
+        'email' => 'ron@example.com',
+        'sender_address' => 'PK1 General Trias Cavite',
+        'facts' => 'Death certificate attached.',
+    ]);
+});
+
+it('extracts next steps between the todo markers', function () {
+    $draft = "### Conclusion\n\nJust sign and send.\n\n[[TODO_START]]\n1.  File the request with the DAR Provincial Office.\n2.  Pay the certification fee.\n[[TODO_END]]\n\nSources:\nRA No. 6657";
+
+    $todos = DraftingIntent::fallbackTodos($draft);
+
+    expect(array_column($todos, 'title'))
+        ->toContain('File the request with the DAR Provincial Office.')
+        ->toContain('Pay the certification fee.')
+        ->not->toContain('Just sign and send.')
+        ->not->toContain('RA No. 6657');
 });
 
 it('does not emit a synthetic intake form for non-drafting requests', function () {
@@ -486,6 +836,112 @@ it('derives intake fields from a template referenced by name', function () {
         ->not->toContain('"court_preference"');
 });
 
+it('drops the facts field from the intake form when the case description supplies the facts', function () {
+    Template::factory()->system()->create([
+        'legal_subtype' => 'demand_letter',
+        'placeholder_fields' => [
+            ['key' => 'sender_name', 'label' => 'Sender / firm name', 'required' => true],
+            ['key' => 'recipient_name', 'label' => 'Recipient name', 'required' => true],
+            ['key' => 'amount_or_demand', 'label' => 'Exact amount or action demanded', 'required' => true],
+            ['key' => 'facts', 'label' => 'Statement of facts', 'required' => true],
+        ],
+    ]);
+
+    $case = LegalCase::factory()->for($this->user)->create([
+        'description' => 'NEXBYTE delivered inventory management software to Marisol Retail Group but the P855,000 invoice remains unpaid beyond the agreed 30-day term.',
+    ]);
+
+    $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        makeToolCallEvent('request_intake_form', ['fields' => [['key' => 'anything']]]),
+    ]));
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => "[Template: demand_letter]\nDraft a demand letter using the facts in this case.",
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->toContain('event: tool_call')
+        ->toContain('"name":"request_intake_form"')
+        ->toContain('"sender_name"')
+        ->toContain('"recipient_name"')
+        ->toContain('"amount_or_demand"')
+        ->not->toContain('"facts"');
+});
+
+it('drops the facts field from the intake form when a ready uploaded document supplies the facts', function () {
+    Template::factory()->system()->create([
+        'legal_subtype' => 'demand_letter',
+        'placeholder_fields' => [
+            ['key' => 'sender_name', 'label' => 'Sender / firm name', 'required' => true],
+            ['key' => 'facts', 'label' => 'Statement of facts', 'required' => true],
+        ],
+    ]);
+
+    $case = LegalCase::factory()->for($this->user)->create(['description' => null]);
+    Document::factory()->for($this->user)->for($case, 'case')->ready()->create();
+
+    $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        makeToolCallEvent('request_intake_form', ['fields' => [['key' => 'anything']]]),
+    ]));
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => "[Template: demand_letter]\nDraft a demand letter using the uploaded contract.",
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->toContain('event: tool_call')
+        ->toContain('"name":"request_intake_form"')
+        ->toContain('"sender_name"')
+        ->not->toContain('"facts"');
+});
+
+it('keeps the facts field in the intake form when the case has no description and no documents', function () {
+    Template::factory()->system()->create([
+        'legal_subtype' => 'demand_letter',
+        'placeholder_fields' => [
+            ['key' => 'sender_name', 'label' => 'Sender / firm name', 'required' => true],
+            ['key' => 'facts', 'label' => 'Statement of facts', 'required' => true],
+        ],
+    ]);
+
+    $case = LegalCase::factory()->for($this->user)->create(['description' => null]);
+
+    $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        makeToolCallEvent('request_intake_form', ['fields' => [['key' => 'anything']]]),
+    ]));
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => "[Template: demand_letter]\nDraft a demand letter.",
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->toContain('event: tool_call')
+        ->toContain('"name":"request_intake_form"')
+        ->toContain('"sender_name"')
+        ->toContain('"facts"');
+});
+
 it('rolls back the user message when the stream fails', function () {
     $this->app->instance(ChatService::class, makeFailingChatService());
 
@@ -581,6 +1037,29 @@ it('rewrites placeholder export labels to the persisted assistant message id', f
         ->not->toContain('[Word Document Download Link]')
         ->not->toContain('[PDF Exported Version]')
         ->not->toContain('EXPORT LINKS')
+        ->toContain('/api/messages/019f-real-id-0000/export/word')
+        ->toContain('/api/messages/019f-real-id-0000/export/pdf');
+});
+
+it('strips the "For Word and PDF export" placeholder when appending the real links', function () {
+    $service = new class extends ChatService
+    {
+        public function __construct() {}
+
+        public function links(string $text, string $id): string
+        {
+            return $this->withExportLinks($text, $id);
+        }
+    };
+
+    $text = "Here is your document.\n\nFor Word and PDF export: [Insert Export Links Here]";
+
+    $result = $service->links($text, '019f-real-id-0000');
+
+    expect($result)
+        ->toContain('Here is your document.')
+        ->not->toContain('Insert Export Links')
+        ->not->toContain('For Word and PDF export')
         ->toContain('/api/messages/019f-real-id-0000/export/word')
         ->toContain('/api/messages/019f-real-id-0000/export/pdf');
 });

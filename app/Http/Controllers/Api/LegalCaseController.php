@@ -8,6 +8,7 @@ use App\Http\Resources\ConversationResource;
 use App\Http\Resources\LegalCaseResource;
 use App\Models\LegalCase;
 use App\Models\Message;
+use App\Support\PlanLimits;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -75,6 +76,23 @@ class LegalCaseController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate($this->rules());
+
+        PlanLimits::ensureActiveAccess($request->user());
+
+        $limit = PlanLimits::limitFor($request->user(), 'active_cases');
+        if ($limit !== null) {
+            $active = $request->user()->cases()
+                ->where('status', '!=', 'closed')
+                ->whereNull('archived_at')
+                ->count();
+
+            if ($active >= $limit) {
+                abort(response()->json([
+                    'message' => 'Active case limit reached. Upgrade your plan to create more cases.',
+                    'upgrade_required' => true,
+                ], 402));
+            }
+        }
 
         $case = DB::transaction(function () use ($request, $validated) {
             $case = $request->user()->cases()->create($validated + [

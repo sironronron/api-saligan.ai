@@ -1,10 +1,15 @@
 <?php
 
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\Template;
 use App\Models\User;
 
 beforeEach(function () {
     $this->user = User::factory()->create();
+    Subscription::factory()->for($this->user)->create([
+        'plan_id' => Plan::factory()->pro()->create()->id,
+    ]);
 });
 
 it('requires authentication', function () {

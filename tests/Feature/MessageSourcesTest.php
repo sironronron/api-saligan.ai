@@ -129,3 +129,86 @@ it('deduplicates source cards that share the same source', function () {
         ->and($sources[1]['type'])->toBe('document')
         ->and($sources[1]['label'])->toBe('case-brief.pdf');
 });
+
+it('exposes citation indices, chunk ids, and full document content', function () {
+    $user = User::factory()->create();
+
+    $page = CrawledPage::factory()->create(['law_name' => 'RA No. 6657', 'url' => 'https://lawphil.net/ra6657']);
+    $legalChunk = LegalChunk::factory()->for($page)->create([
+        'content' => 'Agrarian reform coverage applies.',
+        'chunk_index' => 3,
+    ]);
+
+    $document = Document::factory()->for($user)->create(['original_filename' => 'case-brief.pdf']);
+    $docChunk = DocumentChunk::factory()->for($document)->for($user)->create([
+        'content' => 'My full notes on the case go here.',
+        'chunk_index' => 5,
+    ]);
+
+    $message = Message::factory()->create([
+        'content' => 'See [Source 1] and [User Doc 1].',
+        'cited_legal_chunk_ids' => [$legalChunk->id],
+        'cited_chunk_ids' => [$docChunk->id],
+    ]);
+
+    $sources = MessageSources::for($message);
+
+    expect($sources[0])->toMatchArray([
+        'type' => 'legal',
+        'index' => 1,
+        'id' => $legalChunk->id,
+        'chunk_index' => 3,
+        'domain' => 'lawphil.net',
+    ])
+        ->and($sources[1])->toMatchArray([
+            'type' => 'document',
+            'index' => 1,
+            'id' => $docChunk->id,
+            'chunk_index' => 5,
+            'document_id' => $document->id,
+        ])
+        ->and($sources[1]['content'])->toBe('My full notes on the case go here.');
+});
+
+it('resolves web citations stored in metadata and cited inline', function () {
+    $message = Message::factory()->create([
+        'content' => 'According to [Web 1] and [Web 3], the period is 15 days.',
+        'metadata' => [
+            'web_citations' => [
+                ['url' => 'https://sc.judiciary.gov.ph/rule-43', 'title' => 'SC E-Library — Rule 43'],
+                ['url' => 'https://lawphil.net/reglementary', 'title' => 'LawPhil — Reglementary Period'],
+                ['url' => 'https://officialgazette.gov.ph/ra-6657', 'title' => 'Official Gazette — RA 6657'],
+            ],
+        ],
+    ]);
+
+    $sources = MessageSources::for($message);
+
+    expect($sources)->toHaveCount(2)
+        ->and($sources[0])->toMatchArray([
+            'type' => 'web',
+            'index' => 1,
+            'url' => 'https://sc.judiciary.gov.ph/rule-43',
+            'domain' => 'sc.judiciary.gov.ph',
+            'title' => 'SC E-Library — Rule 43',
+        ])
+        ->and($sources[1])->toMatchArray([
+            'type' => 'web',
+            'index' => 3,
+            'url' => 'https://officialgazette.gov.ph/ra-6657',
+            'title' => 'Official Gazette — RA 6657',
+        ]);
+});
+
+it('does not surface stored web citations that are not cited inline', function () {
+    $message = Message::factory()->create([
+        'content' => 'No web citations referenced.',
+        'metadata' => [
+            'web_citations' => [
+                ['url' => 'https://example.gov.ph/statute', 'title' => 'Example statute'],
+            ],
+        ],
+    ]);
+
+    expect(MessageSources::for($message))->toBe([]);
+});

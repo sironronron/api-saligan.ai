@@ -20,6 +20,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'cited_chunk_ids',
     'cited_legal_chunk_ids',
     'metadata',
+    'feedback',
+    'feedback_at',
 ])]
 class Message extends Model
 {
@@ -41,6 +43,7 @@ class Message extends Model
             'cited_chunk_ids' => 'array',
             'cited_legal_chunk_ids' => 'array',
             'metadata' => 'array',
+            'feedback_at' => 'datetime',
         ];
     }
 

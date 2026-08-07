@@ -4,6 +4,7 @@ namespace App\Services\Retrieval;
 
 use App\Models\DocumentChunk;
 use App\Models\LegalChunk;
+use App\Support\PromptGuard;
 use Illuminate\Support\Collection;
 
 class RetrievalResult
@@ -86,7 +87,9 @@ class RetrievalResult
                     $label,
                     $meta === [] ? '' : ' ('.implode(', ', $meta).')',
                     $page?->url ?? 'n/a',
-                    $chunks->pluck('content')->implode("\n\n"),
+                    $chunks->map(fn (LegalChunk $chunk) => PromptGuard::wrap((string) $chunk->content))
+                        ->filter()
+                        ->implode("\n\n"),
                 );
             }
         }
@@ -105,7 +108,9 @@ class RetrievalResult
                     "[User Doc %d] %s\n%s",
                     $index,
                     $chunk->document?->original_filename ?? 'Uploaded document',
-                    $chunks->pluck('content')->implode("\n\n"),
+                    $chunks->map(fn (DocumentChunk $chunk) => PromptGuard::wrap((string) $chunk->content))
+                        ->filter()
+                        ->implode("\n\n"),
                 );
             }
         }

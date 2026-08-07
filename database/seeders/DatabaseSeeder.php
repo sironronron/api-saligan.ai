@@ -19,6 +19,7 @@ class DatabaseSeeder extends Seeder
             SystemPromptSeeder::class,
             LegalSourceSeeder::class,
             TemplateSeeder::class,
+            PlansSeeder::class,
         ]);
 
         User::factory()->create([

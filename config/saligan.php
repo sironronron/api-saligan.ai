@@ -41,6 +41,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Gemini context caching
+    |--------------------------------------------------------------------------
+    |
+    | The static system prompt (persona + standing instructions) is cached as a
+    | Gemini CachedContent so subsequent chat turns bill those tokens at the
+    | reduced cached-input rate. The cached prefix is referenced by name via
+    | the generateContent "cachedContent" field; dynamic per-turn instructions
+    | (export, case, template, retrieved context) are appended after it.
+    |
+    */
+
+    'context_caching' => [
+        'enabled' => (bool) env('GEMINI_CONTEXT_CACHING', true),
+        'ttl_seconds' => (int) env('GEMINI_CONTEXT_CACHE_TTL', 3600),
+        'refresh_seconds' => (int) env('GEMINI_CONTEXT_CACHE_REFRESH', 3000),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Document ingestion
     |--------------------------------------------------------------------------
     */
@@ -50,6 +69,24 @@ return [
         'chunk_size' => (int) env('DOCUMENT_CHUNK_SIZE', 500),
         'chunk_overlap' => (int) env('DOCUMENT_CHUNK_OVERLAP', 50),
         'queue' => env('DOCUMENT_PROCESSING_QUEUE', 'document-processing'),
+        'image_extensions' => ['jpg', 'jpeg', 'png', 'webp', 'gif', 'tiff', 'heic'],
+
+        /*
+        |--------------------------------------------------------------------------
+        | Image OCR
+        |--------------------------------------------------------------------------
+        |
+        | The provider and model used to transcribe text out of uploaded images
+        | (scans, photos, screenshots). Provider names reference providers
+        | defined in config/ai.php. Falls back to Ollama when the configured
+        | provider has no API key.
+        |
+        */
+
+        'ocr' => [
+            'provider' => env('DOCUMENT_OCR_PROVIDER', 'gemini'),
+            'model' => env('DOCUMENT_OCR_MODEL', env('GEMINI_CHAT_MODEL', 'gemini-3.6-flash')),
+        ],
     ],
 
     /*

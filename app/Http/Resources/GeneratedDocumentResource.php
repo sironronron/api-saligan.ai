@@ -24,6 +24,7 @@ class GeneratedDocumentResource extends JsonResource
             'conversation_id' => $this->conversation_id,
             'conversation_title' => $this->conversation?->title,
             'title' => $this->derivedTitle(),
+            'content' => $this->content,
             'created_at' => $this->created_at,
         ];
     }

@@ -13,6 +13,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 #[Fillable([
     'user_id',
+    'case_id',
     'title',
     'original_filename',
     'storage_path',
@@ -45,6 +46,14 @@ class Document extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    /**
+     * The case this document is attached to, if any.
+     */
+    public function case(): BelongsTo
+    {
+        return $this->belongsTo(LegalCase::class, 'case_id');
     }
 
     /**

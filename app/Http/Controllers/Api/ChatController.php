@@ -7,6 +7,7 @@ use App\Models\Conversation;
 use App\Models\Todo;
 use App\Services\Chat\ChatService;
 use App\Support\DraftingIntent;
+use App\Support\PlanLimits;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Laravel\Ai\Streaming\Events\Error as ErrorEvent;
@@ -36,6 +37,8 @@ class ChatController extends Controller
             'message' => ['required', 'string', 'max:8000'],
         ]);
 
+        PlanLimits::consumeMessage($request->user());
+
         $message = $validated['message'];
 
         $isDraftingRequest = DraftingIntent::matches($message);
@@ -54,6 +57,8 @@ class ChatController extends Controller
             $todoRequested = false;
             $textLength = 0;
             $lastText = '';
+            $buffering = $isDraftingRequest && ! $isIntakeSubmission;
+            $bufferedText = '';
 
             try {
                 $stream = $this->chatService->stream(
@@ -70,6 +75,13 @@ class ChatController extends Controller
 
                 $this->sse('status', ['status' => 'composing']);
 
+                if ($buffering) {
+                    // The document must wait for the intake form, so the
+                    // client shows a "collecting facts" animation instead of
+                    // any premature text the model may produce.
+                    $this->sse('status', ['status' => 'collecting_facts']);
+                }
+
                 foreach ($stream as $event) {
                     if ($event instanceof ErrorEvent) {
                         $error = $event->message;
@@ -85,7 +97,11 @@ class ChatController extends Controller
                         $textLength += strlen($event->delta);
                         $lastText .= $event->delta;
 
-                        $this->sse('delta', ['delta' => $event->delta]);
+                        if ($buffering) {
+                            $bufferedText .= $event->delta;
+                        } else {
+                            $this->sse('delta', ['delta' => $event->delta]);
+                        }
                     }
 
                     if ($event instanceof ToolCall) {
@@ -95,7 +111,9 @@ class ChatController extends Controller
                             // The form fields are authoritative server-side so
                             // they match the selected template or the document
                             // category instead of whatever fields the model
-                            // happened to invent.
+                            // happened to invent. Previously submitted intake
+                            // values are carried over so a repeated drafting
+                            // request reuses the user's original answers.
                             $this->sse('tool_call', [
                                 'name' => 'request_intake_form',
                                 'arguments' => [
@@ -105,6 +123,7 @@ class ChatController extends Controller
                                         $message,
                                         $event->toolCall->arguments['document_type'] ?? null,
                                     ),
+                                    'default_values' => $this->chatService->recentIntakeValues($conversation),
                                 ],
                             ]);
 
@@ -158,20 +177,41 @@ class ChatController extends Controller
             if ($error !== null) {
                 $this->sse('error', ['message' => $error]);
             } else {
-                if (! $intakeRequested && ! $isIntakeSubmission && $isDraftingRequest) {
-                    // The model skipped the mandatory intake step. Emit a
-                    // synthetic tool call so the form still appears, guessing
-                    // the document category from the user's message so the
-                    // fields match the document instead of a generic set.
-                    $documentType = DraftingIntent::documentTypeFor($message);
+                if ($buffering && ! $intakeRequested) {
+                    // The model skipped the mandatory intake step. Only a
+                    // complete, fact-complete draft is a real document; a
+                    // premature draft with bracketed placeholders (or no
+                    // document at all) is discarded and re-collected through
+                    // the intake form instead.
+                    $premature = $bufferedText === ''
+                        || DraftingIntent::containsBrackets($bufferedText)
+                        || ! DraftingIntent::isCompleteDocument($bufferedText);
 
-                    $this->sse('tool_call', [
-                        'name' => 'request_intake_form',
-                        'arguments' => [
-                            'document_type' => $documentType,
-                            'fields' => $this->chatService->intakeFieldsFor($conversation, $message, $documentType),
-                        ],
-                    ]);
+                    if ($premature) {
+                        if ($bufferedText !== '') {
+                            $this->chatService->discardLastAssistantMessage();
+                        }
+
+                        $documentType = DraftingIntent::documentTypeFor($message);
+
+                        $fields = DraftingIntent::mergeIntakeFields(
+                            $this->chatService->intakeFieldsFor($conversation, $message, $documentType),
+                            DraftingIntent::extractBracketFields($bufferedText),
+                        );
+
+                        $this->sse('tool_call', [
+                            'name' => 'request_intake_form',
+                            'arguments' => [
+                                'document_type' => $documentType,
+                                'fields' => $fields,
+                                'default_values' => $this->chatService->recentIntakeValues($conversation),
+                            ],
+                        ]);
+                    } elseif ($bufferedText !== '') {
+                        // The draft is complete and free of placeholders, so
+                        // the buffered document is a legitimate direct draft.
+                        $this->sse('delta', ['delta' => $bufferedText]);
+                    }
                 }
 
                 if (! $todoRequested && $textLength > 0 && $isIntakeSubmission) {

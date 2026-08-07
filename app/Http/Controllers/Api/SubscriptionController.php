@@ -1,0 +1,378 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Resources\SubscriptionResource;
+use App\Models\Plan;
+use App\Models\Subscription;
+use App\Models\User;
+use App\Services\Billing\BillingGatewayManager;
+use App\Services\Billing\LemonSqueezyClient;
+use App\Services\Billing\PaymongoClient;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+
+class SubscriptionController extends Controller
+{
+    public function __construct(
+        private readonly PaymongoClient $paymongo,
+        private readonly LemonSqueezyClient $lemonsqueezy,
+        private readonly BillingGatewayManager $gateways,
+    ) {
+        //
+    }
+
+    /**
+     * Start a subscription for the current user. Returns the gateway's hosted
+     * checkout URL the client redirects the user to for the first payment.
+     */
+    public function store(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'plan_id' => ['required', 'uuid', 'exists:plans,id'],
+            'billing_interval' => ['sometimes', 'in:monthly,annual'],
+        ]);
+
+        $billingInterval = $validated['billing_interval'] ?? Plan::INTERVAL_MONTHLY;
+
+        $plan = Plan::findOrFail($validated['plan_id']);
+        abort_unless($plan->is_active, 422);
+
+        $user = $request->user();
+
+        if ($user->subscription?->isActive() === true) {
+            abort(response()->json([
+                'message' => 'You already have an active subscription. Change your plan instead.',
+            ], 422));
+        }
+
+        $frontendUrl = rtrim((string) config('app.frontend_url'), '/');
+
+        $gateway = $this->gateways->resolve($plan, $billingInterval);
+
+        $result = $gateway->initiateCheckout(
+            user: $user,
+            plan: $plan,
+            interval: $billingInterval,
+            successUrl: "{$frontendUrl}/settings/billing?{$gateway->name()->value}=return",
+            cancelUrl: "{$frontendUrl}/pricing",
+        );
+
+        return response()->json([
+            'data' => (new SubscriptionResource($result['subscription']))->resolve(),
+            'checkout' => $result['checkout'],
+        ], 201);
+    }
+
+    /**
+     * Show the current user's subscription, plan, and usage.
+     */
+    public function show(Request $request): JsonResponse
+    {
+        $subscription = $request->user()->subscription?->load('plan');
+
+        return response()->json([
+            'data' => $subscription ? (new SubscriptionResource($subscription))->resolve() : null,
+        ]);
+    }
+
+    /**
+     * Change the current subscription's plan.
+     */
+    public function changePlan(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'plan_id' => ['required', 'uuid', 'exists:plans,id'],
+        ]);
+
+        $subscription = $request->user()->subscription;
+        abort_unless($subscription !== null && $subscription->status !== Subscription::STATUS_CANCELLED, 422);
+
+        $plan = Plan::findOrFail($validated['plan_id']);
+        abort_unless($plan->is_active, 422);
+
+        $this->gateways->for($subscription)->changePlan($subscription, $plan);
+
+        $subscription->update(['plan_id' => $plan->id]);
+
+        return response()->json([
+            'data' => (new SubscriptionResource($subscription->fresh()->load('plan')))->resolve(),
+        ]);
+    }
+
+    /**
+     * Cancel the current subscription immediately.
+     */
+    public function cancel(Request $request): JsonResponse
+    {
+        $subscription = $request->user()->subscription;
+        abort_unless($subscription !== null && $subscription->status !== Subscription::STATUS_CANCELLED, 422);
+
+        $this->gateways->for($subscription)->cancel($subscription);
+
+        $subscription->update([
+            'status' => Subscription::STATUS_CANCELLED,
+            'cancelled_at' => now(),
+        ]);
+
+        return response()->json([
+            'data' => (new SubscriptionResource($subscription->fresh()->load('plan')))->resolve(),
+        ]);
+    }
+
+    /**
+     * Handle a PayMongo webhook event (no auth; verified by signature).
+     */
+    public function webhook(Request $request): JsonResponse
+    {
+        $raw = $request->getContent();
+
+        if (! $this->paymongo->verifyWebhookSignature($request->headers->all(), $raw)) {
+            return response()->json(['message' => 'Invalid signature.'], 400);
+        }
+
+        $attributes = $request->json('data.attributes', []);
+        $eventType = $attributes['type'] ?? null;
+        $eventData = $attributes['data'] ?? [];
+
+        match ($eventType) {
+            'subscription.invoice.paid' => $this->markInvoicePaid($eventData),
+            'subscription.updated', 'subscription.past_due', 'subscription.unpaid' => $this->syncStatus($eventData),
+            default => null,
+        };
+
+        return response()->json(['status' => 'ok'], 200);
+    }
+
+    /**
+     * Handle a LemonSqueezy webhook event (no auth; verified by signature).
+     */
+    public function lemonsqueezyWebhook(Request $request): JsonResponse
+    {
+        $raw = $request->getContent();
+
+        if (! $this->lemonsqueezy->verifyWebhookSignature($request->headers->all(), $raw)) {
+            return response()->json(['message' => 'Invalid signature.'], 400);
+        }
+
+        $eventName = $request->json('meta.event_name');
+        $payload = $request->json('data.attributes', []);
+
+        $resourceId = $request->json('data.id');
+
+        if ($resourceId !== null && ! isset($payload['id'])) {
+            $payload['id'] = $resourceId;
+        }
+
+        match ($eventName) {
+            'subscription_created' => $this->syncLemonSqueezySubscription($payload),
+            'subscription_updated' => $this->syncLemonSqueezySubscription($payload),
+            'subscription_cancelled' => $this->syncLemonSqueezySubscription($payload),
+            'subscription_expired' => $this->syncLemonSqueezySubscription($payload),
+            'subscription_paused', 'subscription_resumed' => $this->syncLemonSqueezySubscription($payload),
+            'subscription_activated' => $this->activateLemonSqueezySubscription($payload),
+            'subscription_payment_success' => $this->activateLemonSqueezySubscription($payload),
+            default => null,
+        };
+
+        return response()->json(['status' => 'ok'], 200);
+    }
+
+    /**
+     * Mirror a LemonSqueezy subscription status change, creating a local
+     * subscription row when one doesn't exist yet.
+     */
+    protected function syncLemonSqueezySubscription(array $payload): void
+    {
+        $lsSubscriptionId = $payload['id'] ?? null;
+        $status = $payload['status'] ?? null;
+
+        if ($lsSubscriptionId === null) {
+            return;
+        }
+
+        $subscription = Subscription::query()
+            ->where('lemonsqueezy_subscription_id', $lsSubscriptionId)
+            ->first();
+
+        if ($subscription === null) {
+            $subscription = $this->createLemonSqueezySubscriptionFromWebhook($payload);
+
+            if ($subscription === null) {
+                return;
+            }
+        }
+
+        $localStatus = $this->mapLemonSqueezyStatus($status);
+
+        if ($localStatus !== null) {
+            $subscription->update([
+                'status' => $localStatus,
+                'current_period_start' => $payload['created_at'] ?? $subscription->current_period_start,
+                'current_period_end' => $payload['renews_at'] ?? $subscription->current_period_end,
+                'cancelled_at' => $payload['cancelled_at'] ?? ($localStatus === Subscription::STATUS_CANCELLED ? now() : $subscription->cancelled_at),
+            ]);
+        }
+    }
+
+    /**
+     * Activate a LemonSqueezy subscription after its first (or subsequent)
+     * successful payment.
+     */
+    protected function activateLemonSqueezySubscription(array $payload): void
+    {
+        $lsSubscriptionId = $payload['id'] ?? null;
+
+        if ($lsSubscriptionId === null) {
+            return;
+        }
+
+        $subscription = Subscription::query()
+            ->where('lemonsqueezy_subscription_id', $lsSubscriptionId)
+            ->first();
+
+        if ($subscription === null) {
+            $subscription = $this->createLemonSqueezySubscriptionFromWebhook($payload);
+
+            if ($subscription === null) {
+                return;
+            }
+        }
+
+        $subscription->update([
+            'status' => Subscription::STATUS_ACTIVE,
+            'trial_ends_at' => null,
+            'current_period_start' => $payload['created_at'] ?? now(),
+            'current_period_end' => $payload['renews_at'] ?? $this->periodEnd($subscription),
+            'cancelled_at' => null,
+        ]);
+    }
+
+    /**
+     * Create a local subscription row from a LemonSqueezy webhook payload,
+     * matching the variant back to a plan and the email to a user.
+     */
+    protected function createLemonSqueezySubscriptionFromWebhook(array $payload): ?Subscription
+    {
+        $variantId = data_get($payload, 'variant_id');
+        $userEmail = $payload['user_email'] ?? null;
+        $lsSubscriptionId = $payload['id'] ?? null;
+
+        $user = $userEmail !== null
+            ? User::where('email', $userEmail)->first()
+            : null;
+
+        if ($user === null || $variantId === null || $lsSubscriptionId === null) {
+            return null;
+        }
+
+        $plan = Plan::query()
+            ->where('lemonsqueezy_variant_id', $variantId)
+            ->orWhere('lemonsqueezy_variant_id_annual', $variantId)
+            ->first();
+
+        if ($plan === null) {
+            return null;
+        }
+
+        $interval = $plan->lemonsqueezy_variant_id_annual === $variantId
+            ? Plan::INTERVAL_ANNUAL
+            : Plan::INTERVAL_MONTHLY;
+
+        return Subscription::create([
+            'user_id' => $user->id,
+            'plan_id' => $plan->id,
+            'interval' => $interval,
+            'gateway' => Subscription::GATEWAY_LEMONSQUEEZY,
+            'lemonsqueezy_subscription_id' => $lsSubscriptionId,
+            'lemonsqueezy_customer_id' => $payload['customer_id'] ?? null,
+            'status' => $this->mapLemonSqueezyStatus($payload['status'] ?? null) ?? Subscription::STATUS_INCOMPLETE,
+            'current_period_start' => $payload['created_at'] ?? null,
+            'current_period_end' => $payload['renews_at'] ?? null,
+        ]);
+    }
+
+    /**
+     * Map a LemonSqueezy subscription status to our local status values.
+     */
+    protected function mapLemonSqueezyStatus(?string $status): ?string
+    {
+        return match ($status) {
+            'active', 'on_trial' => Subscription::STATUS_ACTIVE,
+            'cancelled', 'expired' => Subscription::STATUS_CANCELLED,
+            'past_due', 'unpaid' => Subscription::STATUS_PAST_DUE,
+            'paused' => Subscription::STATUS_PAUSED,
+            default => null,
+        };
+    }
+
+    /**
+     * The end of the current billing period.
+     */
+    protected function periodEnd(Subscription $subscription): Carbon
+    {
+        return $subscription->interval === Plan::INTERVAL_ANNUAL
+            ? now()->addYear()->endOfMonth()
+            : now()->addMonth()->endOfMonth();
+    }
+
+    /**
+     * Mark a subscription active after a successful invoice payment.
+     */
+    protected function markInvoicePaid(array $eventData): void
+    {
+        $subscriptionId = data_get($eventData, 'attributes.resource_id');
+
+        $subscription = $subscriptionId !== null
+            ? Subscription::query()->where('paymongo_subscription_id', $subscriptionId)->first()
+            : null;
+
+        if ($subscription === null) {
+            return;
+        }
+
+        $periodEnd = $subscription->interval === Plan::INTERVAL_ANNUAL
+            ? now()->addYear()->endOfMonth()
+            : now()->addMonth()->endOfMonth();
+
+        $subscription->update([
+            'status' => Subscription::STATUS_ACTIVE,
+            'trial_ends_at' => null,
+            'current_period_start' => now()->startOfDay(),
+            'current_period_end' => $periodEnd,
+            'cancelled_at' => null,
+        ]);
+    }
+
+    /**
+     * Mirror a subscription status change sent by PayMongo.
+     */
+    protected function syncStatus(array $eventData): void
+    {
+        $subscriptionId = $eventData['id'] ?? null;
+        $status = data_get($eventData, 'attributes.status');
+
+        $subscription = $subscriptionId !== null
+            ? Subscription::query()->where('paymongo_subscription_id', $subscriptionId)->first()
+            : null;
+
+        if ($subscription === null || $status === null) {
+            return;
+        }
+
+        $allowed = [
+            Subscription::STATUS_ACTIVE,
+            Subscription::STATUS_PAST_DUE,
+            Subscription::STATUS_UNPAID,
+            Subscription::STATUS_CANCELLED,
+            Subscription::STATUS_INCOMPLETE,
+            Subscription::STATUS_INCOMPLETE_CANCELLED,
+        ];
+
+        if (in_array($status, $allowed, true)) {
+            $subscription->update(['status' => $status]);
+        }
+    }
+}

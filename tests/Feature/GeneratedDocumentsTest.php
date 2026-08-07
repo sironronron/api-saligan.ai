@@ -3,10 +3,15 @@
 use App\Enums\MessageRole;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\User;
 
 beforeEach(function () {
     $this->user = User::factory()->create();
+    Subscription::factory()->for($this->user)->create([
+        'plan_id' => Plan::factory()->pro()->create()->id,
+    ]);
 });
 
 it('requires authentication', function () {
@@ -41,7 +46,8 @@ it('lists only assistant messages that are exportable drafts', function () {
     expect($response->json('data'))->toHaveCount(1)
         ->and($response->json('data.0.id'))->toBe($draft->id)
         ->and($response->json('data.0.conversation_title'))->toBe('Eviction case')
-        ->and($response->json('data.0.title'))->toContain('REPUBLIC OF THE PHILIPPINES');
+        ->and($response->json('data.0.title'))->toContain('REPUBLIC OF THE PHILIPPINES')
+        ->and($response->json('data.0.content'))->toContain('COMPLAINT FOR UNLAWFUL DETAINER');
 });
 
 it('does not include drafts from other users', function () {

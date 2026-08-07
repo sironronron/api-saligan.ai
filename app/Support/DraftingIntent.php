@@ -2,8 +2,142 @@
 
 namespace App\Support;
 
+use Illuminate\Support\Str;
+
 final class DraftingIntent
 {
+    /**
+     * Canonical intake field definitions. Each key is the single source of
+     * truth for a fact's human-readable label, input type, and optional
+     * grouping or conditional visibility. Bracket placeholders that match a
+     * canonical concept collapse onto these keys so a fact is never collected
+     * twice under a differently worded name.
+     *
+     * @var array<string, array{label: string, type: string, section?: string, conditional?: array{field: string, values: array<int, string>}}>
+     */
+    private const CANONICAL_FIELDS = [
+        'sender_name' => ['label' => 'Your full name', 'type' => 'text'],
+        'sender_address' => ['label' => 'Your complete address', 'type' => 'text'],
+        'email' => ['label' => 'Email address', 'type' => 'text', 'section' => 'Contact Information'],
+        'contact_number' => ['label' => 'Contact number', 'type' => 'text', 'section' => 'Contact Information'],
+        'recipient_name' => ['label' => "Recipient's full name", 'type' => 'text'],
+        'recipient_address' => ['label' => "Recipient's complete address", 'type' => 'text'],
+        'complainant_name' => ['label' => "Complainant's full name", 'type' => 'text'],
+        'complainant_address' => ['label' => "Complainant's complete address", 'type' => 'text'],
+        'respondent_name' => ['label' => "Respondent's full name", 'type' => 'text'],
+        'respondent_address' => ['label' => "Respondent's complete address", 'type' => 'text'],
+        'reference_number' => [
+            'label' => 'Reference / document number (e.g. CLOA No., TCT/CCT No., case No.)',
+            'type' => 'text',
+            'conditional' => [
+                'field' => 'transaction_type',
+                'values' => ['Request for Certification/Document', 'Appeal', 'Protest', 'Motion for Reconsideration', 'Compliance Submission'],
+            ],
+        ],
+        'title_or_tax_dec_number' => ['label' => 'TCT/CCT/OCT or tax declaration number', 'type' => 'text'],
+        'deceased_name' => [
+            'label' => "Deceased's full name",
+            'type' => 'text',
+            'conditional' => ['field' => 'transaction_type', 'values' => ['Request for Certification/Document']],
+        ],
+        'date_of_death' => [
+            'label' => 'Date of death',
+            'type' => 'date',
+            'conditional' => ['field' => 'transaction_type', 'values' => ['Request for Certification/Document']],
+        ],
+        'incident_date' => ['label' => 'When the violation or incident occurred', 'type' => 'date'],
+        'facts' => ['label' => 'Statement of facts', 'type' => 'textarea'],
+        'dates' => ['label' => 'Relevant date(s)', 'type' => 'text'],
+        'date' => ['label' => 'Date', 'type' => 'date'],
+        'deadline' => [
+            'label' => 'Deadline to comply (if any)',
+            'type' => 'date',
+            'conditional' => ['field' => 'transaction_type', 'values' => ['Appeal', 'Protest', 'Motion for Reconsideration', 'Compliance Submission']],
+        ],
+        'relief_sought' => ['label' => 'Requested relief / action', 'type' => 'textarea'],
+        'request_or_demand' => ['label' => 'What the recipient should do', 'type' => 'textarea'],
+    ];
+
+    /**
+     * Placeholder phrasings that resolve to a canonical field key. Matching is
+     * containment-based and longest-phrase-first, so "date of death" wins over
+     * "date" and "complainant full name" wins over "full name". Phrases cover
+     * the variants the model actually writes in drafts (e.g. "[Insert CLOA
+     * Number If Available On PSA Death Cert Or Other Records]").
+     *
+     * @var array<string, array<int, string>>
+     */
+    private const CANONICAL_SYNONYMS = [
+        'sender_name' => [
+            'your printed full name', 'printed full name', 'signature over printed name',
+            'your full name', 'sender full name', 'sender name', 'signatory name',
+            'printed name', 'signature line', 'signature', 'your name', 'full name',
+            'name of sender', "sender's full name",
+        ],
+        'sender_address' => [
+            'your complete address', 'your full address', 'your address',
+            'sender address', 'complete address', 'full address', 'address of sender',
+            "sender's address",
+        ],
+        'email' => ['email address', 'e-mail address', 'electronic mail address', 'email', 'e-mail'],
+        'contact_number' => [
+            'contact number', 'contact no', 'phone number', 'telephone number',
+            'mobile number', 'mobile no',
+        ],
+        'recipient_name' => [
+            'recipient full name', "recipient's full name", 'recipient name',
+            "recipient's name", 'name of recipient', 'addressee name', 'addressee',
+        ],
+        'recipient_address' => ['recipient address', "recipient's address", 'addressee address'],
+        'complainant_name' => [
+            'complainant full name', "complainant's full name", 'complainant name',
+            "complainant's name", 'plaintiff full name', 'plaintiff name', "plaintiff's name",
+        ],
+        'complainant_address' => ['complainant address', "complainant's address", 'plaintiff address'],
+        'respondent_name' => [
+            'respondent full name', "respondent's full name", 'respondent name',
+            "respondent's name", 'defendant full name', 'defendant name', "defendant's name",
+        ],
+        'respondent_address' => ['respondent address', "respondent's address", 'defendant address'],
+        'reference_number' => [
+            'number if known otherwise see attached details', 'insert cloa number if known',
+            'cloa number if available', 'cloa number if known', 'insert number if known',
+            'cloa number', 'cloa no', 'reference number', 'reference no', 'ref number',
+            'number if known', 'insert number', 'case number', 'case no', 'document number',
+            'docket number', 'docket no', 'application number',
+        ],
+        'title_or_tax_dec_number' => [
+            'title number', 'tax declaration number', 'tax dec number', 'tct number',
+            'tct no', 'cct number', 'cct no', 'oct number', 'oct no',
+        ],
+        'deceased_name' => [
+            "father's full name", "deceased's full name", 'deceased full name',
+            'name of deceased', "deceased's name", 'deceased name', 'late father name',
+            'decedent name', 'decedent full name',
+        ],
+        'date_of_death' => ['date of death', 'death date', 'date of demise'],
+        'incident_date' => ['incident date', 'date of incident', 'date of violation', 'date of occurrence'],
+        'facts' => [
+            'statement of facts', 'narration of facts', 'chronological account',
+            'facts of the case', 'facts of the matter', 'narrative of facts', 'facts',
+        ],
+        'dates' => ['relevant dates', 'relevant date', 'dates'],
+        'date' => [
+            'date of execution', 'date of the letter', 'letter date', 'today date',
+            'current date', 'date of letter', 'date',
+        ],
+        'deadline' => [
+            'deadline to comply', 'compliance deadline', 'response deadline',
+            'filing deadline', 'filing or appeal deadline', 'deadline or reglementary period',
+            'deadline',
+        ],
+        'relief_sought' => [
+            'relief or action sought', 'requested relief or action', 'prayer for relief',
+            'requested relief', 'relief sought', 'action sought',
+        ],
+        'request_or_demand' => ['request or demand', 'what the recipient should do', 'demand'],
+    ];
+
     /**
      * Determine whether a user message clearly asks to draft a legal document.
      */
@@ -101,12 +235,13 @@ final class DraftingIntent
     /**
      * Match placeholder export labels the model wrote instead of real links,
      * e.g. "EXPORT LINKS: [Word Document Download Link] | [PDF Exported Version]."
-     * Real export links are always appended by the server, so any such
-     * placeholder text the model produced is removed before persisting.
+     * or "For Word and PDF export: [Insert Export Links Here]." Real export
+     * links are always appended by the server, so any such placeholder text the
+     * model produced is removed before persisting.
      */
     public static function exportPlaceholderPattern(): string
     {
-        return '#(?:export\s+links?\s*:?\s*\[[^\]]+\]\s*(?:\|\s*\[[^\]]+\]\s*)*[.:;]?|\[[^\]]*(?:download|word document|exported|pdf)[^\]]*\]\s*(?:\|\s*\[[^\]]+\]\s*)*)[.:;]?[\r\n]*#i';
+        return '#(?:export\s+links?\s*:?\s*\[[^\]]+\]\s*(?:\|\s*\[[^\]]+\]\s*)*[.:;]?|\[[^\]]*(?:download|word document|exported|pdf|insert export)[^\]]*\]\s*(?:\|\s*\[[^\]]+\]\s*)*|\s*(?:as|for|to)\s+word\s+and\s+pdf\s+export\s*:?\s*\[[^\]]+\]\s*)[.:;]?[\r\n]*#i';
     }
 
     /**
@@ -175,6 +310,16 @@ final class DraftingIntent
 
         foreach ($lines as $line) {
             $trimmed = trim($line);
+
+            if ($trimmed === '[[TODO_START]]') {
+                $inSection = true;
+
+                continue;
+            }
+
+            if ($trimmed === '[[TODO_END]]') {
+                break;
+            }
 
             if (self::isStepHeading($trimmed)) {
                 $inSection = true;
@@ -353,6 +498,20 @@ final class DraftingIntent
                 'required' => true,
             ],
             [
+                'key' => 'email',
+                'label' => 'Email address',
+                'type' => 'text',
+                'section' => 'Contact Information',
+                'required' => false,
+            ],
+            [
+                'key' => 'contact_number',
+                'label' => 'Contact number',
+                'type' => 'text',
+                'section' => 'Contact Information',
+                'required' => false,
+            ],
+            [
                 'key' => 'defendant_name',
                 'label' => "Defendant's full name",
                 'type' => 'text',
@@ -473,6 +632,265 @@ final class DraftingIntent
     }
 
     /**
+     * Whether the text contains unknown facts written as bracketed
+     * placeholders (e.g. "[Your Full Name]", "[CLOA No.]"). Meta tokens such
+     * as the document markers or the intake submission wrapper are ignored.
+     */
+    public static function containsBrackets(string $text): bool
+    {
+        return preg_match('/\[([^\]\[]+)\]/', $text) === 1
+            && self::extractBracketFields($text) !== [];
+    }
+
+    /**
+     * Whether the text is a drafted document as opposed to a premature draft
+     * or a partial answer. The opening marker is the reliable signal: the
+     * model reliably wraps documents with [[DOCUMENT_START]] but often omits
+     * the closing marker, so requiring it would discard otherwise complete
+     * drafts.
+     */
+    public static function isCompleteDocument(string $text): bool
+    {
+        return str_contains($text, '[[DOCUMENT_START]]');
+    }
+
+    /**
+     * Resolve a bracketed placeholder text to its canonical field key, e.g.
+     * "[Your Full Name]" or "[Sender Name]" both resolve to "sender_name".
+     * Matching is longest-phrase-first so specific concepts win over generic
+     * ones. Returns null when the placeholder does not match any concept.
+     */
+    public static function synonymFor(string $text): ?string
+    {
+        return self::matchSynonym(self::normalize($text), contain: true);
+    }
+
+    /**
+     * The canonical key a field key (or slugged placeholder) represents, so
+     * differently named keys for the same fact can be deduplicated. Keys that
+     * are already canonical return themselves.
+     */
+    public static function canonicalForKey(string $key): ?string
+    {
+        if (isset(self::CANONICAL_FIELDS[$key])) {
+            return $key;
+        }
+
+        return self::matchSynonym(self::normalize($key), contain: false);
+    }
+
+    /**
+     * The canonical, human-reader-friendly label for a field key, or null when
+     * the key does not map to a canonical concept.
+     */
+    public static function labelFor(string $key): ?string
+    {
+        return self::CANONICAL_FIELDS[self::canonicalForKey($key) ?? $key]['label'] ?? null;
+    }
+
+    /**
+     * The canonical label for a key, falling back to a humanized version of
+     * the key when the key is not part of the canonical registry.
+     */
+    public static function canonicalLabelOf(string $key): string
+    {
+        return self::labelFor($key) ?? ucwords(str_replace('_', ' ', $key));
+    }
+
+    /**
+     * Remap intake submission values onto their canonical keys so pre-filled
+     * values always align with the canonical field set, even when an earlier
+     * submission (or an earlier version of the form) used a different key for
+     * the same fact (e.g. "cloa_number" → "reference_number").
+     *
+     * @param  array<string, string>  $values
+     * @return array<string, string>
+     */
+    public static function canonicalizeIntakeValues(array $values): array
+    {
+        $canonical = [];
+
+        foreach ($values as $key => $value) {
+            $canonical[self::canonicalForKey((string) $key) ?? (string) $key] = $value;
+        }
+
+        return $canonical;
+    }
+
+    /**
+     * Convert bracketed placeholders from a draft into intake form fields so
+     * the unknown facts can be collected from the user instead of being left
+     * as placeholders in the document. Placeholders that match a canonical
+     * concept collapse onto its key, label, and type; the rest keep a slugged
+     * key derived from the placeholder text.
+     *
+     * @return array<int, array{key: string, label: string, type: string, section?: string, conditional?: array{field: string, values: array<int, string>}, required: bool}>
+     */
+    public static function extractBracketFields(string $text): array
+    {
+        preg_match_all('/\[([^\]\[]+)\]/', $text, $matches);
+
+        $fields = [];
+        $seen = [];
+
+        foreach ($matches[1] ?? [] as $raw) {
+            $placeholder = trim($raw);
+
+            if ($placeholder === '' || self::isMetaToken($placeholder)) {
+                continue;
+            }
+
+            $key = self::synonymFor($placeholder) ?? Str::slug($placeholder, '_', 'en');
+
+            if ($key === '' || isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+
+            $definition = self::CANONICAL_FIELDS[$key] ?? null;
+
+            $field = [
+                'key' => $key,
+                'label' => $definition['label'] ?? ucfirst($placeholder),
+                'type' => $definition['type'] ?? self::bracketFieldType($placeholder),
+                'required' => true,
+            ];
+
+            if (isset($definition['section'])) {
+                $field['section'] = $definition['section'];
+            }
+
+            if (isset($definition['conditional'])) {
+                $field['conditional'] = $definition['conditional'];
+            }
+
+            $fields[] = $field;
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Append intake fields, dropping any whose canonical key is already present
+     * in the base set so the template fields stay authoritative, the bracket
+     * fields only add what the template missed, and the same fact is never
+     * collected twice under a differently worded key (e.g. "cloa_number" is
+     * dropped when the base already has "reference_number").
+     *
+     * @param  array<int, array{key: string, label: string, type: string, required: bool}>  $base
+     * @param  array<int, array{key: string, label: string, type: string, required: bool}>  $extra
+     * @return array<int, array{key: string, label: string, type: string, required: bool}>
+     */
+    public static function mergeIntakeFields(array $base, array $extra): array
+    {
+        $seen = [];
+
+        foreach ($base as $field) {
+            $seen[self::canonicalForKey($field['key']) ?? $field['key']] = true;
+        }
+
+        $merged = $base;
+
+        foreach ($extra as $field) {
+            $canonical = self::canonicalForKey($field['key']) ?? $field['key'];
+
+            if (isset($seen[$canonical])) {
+                continue;
+            }
+
+            $seen[$canonical] = true;
+
+            $merged[] = $field;
+        }
+
+        return $merged;
+    }
+
+    /**
+     * Match a normalized text against the canonical synonym registry. With
+     * containment matching a phrase like "cloa number" matches the longer
+     * placeholder "[Insert CLOA Number If Available On PSA Death Cert...]";
+     * with exact matching the reverse (key → concept) lookup works.
+     *
+     * @return string|null The canonical key the text resolves to.
+     */
+    private static function matchSynonym(string $normalized, bool $contain): ?string
+    {
+        $pairs = [];
+
+        foreach (self::CANONICAL_SYNONYMS as $canonical => $phrases) {
+            foreach ($phrases as $phrase) {
+                $pairs[] = [self::normalize($phrase), $canonical];
+            }
+        }
+
+        usort($pairs, fn (array $a, array $b): int => strlen($b[0]) <=> strlen($a[0]));
+
+        foreach ($pairs as [$phrase, $canonical]) {
+            if ($contain ? str_contains($normalized, $phrase) : $normalized === $phrase) {
+                return $canonical;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Normalize a placeholder or key for synonym matching: lowercased, with all
+     * non-alphanumeric characters removed.
+     */
+    private static function normalize(string $text): string
+    {
+        return mb_strtolower((string) preg_replace('/[^a-z0-9]+/i', '', $text));
+    }
+
+    /**
+     * Whether a bracketed token is a protocol/metadata marker rather than a
+     * fact placeholder (document/todo markers, the intake wrapper, etc.).
+     */
+    private static function isMetaToken(string $token): bool
+    {
+        $needle = mb_strtoupper($token);
+
+        if (str_starts_with($needle, 'TEMPLATE:')) {
+            return true;
+        }
+
+        return in_array($needle, [
+            'DOCUMENT_START',
+            'DOCUMENT_END',
+            'TODO_START',
+            'TODO_END',
+            'INTAKE FORM SUBMISSION',
+            'EXPORT',
+        ], true);
+    }
+
+    /**
+     * Infer the intake input type from a bracketed placeholder's wording.
+     */
+    private static function bracketFieldType(string $text): string
+    {
+        $needle = mb_strtolower($text);
+
+        if (str_contains($needle, 'date') || str_contains($needle, 'deadline')) {
+            return 'date';
+        }
+
+        if (str_contains($needle, 'number') || str_contains($needle, 'amount') || str_contains($needle, 'no.')) {
+            return 'number';
+        }
+
+        if (str_contains($needle, 'facts') || str_contains($needle, 'description')
+            || str_contains($needle, 'details') || str_contains($needle, 'statement')) {
+            return 'textarea';
+        }
+
+        return 'text';
+    }
+
+    /**
      * General intake field sets keyed by document category. Templates carry
      * their own fields (placeholder_fields) which take precedence; this map
      * covers drafting requests with no resolved template so the form still
@@ -536,6 +954,22 @@ final class DraftingIntent
                 'required' => true,
             ],
             [
+                'key' => 'email',
+                'label' => 'Email address',
+                'type' => 'text',
+                'section' => 'Contact Information',
+                'options' => [],
+                'required' => false,
+            ],
+            [
+                'key' => 'contact_number',
+                'label' => 'Contact number',
+                'type' => 'text',
+                'section' => 'Contact Information',
+                'options' => [],
+                'required' => false,
+            ],
+            [
                 'key' => 'agency_name',
                 'label' => 'Agency or office (e.g. DAR Provincial Office, Registry of Deeds)',
                 'type' => 'text',
@@ -577,6 +1011,10 @@ final class DraftingIntent
                 'type' => 'text',
                 'options' => [],
                 'required' => false,
+                'conditional' => [
+                    'field' => 'transaction_type',
+                    'values' => ['Request for Certification/Document', 'Appeal', 'Protest', 'Motion for Reconsideration', 'Compliance Submission'],
+                ],
             ],
             [
                 'key' => 'legal_basis',
@@ -584,6 +1022,10 @@ final class DraftingIntent
                 'type' => 'text',
                 'options' => [],
                 'required' => false,
+                'conditional' => [
+                    'field' => 'transaction_type',
+                    'values' => ['Appeal', 'Protest', 'Motion for Reconsideration'],
+                ],
             ],
             [
                 'key' => 'facts',
@@ -612,6 +1054,10 @@ final class DraftingIntent
                 'type' => 'date',
                 'options' => [],
                 'required' => false,
+                'conditional' => [
+                    'field' => 'transaction_type',
+                    'values' => ['Appeal', 'Protest', 'Motion for Reconsideration', 'Compliance Submission'],
+                ],
             ],
         ];
     }
@@ -635,6 +1081,22 @@ final class DraftingIntent
                 'type' => 'text',
                 'options' => [],
                 'required' => true,
+            ],
+            [
+                'key' => 'email',
+                'label' => 'Email address',
+                'type' => 'text',
+                'section' => 'Contact Information',
+                'options' => [],
+                'required' => false,
+            ],
+            [
+                'key' => 'contact_number',
+                'label' => 'Contact number',
+                'type' => 'text',
+                'section' => 'Contact Information',
+                'options' => [],
+                'required' => false,
             ],
             [
                 'key' => 'recipient_name',

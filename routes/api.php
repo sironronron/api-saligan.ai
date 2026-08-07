@@ -8,8 +8,11 @@ use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\DocumentController;
 use App\Http\Controllers\Api\ExportController;
+use App\Http\Controllers\Api\FeedbackController;
 use App\Http\Controllers\Api\GeneratedDocumentController;
 use App\Http\Controllers\Api\LegalCaseController;
+use App\Http\Controllers\Api\PlanController;
+use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\TemplateController;
 use App\Http\Controllers\Api\TodoController;
 use Illuminate\Support\Facades\Route;
@@ -18,32 +21,46 @@ Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/forgot-password', [AuthController::class, 'sendPasswordResetLink']);
 Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+Route::post('/subscriptions/webhook', [SubscriptionController::class, 'webhook']);
+Route::post('/subscriptions/webhook/lemonsqueezy', [SubscriptionController::class, 'lemonsqueezyWebhook']);
+
+Route::get('/plans', [PlanController::class, 'index']);
 
 Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('/user', [AuthController::class, 'user']);
     Route::post('/logout', [AuthController::class, 'logout']);
 
-    Route::apiResource('documents', DocumentController::class);
+    Route::get('/subscription', [SubscriptionController::class, 'show']);
+    Route::post('/subscription', [SubscriptionController::class, 'store']);
+    Route::post('/subscription/change-plan', [SubscriptionController::class, 'changePlan']);
+    Route::post('/subscription/cancel', [SubscriptionController::class, 'cancel']);
 
-    Route::get('/generated-documents', [GeneratedDocumentController::class, 'index']);
+    Route::middleware('active_subscription')->group(function (): void {
+        Route::apiResource('documents', DocumentController::class);
+        Route::post('/documents/{document}/attach', [DocumentController::class, 'attach']);
 
-    Route::apiResource('conversations', ConversationController::class);
-    Route::post('/conversations/{conversation}/messages', [ChatController::class, 'store']);
+        Route::get('/generated-documents', [GeneratedDocumentController::class, 'index']);
 
-    Route::post('/messages/{message}/export/word', [ExportController::class, 'word']);
-    Route::post('/messages/{message}/export/pdf', [ExportController::class, 'pdf']);
+        Route::apiResource('conversations', ConversationController::class);
+        Route::post('/conversations/{conversation}/messages', [ChatController::class, 'store']);
 
-    Route::apiResource('todos', TodoController::class)->only(['index', 'store', 'update', 'destroy']);
-    Route::post('/todos/reorder', [TodoController::class, 'reorder']);
+        Route::post('/messages/{message}/export/word', [ExportController::class, 'word']);
+        Route::post('/messages/{message}/export/pdf', [ExportController::class, 'pdf']);
+        Route::post('/messages/{message}/feedback', [FeedbackController::class, 'store']);
+        Route::delete('/messages/{message}/feedback', [FeedbackController::class, 'destroy']);
 
-    Route::get('/templates', [TemplateController::class, 'index']);
-    Route::post('/templates', [TemplateController::class, 'store']);
+        Route::apiResource('todos', TodoController::class)->only(['index', 'store', 'update', 'destroy']);
+        Route::post('/todos/reorder', [TodoController::class, 'reorder']);
 
-    Route::apiResource('cases', LegalCaseController::class);
-    Route::post('/cases/{case}/conversations', [LegalCaseController::class, 'storeConversation']);
-    Route::post('/cases/{case}/duplicate', [LegalCaseController::class, 'duplicate']);
-    Route::post('/cases/{case}/restore', [LegalCaseController::class, 'restore']);
-    Route::delete('/cases/{case}/force', [LegalCaseController::class, 'forceDestroy']);
+        Route::get('/templates', [TemplateController::class, 'index']);
+        Route::post('/templates', [TemplateController::class, 'store']);
+
+        Route::apiResource('cases', LegalCaseController::class);
+        Route::post('/cases/{case}/conversations', [LegalCaseController::class, 'storeConversation']);
+        Route::post('/cases/{case}/duplicate', [LegalCaseController::class, 'duplicate']);
+        Route::post('/cases/{case}/restore', [LegalCaseController::class, 'restore']);
+        Route::delete('/cases/{case}/force', [LegalCaseController::class, 'forceDestroy']);
+    });
 
     Route::prefix('admin')->middleware('is_admin')->group(function (): void {
         Route::apiResource('legal-sources', LegalSourceController::class)->only(['index', 'store', 'destroy']);

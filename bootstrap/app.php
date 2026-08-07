@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\EnsureActiveSubscription;
 use App\Http\Middleware\EnsureUserIsAdmin;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
@@ -27,6 +28,7 @@ return Application::configure(basePath: dirname(__DIR__))
 
         $middleware->alias([
             'is_admin' => EnsureUserIsAdmin::class,
+            'active_subscription' => EnsureActiveSubscription::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

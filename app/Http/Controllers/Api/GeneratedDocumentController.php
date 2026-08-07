@@ -20,7 +20,7 @@ class GeneratedDocumentController extends Controller
             ->with(['messages' => fn ($query) => $query
                 ->where('role', MessageRole::Assistant)
                 ->where('content', 'like', '%/export/%')
-                ->latest()
+                ->latest(),
             ])
             ->latest('updated_at')
             ->get()

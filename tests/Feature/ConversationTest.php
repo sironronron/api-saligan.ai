@@ -3,10 +3,15 @@
 use App\Enums\ChatProvider;
 use App\Models\Conversation;
 use App\Models\LegalCase;
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\User;
 
 beforeEach(function () {
     $this->user = User::factory()->create();
+    Subscription::factory()->for($this->user)->create([
+        'plan_id' => Plan::factory()->pro()->create()->id,
+    ]);
 });
 
 it('requires authentication', function () {

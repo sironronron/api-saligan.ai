@@ -95,6 +95,14 @@ class LegalCase extends Model
     }
 
     /**
+     * The documents attached to this case.
+     */
+    public function documents(): HasMany
+    {
+        return $this->hasMany(Document::class, 'case_id');
+    }
+
+    /**
      * The tasks belonging to this case (through its conversation).
      */
     public function tasks(): HasManyThrough

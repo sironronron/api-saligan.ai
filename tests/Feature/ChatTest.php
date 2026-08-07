@@ -4,6 +4,8 @@ use App\Enums\ChatProvider;
 use App\Enums\MessageRole;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\User;
 use App\Services\Chat\ChatService;
 use Generator;
@@ -16,6 +18,9 @@ use Laravel\Ai\Streaming\Events\TextDelta;
 
 beforeEach(function () {
     $this->user = User::factory()->create();
+    Subscription::factory()->for($this->user)->create([
+        'plan_id' => Plan::factory()->pro()->create()->id,
+    ]);
 
     $fake = new class extends ChatService
     {

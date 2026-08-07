@@ -25,6 +25,7 @@ class MessageResource extends JsonResource
             'content' => $this->content,
             'provider' => $this->provider?->value,
             'sources' => MessageSources::for($this->resource),
+            'feedback' => $this->feedback,
             'created_at' => $this->created_at,
         ];
     }

@@ -7,6 +7,7 @@ use App\Models\Document;
 use App\Models\DocumentChunk;
 use App\Services\Ai\EmbeddingService;
 use App\Services\Documents\DocumentChunker;
+use App\Services\Documents\ImageOcrExtractor;
 use App\Services\Documents\TextExtractor;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -38,6 +39,7 @@ class ProcessDocumentUpload implements ShouldQueue
      */
     public function handle(
         TextExtractor $extractor,
+        ImageOcrExtractor $ocr,
         DocumentChunker $chunker,
         EmbeddingService $embeddings,
     ): void {
@@ -55,10 +57,22 @@ class ProcessDocumentUpload implements ShouldQueue
         // Clear any chunks from a previous partial attempt.
         $document->chunks()->delete();
 
-        $text = $extractor->extract($document->storage_path, $document->mime_type ?? '');
+        $mimeType = $document->mime_type ?? '';
+
+        $text = $this->isImage($mimeType)
+            ? $ocr->extract($document->storage_path, $mimeType)
+            : $extractor->extract($document->storage_path, $mimeType);
+
+        // Extracted text (especially OCR output from photos) can carry invalid
+        // UTF-8 byte sequences. Sanitize it so the subsequent embedding and
+        // retrieval requests never fail with a "Malformed UTF-8" json_encode
+        // error and so chunks are always stored as valid UTF-8.
+        $text = $this->sanitizeText($text);
 
         if (trim($text) === '') {
-            throw new \RuntimeException('No extractable text was found in the file. Scanned PDFs may require OCR.');
+            throw new \RuntimeException($this->isImage($mimeType)
+                ? 'No text could be read from the image. Upload a clearer image or a PDF/DOCX version.'
+                : 'No extractable text was found in the file. Scanned PDFs may require OCR.');
         }
 
         $chunks = $chunker->chunk(
@@ -84,6 +98,25 @@ class ProcessDocumentUpload implements ShouldQueue
         }
 
         $document->update(['status' => DocumentStatus::Ready]);
+    }
+
+    /**
+     * Whether the MIME type represents a bitmap image handled by the OCR
+     * pipeline rather than the text extractors.
+     */
+    protected function isImage(string $mimeType): bool
+    {
+        return str_starts_with($mimeType, 'image/');
+    }
+
+    /**
+     * Replace invalid UTF-8 byte sequences so extracted text never breaks the
+     * json_encode of downstream HTTP requests (embedding, chat retrieval) and
+     * stored chunks are always valid UTF-8.
+     */
+    protected function sanitizeText(string $text): string
+    {
+        return mb_convert_encoding($text, 'UTF-8', 'UTF-8');
     }
 
     /**

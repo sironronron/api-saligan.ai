@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
@@ -72,5 +73,48 @@ class User extends Authenticatable
     public function todos(): HasManyThrough
     {
         return $this->hasManyThrough(Todo::class, Conversation::class);
+    }
+
+    /**
+     * The user's billing subscription.
+     */
+    public function subscription(): HasOne
+    {
+        return $this->hasOne(Subscription::class)->latestOfMany();
+    }
+
+    /**
+     * All billing subscriptions for this user.
+     */
+    public function subscriptions(): HasMany
+    {
+        return $this->hasMany(Subscription::class);
+    }
+
+    /**
+     * The current plan via the active subscription.
+     */
+    public function plan(): ?Plan
+    {
+        return $this->subscription?->plan;
+    }
+
+    /**
+     * The usage counter for the current billing period, created on demand.
+     */
+    public function usageCounterForCurrentPeriod(): UsageCounter
+    {
+        return $this->usageCounters()->firstOrCreate(
+            ['period_key' => UsageCounter::currentPeriodKey()],
+            ['messages_used' => 0, 'messages_overage' => 0, 'documents_uploaded' => 0],
+        );
+    }
+
+    /**
+     * The monthly usage counters for this user.
+     */
+    public function usageCounters(): HasMany
+    {
+        return $this->hasMany(UsageCounter::class);
     }
 }
