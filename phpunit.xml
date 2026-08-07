@@ -33,5 +33,6 @@
         <env name="NIGHTWATCH_ENABLED" value="false"/>
         <env name="AI_EMBED_PROVIDER" value="ollama"/>
         <env name="AI_EMBED_MODEL" value="qwen3-embedding:latest"/>
+        <env name="AI_CHAT_PROVIDER" value="ollama"/>
     </php>
 </phpunit>

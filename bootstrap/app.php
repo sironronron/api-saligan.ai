@@ -2,6 +2,7 @@
 
 use App\Http\Middleware\EnsureActiveSubscription;
 use App\Http\Middleware\EnsureUserIsAdmin;
+use App\Http\Middleware\PreventCsrfCookieCaching;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Application;
@@ -24,6 +25,10 @@ return Application::configure(basePath: dirname(__DIR__))
             EncryptCookies::class,
             AddQueuedCookiesToResponse::class,
             StartSession::class,
+        ]);
+
+        $middleware->web(append: [
+            PreventCsrfCookieCaching::class,
         ]);
 
         $middleware->alias([

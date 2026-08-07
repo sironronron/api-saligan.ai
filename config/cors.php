@@ -19,9 +19,13 @@ return [
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => array_values(array_filter([
-        env('FRONTEND_URL', 'http://localhost:3000', 'http://localhost:3001'),
-    ])),
+    // Comma-separated list of frontend origins (e.g. https://app.batayan.co,
+    // https://batayan.co). Credentialed CORS requires the request origin to
+    // match exactly, so every host the SPA can be reached at must be listed.
+    'allowed_origins' => array_values(array_filter(array_map(
+        'trim',
+        explode(',', (string) env('FRONTEND_URL', 'http://localhost:3000')),
+    ))),
 
     // Local frontend hosts (localhost / 127.0.0.1 / IPv6) on any dev port.
     // Patterns also make the middleware echo back the actual request origin
