@@ -20,12 +20,15 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
      * @param  iterable<int, AiMessage>  $messages
      * @param  array<int, Tool|ProviderTool>  $tools
      * @param  string|null  $cachedContent  Gemini CachedContent resource name.
+     * @param  string|null  $staticInstructions  The static system-prompt portion, emitted
+     *                                           as the cached Anthropic system block.
      */
     public function __construct(
         public string $instructions = '',
         public iterable $messages = [],
         public array $tools = [],
         public ?string $cachedContent = null,
+        public ?string $staticInstructions = null,
     ) {
         //
     }
@@ -53,6 +56,12 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
      * request: the same static instructions text always leads the system
      * instruction, with per-turn instructions appended after it.
      *
+     * For Anthropic, the system prompt is split into a static block (persona +
+     * standing rules, identical on every request) and a dynamic block
+     * (per-turn export, case, template, and retrieved context). When prompt
+     * caching is enabled, the cache breakpoint sits on the static block so it
+     * is read from cache on every subsequent request.
+     *
      * @return array<string, mixed>
      */
     public function providerOptions(Lab|string $provider): array
@@ -65,6 +74,40 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
             return ['cachedContent' => $this->cachedContent];
         }
 
+        if ($provider === Lab::Anthropic || $provider === 'anthropic') {
+            return $this->anthropicProviderOptions();
+        }
+
         return [];
+    }
+
+    /**
+     * Build the Anthropic system prompt as two blocks, with the static
+     * instructions marked as a cache breakpoint when prompt caching is
+     * enabled.
+     *
+     * @return array<string, mixed>
+     */
+    protected function anthropicProviderOptions(): array
+    {
+        if ($this->staticInstructions === null) {
+            return [];
+        }
+
+        $static = [
+            'type' => 'text',
+            'text' => $this->staticInstructions,
+        ];
+
+        if (config('saligan.context_caching.enabled')) {
+            $static['cache_control'] = ['type' => 'ephemeral'];
+        }
+
+        return [
+            'system' => [
+                $static,
+                ...(filled($this->instructions) ? [['type' => 'text', 'text' => $this->instructions]] : []),
+            ],
+        ];
     }
 }

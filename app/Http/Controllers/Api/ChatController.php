@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Conversation;
 use App\Models\Todo;
 use App\Services\Chat\ChatService;
+use App\Support\ChatStatus;
 use App\Support\DraftingIntent;
 use App\Support\PlanLimits;
 use Illuminate\Http\Request;
@@ -64,7 +65,10 @@ class ChatController extends Controller
                 $stream = $this->chatService->stream(
                     $conversation,
                     $message,
-                    fn (string $status) => $this->sse('status', ['status' => $status]),
+                    fn (string $status, ?string $label = null) => $this->sse('status', [
+                        'status' => $status,
+                        'label' => $label,
+                    ]),
                 );
 
                 Log::info('Chat streaming started', [
@@ -73,7 +77,10 @@ class ChatController extends Controller
                     'message' => $message,
                 ]);
 
-                $this->sse('status', ['status' => 'composing']);
+                $this->sse('status', [
+                    'status' => 'composing',
+                    'label' => ChatStatus::label('composing', $message),
+                ]);
 
                 if ($buffering) {
                     // The document must wait for the intake form, so the

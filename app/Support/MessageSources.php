@@ -22,15 +22,19 @@ final class MessageSources
      * Only sources referenced inline by the model as [Source N] (official
      * legal pages), [User Doc N] (uploaded documents), or [Web N] (web search
      * fallback) are returned, so the UI never shows retrieved context the
-     * model did not rely on. Every card carries the citation index it is
-     * tied to (1-based, in context order) so inline badges and sidebar cards
-     * can be linked.
+     * model did not rely on. When the model cited nothing inline at all (e.g.
+     * a plain summary of facts), every retrieved chunk stored on the message
+     * is surfaced instead, so the UI still shows what the answer was grounded
+     * in. Every card carries the citation index it is tied to (1-based, in
+     * context order) so inline badges and sidebar cards can be linked.
      *
      * @return array<int, array<string, mixed>>
      */
     public static function for(Message $message): array
     {
         $citations = self::citedIndices((string) $message->content);
+
+        $strict = $citations['source'] !== [] || $citations['doc'] !== [] || $citations['web'] !== [];
 
         $sources = [];
 
@@ -53,7 +57,7 @@ final class MessageSources
             $seenLegalPages[$key] = true;
             $index++;
 
-            if (! in_array($index, $citations['source'], true)) {
+            if ($strict && ! in_array($index, $citations['source'], true)) {
                 continue;
             }
 
@@ -79,7 +83,7 @@ final class MessageSources
             $seenDocuments[$key] = true;
             $index++;
 
-            if (! in_array($index, $citations['doc'], true)) {
+            if ($strict && ! in_array($index, $citations['doc'], true)) {
                 continue;
             }
 

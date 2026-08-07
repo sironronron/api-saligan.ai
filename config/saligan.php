@@ -9,14 +9,15 @@ return [
     |
     | The provider and model used to embed text. The dimensions must match the
     | vector columns in the database (document_chunks.embedding and
-    | legal_chunks.embedding). qwen3-embedding currently emits 768 dimensions,
-    | so EMBEDDING_DIMENSIONS (and the halfvec columns) must be 768.
+    | legal_chunks.embedding), which are currently halfvec(768). Gemini
+    | embedding models accept an output dimensionality, so EMBEDDING_DIMENSIONS
+    | (and the halfvec columns) can stay at 768.
     |
     */
 
     'embedding' => [
-        'provider' => env('AI_EMBED_PROVIDER', 'ollama'),
-        'model' => env('OLLAMA_EMBED_MODEL', 'qwen3-embedding:latest'),
+        'provider' => env('AI_EMBED_PROVIDER', 'gemini'),
+        'model' => env('AI_EMBED_MODEL', 'gemini-embedding-2'),
         'dimensions' => (int) env('EMBEDDING_DIMENSIONS', 768),
         'timeout' => (int) env('EMBEDDING_TIMEOUT', 600),
         'batch_size' => (int) env('EMBEDDING_BATCH_SIZE', 16),
@@ -32,23 +33,32 @@ return [
     */
 
     'chat' => [
-        'provider' => env('AI_CHAT_PROVIDER', 'ollama'),
+        'provider' => env('AI_CHAT_PROVIDER', 'anthropic'),
         'ollama_model' => env('OLLAMA_CHAT_MODEL', 'qwen3.6:latest'),
         'ollama_model_alt' => env('OLLAMA_CHAT_MODEL_ALT', 'qwen3.5:latest'),
         'gemini_model' => env('GEMINI_CHAT_MODEL', 'gemini-3.6-flash'),
         'openai_model' => env('OPENAI_CHAT_MODEL', 'gpt-4o'),
+        'anthropic_model' => env('ANTHROPIC_CHAT_MODEL', 'claude-sonnet-5'),
     ],
 
     /*
     |--------------------------------------------------------------------------
-    | Gemini context caching
+    | Context caching
     |--------------------------------------------------------------------------
     |
-    | The static system prompt (persona + standing instructions) is cached as a
-    | Gemini CachedContent so subsequent chat turns bill those tokens at the
-    | reduced cached-input rate. The cached prefix is referenced by name via
-    | the generateContent "cachedContent" field; dynamic per-turn instructions
-    | (export, case, template, retrieved context) are appended after it.
+    | Gates both providers' prompt caching for the static system prompt.
+    |
+    | Gemini: the static system prompt (persona + standing instructions) is
+    | cached as a CachedContent resource so subsequent chat turns bill those
+    | tokens at the reduced cached-input rate. The cached prefix is referenced
+    | by name via the generateContent "cachedContent" field; dynamic per-turn
+    | instructions (export, case, template, retrieved context) are appended
+    | after it.
+    |
+    | Anthropic: the static system prompt is sent as its own system block with
+    | a "cache_control" breakpoint (5-minute ephemeral cache). The block is
+    | identical on every request, so it is read from cache (0.1x input rate)
+    | on every subsequent turn.
     |
     */
 

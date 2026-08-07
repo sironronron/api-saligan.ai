@@ -87,3 +87,34 @@ it('uses OpenAI when OpenAI is stored and an API key is configured', function ()
         config('saligan.chat.openai_model'),
     ]);
 });
+
+it('falls back to Gemini when Anthropic is stored but no API key is configured', function () {
+    config()->set('ai.providers.anthropic.key', '');
+
+    $conversation = Conversation::factory()->create([
+        'provider' => ChatProvider::Anthropic,
+    ]);
+
+    expect($this->chat->resolveFor($conversation))->toBe([
+        Lab::Gemini,
+        config('saligan.chat.gemini_model'),
+    ]);
+});
+
+it('uses Anthropic when Anthropic is stored and an API key is configured', function () {
+    config()->set('ai.providers.anthropic.key', 'test-key');
+
+    $conversation = Conversation::factory()->create([
+        'provider' => ChatProvider::Anthropic,
+    ]);
+
+    expect($this->chat->resolveFor($conversation))->toBe([
+        Lab::Anthropic,
+        config('saligan.chat.anthropic_model'),
+    ]);
+});
+
+it('derives Anthropic as the default provider from configuration', function () {
+    config()->set('saligan.chat.provider', 'anthropic');
+    expect(ChatProvider::fromConfig())->toBe(ChatProvider::Anthropic);
+});

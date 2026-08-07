@@ -212,3 +212,65 @@ it('does not surface stored web citations that are not cited inline', function (
 
     expect(MessageSources::for($message))->toBe([]);
 });
+
+it('surfaces all retrieved sources when nothing is cited inline', function () {
+    $user = User::factory()->create();
+
+    $source = LegalSource::factory()->create(['name' => 'LawPhil']);
+    $page = CrawledPage::factory()->for($source)->create([
+        'law_name' => 'RA No. 6657',
+        'gr_number' => null,
+    ]);
+    $legalChunk = LegalChunk::factory()->for($page)->create([
+        'content' => 'The Comprehensive Agrarian Reform Law covers all public agricultural lands.',
+    ]);
+
+    $document = Document::factory()->for($user)->create([
+        'original_filename' => 'case-brief.pdf',
+        'title' => 'Case Brief',
+    ]);
+    $docChunk = DocumentChunk::factory()->for($document)->for($user)->create([
+        'content' => 'My notes on the case.',
+    ]);
+
+    $message = Message::factory()->create([
+        'role' => MessageRole::Assistant,
+        'provider' => ChatProvider::Ollama,
+        'content' => '### Summary of Facts'."\n".'The property is a 5,000 sqm lot covered by TCT No. T-61204.',
+        'cited_legal_chunk_ids' => [$legalChunk->id],
+        'cited_chunk_ids' => [$docChunk->id],
+    ]);
+
+    $sources = MessageSources::for($message);
+
+    expect($sources)->toHaveCount(2)
+        ->and($sources[0]['type'])->toBe('legal')
+        ->and($sources[0]['label'])->toBe('RA No. 6657')
+        ->and($sources[1]['type'])->toBe('document')
+        ->and($sources[1]['label'])->toBe('case-brief.pdf');
+});
+
+it('keeps strict filtering when any source is cited inline', function () {
+    $user = User::factory()->create();
+
+    $firstPage = CrawledPage::factory()->create(['law_name' => 'RA No. 6657']);
+    $secondPage = CrawledPage::factory()->create(['law_name' => 'RA No. 8371']);
+    $firstChunk = LegalChunk::factory()->for($firstPage)->create(['content' => 'Agrarian reform coverage.']);
+    $secondChunk = LegalChunk::factory()->for($secondPage)->create(['content' => 'IPRA coverage.']);
+
+    $document = Document::factory()->for($user)->create(['original_filename' => 'case-brief.pdf']);
+    $docChunk = DocumentChunk::factory()->for($document)->for($user)->create(['content' => 'My notes.']);
+
+    $message = Message::factory()->create([
+        'content' => 'Only the first law applies [Source 1].',
+        'cited_legal_chunk_ids' => [$firstChunk->id, $secondChunk->id],
+        'cited_chunk_ids' => [$docChunk->id],
+    ]);
+
+    $sources = MessageSources::for($message);
+
+    expect($sources)->toHaveCount(1)
+        ->and($sources[0]['label'])->toBe('RA No. 6657')
+        ->and(collect($sources)->pluck('label'))->not->toContain('case-brief.pdf')
+        ->and(collect($sources)->pluck('label'))->not->toContain('RA No. 8371');
+});

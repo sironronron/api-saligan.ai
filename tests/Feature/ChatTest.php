@@ -95,6 +95,23 @@ it('streams the assistant answer and persists both messages', function () {
     ]);
 });
 
+it('streams status events with labels derived from the question', function () {
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'Explain RA 6657, please.',
+        ])
+        ->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->toContain('event: status')
+        ->toContain('"status":"composing"')
+        ->toContain('"label":"Composing your answer about RA 6657"');
+});
+
 it('auto-titles the conversation from the first answer', function () {
     $conversation = Conversation::factory()->for($this->user)->create([
         'title' => null,

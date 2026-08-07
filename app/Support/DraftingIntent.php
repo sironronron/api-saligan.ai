@@ -632,6 +632,24 @@ final class DraftingIntent
     }
 
     /**
+     * Whether the reply is a clarifying question rather than a drafted
+     * document — e.g. the model noticed missing or placeholder facts and asked
+     * the user for more details. Such replies must never be presented as
+     * exportable documents, even when the user originally asked for a draft.
+     */
+    public static function isClarification(string $text): bool
+    {
+        if (str_contains($text, '?')) {
+            return true;
+        }
+
+        return preg_match(
+            '/\b(?:please\s+)?(?:could\s+you|can\s+you|would\s+you|please\s+clarify|please\s+provide|please\s+confirm|let\s+me\s+know|provide\s+me\s+with|in\s+order\s+to\s+draft|once\s+you\s+provide|are\s+you\s+seeking|i\s+would\s+be\s+able\s+to\s+draft)\b/i',
+            $text,
+        ) === 1;
+    }
+
+    /**
      * Whether the text contains unknown facts written as bracketed
      * placeholders (e.g. "[Your Full Name]", "[CLOA No.]"). Meta tokens such
      * as the document markers or the intake submission wrapper are ignored.

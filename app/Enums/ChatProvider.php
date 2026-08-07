@@ -7,6 +7,7 @@ enum ChatProvider: string
     case Ollama = 'ollama';
     case Gemini = 'gemini';
     case OpenAI = 'openai';
+    case Anthropic = 'anthropic';
 
     /**
      * The provider to use by default for new conversations, taken from the

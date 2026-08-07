@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Enums\DocumentStatus;
+use App\Exceptions\DocumentProcessingException;
 use App\Models\Document;
 use App\Models\DocumentChunk;
 use App\Services\Ai\EmbeddingService;
@@ -13,6 +14,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
 use Throwable;
 
@@ -32,6 +34,20 @@ class ProcessDocumentUpload implements ShouldQueue
     public function __construct(public readonly Document $document)
     {
         //
+    }
+
+    /**
+     * Guard against two workers ingesting the same document at once.
+     *
+     * @return array<int, WithoutOverlapping>
+     */
+    public function middleware(): array
+    {
+        return [
+            (new WithoutOverlapping('document:'.$this->document->id))
+                ->releaseAfter(60)
+                ->expireAfter(600),
+        ];
     }
 
     /**
@@ -70,7 +86,7 @@ class ProcessDocumentUpload implements ShouldQueue
         $text = $this->sanitizeText($text);
 
         if (trim($text) === '') {
-            throw new \RuntimeException($this->isImage($mimeType)
+            throw new DocumentProcessingException($this->isImage($mimeType)
                 ? 'No text could be read from the image. Upload a clearer image or a PDF/DOCX version.'
                 : 'No extractable text was found in the file. Scanned PDFs may require OCR.');
         }
@@ -82,10 +98,18 @@ class ProcessDocumentUpload implements ShouldQueue
         );
 
         if ($chunks === []) {
-            throw new \RuntimeException('The extracted text produced no chunks.');
+            throw new DocumentProcessingException('The extracted text produced no chunks.');
         }
 
         $vectors = $embeddings->embedMany($chunks);
+
+        if (count($vectors) !== count($chunks)) {
+            throw new \RuntimeException(sprintf(
+                'Embedding count mismatch: %d chunks in, %d vectors out.',
+                count($chunks),
+                count($vectors),
+            ));
+        }
 
         foreach ($chunks as $index => $content) {
             DocumentChunk::create([
@@ -113,20 +137,36 @@ class ProcessDocumentUpload implements ShouldQueue
      * Replace invalid UTF-8 byte sequences so extracted text never breaks the
      * json_encode of downstream HTTP requests (embedding, chat retrieval) and
      * stored chunks are always valid UTF-8.
+     *
+     * mb_convert_encoding() between two 'UTF-8' encodings is a no-op for
+     * malformed input, so instead we scrub with mb_scrub() (which replaces
+     * invalid sequences) and explicitly drop null bytes, which Postgres
+     * rejects outright and which no mb function will remove.
      */
     protected function sanitizeText(string $text): string
     {
-        return mb_convert_encoding($text, 'UTF-8', 'UTF-8');
+        $text = str_replace("\0", '', $text);
+
+        return mb_scrub($text, 'UTF-8');
     }
 
     /**
-     * Mark the document as failed once retries are exhausted.
+     * Mark the document as failed once retries are exhausted. The real
+     * exception is logged; only a safe, user-facing message is persisted.
      */
     public function failed(?Throwable $exception): void
     {
+        if ($exception !== null) {
+            report($exception);
+        }
+
+        $message = $exception instanceof DocumentProcessingException
+            ? $exception->getMessage()
+            : 'The document could not be processed. Please try uploading it again or contact support.';
+
         $this->document->update([
             'status' => DocumentStatus::Failed,
-            'error_message' => $exception?->getMessage() ?? 'The document could not be processed.',
+            'error_message' => $message,
         ]);
     }
 }

@@ -1,0 +1,59 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [production]
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  # Where the repository lives on the self-hosted runner.
+  APP_DIR: /home/actions-runner/batayan
+  # Directory nginx serves. Only set this to a different path if files are
+  # staged in APP_DIR and then synced to a separate webroot.
+  WEBROOT: /home/actions-runner/batayan
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, API-BATAYAN-PROD]
+    steps:
+      - name: 1. Update files
+        run: |
+          git config --global --add safe.directory "$APP_DIR"
+          git -C "$APP_DIR" fetch origin production
+          git -C "$APP_DIR" reset --hard origin/production
+        shell: bash
+
+      - name: 2. Composer update
+        run: composer update --no-interaction --prefer-dist --no-progress
+        working-directory: ${{ env.APP_DIR }}
+        shell: bash
+
+      - name: 3. Run migrations
+        run: php artisan migrate --force
+        working-directory: ${{ env.APP_DIR }}
+        shell: bash
+
+      - name: 4. Put updated files to nginx
+        run: |
+          if [ "$APP_DIR" != "$WEBROOT" ]; then
+            rsync -a --delete \
+              --exclude='.git' \
+              --exclude='.env' \
+              --exclude='storage/app' \
+              --exclude='storage/logs' \
+              --exclude='storage/framework/cache/data' \
+              --exclude='storage/framework/views' \
+              "$APP_DIR/" "$WEBROOT/"
+          else
+            echo "WEBROOT equals APP_DIR; files are already served by nginx in place."
+          fi
+        shell: bash
+
+      # Requires passwordless sudo for the runner user.
+      - name: 5. Restart supervisor
+        run: sudo supervisorctl restart all
+        shell: bash

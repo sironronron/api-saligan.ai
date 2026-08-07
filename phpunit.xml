@@ -31,5 +31,7 @@
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
+        <env name="AI_EMBED_PROVIDER" value="ollama"/>
+        <env name="AI_EMBED_MODEL" value="qwen3-embedding:latest"/>
     </php>
 </phpunit>

@@ -309,6 +309,38 @@ it('appends export links to an intake submission response even without markers',
         ->toContain('/export/pdf');
 });
 
+it('does not append export links to a clarifying question from an intake submission', function () {
+    $conversation = Conversation::factory()->for(User::factory())->create();
+
+    $text = 'I have received your information. However, it appears the "Relief Sought" section was filled with placeholder text ("Testst"). Could you please clarify what specific outcome or remedy you are seeking from John Doe?';
+
+    $this->chat->persistFor($conversation, $text, true, true);
+
+    $message = Message::where('conversation_id', $conversation->id)
+        ->where('role', 'assistant')
+        ->firstOrFail();
+
+    expect($message->content)
+        ->toContain('clarify what specific outcome')
+        ->not->toContain('/export/');
+});
+
+it('does not append export links when an explicit export request is answered with a clarification', function () {
+    $conversation = Conversation::factory()->for(User::factory())->create();
+
+    $text = 'Once you provide the specific details regarding what you want to achieve with this document, I will be able to draft the formal letter for you.';
+
+    $this->chat->persistFor($conversation, $text, true);
+
+    $message = Message::where('conversation_id', $conversation->id)
+        ->where('role', 'assistant')
+        ->firstOrFail();
+
+    expect($message->content)
+        ->toContain('Once you provide the specific details')
+        ->not->toContain('/export/');
+});
+
 it('strips placeholder export labels from an unmarked answer', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
