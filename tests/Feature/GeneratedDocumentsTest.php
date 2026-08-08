@@ -2,6 +2,7 @@
 
 use App\Enums\MessageRole;
 use App\Models\Conversation;
+use App\Models\LegalCase;
 use App\Models\Message;
 use App\Models\Plan;
 use App\Models\Subscription;
@@ -63,4 +64,29 @@ it('does not include drafts from other users', function () {
         ->getJson('/api/generated-documents')
         ->assertOk()
         ->assertJsonCount(0, 'data');
+});
+
+it('filters generated documents by case', function () {
+    $case = LegalCase::factory()->for($this->user)->create();
+
+    $inCase = Conversation::factory()->for($this->user)->create(['title' => 'Eviction case', 'case_id' => $case->id]);
+    $otherCase = Conversation::factory()->for($this->user)->create(['title' => 'Unrelated case']);
+
+    $draft = Message::factory()->create([
+        'conversation_id' => $inCase->id,
+        'role' => MessageRole::Assistant,
+        'content' => "DEMAND LETTER\n\n[Download as Word](/api/messages/abc/export/word)\n[Download as PDF](/api/messages/abc/export/pdf)",
+    ]);
+
+    Message::factory()->create([
+        'conversation_id' => $otherCase->id,
+        'role' => MessageRole::Assistant,
+        'content' => "SUBPOENA\n\n[Download as Word](/api/messages/def/export/word)",
+    ]);
+
+    $this->actingAs($this->user)
+        ->getJson('/api/generated-documents?case_id='.$case->id)
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.id', $draft->id);
 });

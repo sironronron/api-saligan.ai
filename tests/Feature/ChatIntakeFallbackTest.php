@@ -123,7 +123,7 @@ it('stops the stream when the model calls the intake form tool', function () {
     expect($body)
         ->toContain('event: tool_call')
         ->toContain('"name":"request_intake_form"')
-        ->toContain('"plaintiff_name"')
+        ->toContain('"plaintiff_name_and_details"')
         ->not->toContain('Here is your draft before we collect the facts')
         ->toContain('event: done');
 
@@ -151,7 +151,7 @@ it('emits a synthetic intake form when the model skips the mandatory tool', func
     expect($body)
         ->toContain('event: tool_call')
         ->toContain('"name":"request_intake_form"')
-        ->toContain('"plaintiff_name"')
+        ->toContain('"plaintiff_name_and_details"')
         ->not->toContain('I need your details first.')
         ->toContain('event: done');
 
@@ -758,9 +758,9 @@ it('uses document-category fields when the model declares the type in the tool c
         ->toContain('event: tool_call')
         ->toContain('"name":"request_intake_form"')
         ->toContain('"document_type":"affidavit"')
-        ->toContain('"affiant_name"')
-        ->toContain('"statement_facts"')
-        ->toContain('"place_of_execution"')
+        ->toContain('"affiant_name_and_details"')
+        ->toContain('facts_to_attest')
+        ->toContain('"purpose_of_affidavit"')
         ->not->toContain('"plaintiff_name"')
         ->toContain('event: done');
 });
@@ -871,7 +871,7 @@ it('drops the facts field from the intake form when the case description supplie
         ->toContain('"name":"request_intake_form"')
         ->toContain('"sender_name"')
         ->toContain('"recipient_name"')
-        ->toContain('"amount_or_demand"')
+        ->toContain('"amount_or_obligation"')
         ->not->toContain('"facts"');
 });
 
@@ -939,7 +939,7 @@ it('keeps the facts field in the intake form when the case has no description an
         ->toContain('event: tool_call')
         ->toContain('"name":"request_intake_form"')
         ->toContain('"sender_name"')
-        ->toContain('"facts"');
+        ->toContain('"case_background_narrative"');
 });
 
 it('rolls back the user message when the stream fails', function () {

@@ -130,7 +130,7 @@ it('deduplicates source cards that share the same source', function () {
         ->and($sources[1]['label'])->toBe('case-brief.pdf');
 });
 
-it('exposes citation indices, chunk ids, and full document content', function () {
+it('exposes citation indices, chunk ids, and a limited cited-text excerpt', function () {
     $user = User::factory()->create();
 
     $page = CrawledPage::factory()->create(['law_name' => 'RA No. 6657', 'url' => 'https://lawphil.net/ra6657']);
@@ -167,7 +167,7 @@ it('exposes citation indices, chunk ids, and full document content', function ()
             'chunk_index' => 5,
             'document_id' => $document->id,
         ])
-        ->and($sources[1]['content'])->toBe('My full notes on the case go here.');
+        ->and($sources[1]['excerpt'])->toContain('My full notes on the case go here.');
 });
 
 it('surfaces all stored web citations without requiring inline markers', function () {

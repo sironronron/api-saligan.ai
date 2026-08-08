@@ -232,7 +232,6 @@ final class MessageSources
             'url' => null,
             'domain' => null,
             'excerpt' => Str::limit($chunk->content, 300),
-            'content' => $chunk->content,
         ];
     }
 }

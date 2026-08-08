@@ -11,6 +11,7 @@ use App\Models\Template;
 use App\Models\User;
 use App\Services\Chat\ChatService;
 use App\Services\Retrieval\RetrievalResult;
+use App\Support\LegalTemplateLibrary;
 use Illuminate\Support\Str;
 use Laravel\Ai\Enums\Lab;
 use Laravel\Ai\Responses\Data\Meta;
@@ -71,6 +72,21 @@ beforeEach(function () {
         public function templateFor(Conversation $conversation, string $question): ?Template
         {
             return $this->resolveTemplate($conversation, $question);
+        }
+
+        public function legalTemplateForPublic(Conversation $conversation, string $question, ?Template $template, Message $userMessage): ?array
+        {
+            return $this->legalTemplateFor($conversation, $question, $template, $userMessage);
+        }
+
+        public function intakeFieldsForPublic(Conversation $conversation, string $question, ?string $documentType = null): array
+        {
+            return $this->intakeFieldsFor($conversation, $question, $documentType);
+        }
+
+        public function instructionsForLibrary(RetrievalResult $retrieval, Lab $provider, array $legalTemplate, ?Template $template = null, bool $exportRequested = false): string
+        {
+            return $this->buildInstructions($retrieval, $provider, $exportRequested, null, $template, $legalTemplate);
         }
     };
 });
@@ -460,6 +476,122 @@ it('injects the selected template structure and conventions', function () {
         ->toContain('Demand Letter')
         ->toContain('Required structure, in order')
         ->toContain('PHILIPPINE DEMAND LETTER CONVENTIONS');
+});
+
+it('resolves a demand letter request to the library demand letter template', function () {
+    $template = LegalTemplateLibrary::resolveForMessage('Please draft a demand letter for unpaid rent.');
+
+    expect($template)->not->toBeNull()
+        ->and($template['document_type'])->toBe('demand_letter');
+});
+
+it('injects the library template block when a library template matches', function () {
+    $legalTemplate = LegalTemplateLibrary::resolveForMessage('Draft a demand letter for unpaid rent.');
+
+    $instructions = $this->chat->instructionsForLibrary(
+        new RetrievalResult(collect(), collect()),
+        Lab::Ollama,
+        $legalTemplate,
+    );
+
+    expect($instructions)
+        ->toContain('=== SELECTED LEGAL TEMPLATE ===')
+        ->toContain('Document type: demand_letter')
+        ->toContain('FORMAL DEMAND')
+        ->toContain('amount_or_obligation')
+        ->toContain('consequence_of_non_compliance')
+        ->toContain('[[UNTRUSTED DATA START]]');
+});
+
+it('lets the library template override a system letter template', function () {
+    $template = Template::factory()->system()->legal()->create([
+        'content' => 'PHILIPPINE DEMAND LETTER CONVENTIONS: follow block format.',
+    ]);
+
+    $legalTemplate = LegalTemplateLibrary::resolveForMessage('Draft a demand letter.');
+
+    $instructions = $this->chat->instructionsForLibrary(
+        new RetrievalResult(collect(), collect()),
+        Lab::Ollama,
+        $legalTemplate,
+        $template,
+    );
+
+    expect($instructions)
+        ->toContain('=== SELECTED LEGAL TEMPLATE ===')
+        ->not->toContain('=== SELECTED LETTER TEMPLATE ===');
+});
+
+it('does not override a user-created template with the library', function () {
+    $user = User::factory()->create();
+
+    $template = Template::factory()->create([
+        'name' => 'My Custom Demand Letter',
+        'user_id' => $user->id,
+        'legal_subtype' => 'demand_letter',
+    ]);
+
+    $conversation = Conversation::factory()->for($user)->create();
+
+    $message = Message::create([
+        'conversation_id' => $conversation->id,
+        'role' => 'user',
+        'content' => 'Draft a demand letter.',
+    ]);
+
+    $legalTemplate = $this->chat->legalTemplateForPublic(
+        $conversation,
+        'Draft a demand letter.',
+        $template,
+        $message,
+    );
+
+    expect($legalTemplate)->toBeNull();
+});
+
+it('uses the library template intake fields when the request matches', function () {
+    $conversation = Conversation::factory()->for(User::factory())->create();
+
+    $fields = $this->chat->intakeFieldsForPublic(
+        $conversation,
+        'Draft a demand letter for unpaid rent.',
+    );
+
+    $keys = array_column($fields, 'key');
+
+    expect($keys)
+        ->toContain('sender_name')
+        ->toContain('recipient_name')
+        ->toContain('amount_or_obligation')
+        ->toContain('legal_or_contractual_basis')
+        ->toContain('deadline_date')
+        ->toContain('consequence_of_non_compliance');
+});
+
+it('carries the library template through an intake submission', function () {
+    $conversation = Conversation::factory()->for(User::factory())->create();
+
+    Message::create([
+        'conversation_id' => $conversation->id,
+        'role' => 'user',
+        'content' => 'Draft a demand letter for unpaid rent.',
+    ]);
+
+    $submission = Message::create([
+        'conversation_id' => $conversation->id,
+        'role' => 'user',
+        'content' => "[Intake Form Submission]\nsender_name: Juan Dela Cruz",
+    ]);
+
+    $legalTemplate = $this->chat->legalTemplateForPublic(
+        $conversation,
+        $submission->content,
+        null,
+        $submission,
+    );
+
+    expect($legalTemplate)->not->toBeNull()
+        ->and($legalTemplate['document_type'])->toBe('demand_letter');
 });
 
 it('resolves a seeded template referenced by name in natural language', function () {

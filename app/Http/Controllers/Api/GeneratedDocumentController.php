@@ -12,11 +12,18 @@ use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 class GeneratedDocumentController extends Controller
 {
     /**
-     * List the AI-generated documents the user can download again.
+     * List the AI-generated documents the user can download again, optionally
+     * scoped to a single case via the `case_id` query parameter.
      */
     public function index(Request $request): AnonymousResourceCollection
     {
-        $documents = $request->user()->conversations()
+        $conversations = $request->user()->conversations();
+
+        if ($request->filled('case_id')) {
+            $conversations->where('case_id', $request->string('case_id'));
+        }
+
+        $documents = $conversations
             ->with(['messages' => fn ($query) => $query
                 ->where('role', MessageRole::Assistant)
                 ->where('content', 'like', '%/export/%')

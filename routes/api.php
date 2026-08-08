@@ -54,6 +54,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
 
         Route::get('/templates', [TemplateController::class, 'index']);
         Route::post('/templates', [TemplateController::class, 'store']);
+        Route::delete('/templates/{template}', [TemplateController::class, 'destroy']);
 
         Route::apiResource('cases', LegalCaseController::class);
         Route::post('/cases/{case}/conversations', [LegalCaseController::class, 'storeConversation']);

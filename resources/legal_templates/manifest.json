@@ -1,0 +1,95 @@
+{
+  "templates": [
+    {
+      "document_type": "demand_letter",
+      "file": "templates/demand_letter.md",
+      "category": "pleading_adjacent",
+      "requires_lawyer_review": true,
+      "requires_notarization": false
+    },
+    {
+      "document_type": "complaint",
+      "file": "templates/complaint_general.md",
+      "category": "pleading",
+      "requires_lawyer_review": true,
+      "requires_notarization": false,
+      "required_attachments": ["verification_and_certification"]
+    },
+    {
+      "document_type": "verification_and_certification",
+      "file": "templates/verification_and_certification.md",
+      "category": "pleading_attachment",
+      "requires_lawyer_review": true,
+      "requires_notarization": true,
+      "notarization_type": "jurat"
+    },
+    {
+      "document_type": "answer",
+      "file": "templates/answer.md",
+      "category": "pleading",
+      "requires_lawyer_review": true,
+      "requires_notarization": false
+    },
+    {
+      "document_type": "motion_for_extension_of_time",
+      "file": "templates/motion_for_extension_of_time.md",
+      "category": "pleading",
+      "requires_lawyer_review": true,
+      "requires_notarization": false
+    },
+    {
+      "document_type": "affidavit_general",
+      "file": "templates/affidavit_general.md",
+      "category": "notarial",
+      "requires_lawyer_review": true,
+      "requires_notarization": true,
+      "notarization_type": "jurat"
+    },
+    {
+      "document_type": "special_power_of_attorney",
+      "file": "templates/special_power_of_attorney.md",
+      "category": "notarial",
+      "requires_lawyer_review": true,
+      "requires_notarization": true,
+      "notarization_type": "acknowledgment"
+    },
+    {
+      "document_type": "deed_of_absolute_sale",
+      "file": "templates/deed_of_absolute_sale.md",
+      "category": "notarial",
+      "requires_lawyer_review": true,
+      "requires_notarization": true,
+      "notarization_type": "acknowledgment"
+    },
+    {
+      "document_type": "service_agreement",
+      "file": "templates/service_agreement.md",
+      "category": "contract",
+      "requires_lawyer_review": true,
+      "requires_notarization": false
+    },
+    {
+      "document_type": "lease_agreement",
+      "file": "templates/lease_agreement.md",
+      "category": "contract",
+      "requires_lawyer_review": true,
+      "requires_notarization": false
+    },
+    {
+      "document_type": "non_disclosure_agreement",
+      "file": "templates/non_disclosure_agreement.md",
+      "category": "contract",
+      "requires_lawyer_review": true,
+      "requires_notarization": false
+    },
+    {
+      "document_type": "board_resolution",
+      "file": "templates/board_resolution_and_secretarys_certificate.md",
+      "category": "corporate",
+      "requires_lawyer_review": true,
+      "requires_notarization": true,
+      "notarization_type": "acknowledgment"
+    }
+  ],
+  "conventions_file": "conventions/philippine_drafting_conventions.md"
+}
