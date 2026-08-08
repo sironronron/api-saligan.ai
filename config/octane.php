@@ -217,9 +217,13 @@ return [
     | being handled by Octane. You may set this value to 0 to indicate that
     | there isn't a specific time limit on Octane request execution time.
     |
+    | Set to 0 so long-running AI chat streams (which can exceed several
+    | minutes) are not killed by RoadRunner's exec_ttl, which surfaced as
+    | dropped SSE connections / HTTP 500s without CORS headers in production.
+    |
     */
 
-    'max_execution_time' => 30,
+    'max_execution_time' => 0,
 
     /*
     |--------------------------------------------------------------------------

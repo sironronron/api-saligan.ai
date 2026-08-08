@@ -105,7 +105,10 @@ class ChatService
             ? $this->buildInstructions($retrieval, $provider, $exportRequested, $case, $template, staticInstructions: '')
             : $this->buildInstructions($retrieval, $provider, $exportRequested, $case, $template, $staticInstructions);
 
-        $usesWebSearch = $retrieval->isEmpty() && $this->supportsWebSearch($provider);
+        // Web search is always offered when the provider supports it: it is the
+        // primary source when retrieval is empty and a backup for verifying or
+        // investigating sources when retrieved context exists.
+        $usesWebSearch = $this->supportsWebSearch($provider);
 
         if ($usesWebSearch && $onStatus !== null) {
             $onStatus('searching_web', ChatStatus::label('searching_web', $question));
@@ -221,7 +224,13 @@ class ChatService
                 ."\n\nRETRIEVED CONTEXT: No relevant material was retrieved from the knowledge base or the user's documents. Follow the 'Handling Missing Information' rules above — do not guess or fabricate citations.";
         }
 
-        return $instructions."\n\n=== RETRIEVED CONTEXT ===\n".$retrieval->contextBlock();
+        $instructions .= "\n\n=== RETRIEVED CONTEXT ===\n".$retrieval->contextBlock();
+
+        if ($this->supportsWebSearch($provider)) {
+            $instructions .= "\n\n".$this->webSearchBackupInstructions();
+        }
+
+        return $instructions;
     }
 
     /**
@@ -700,22 +709,49 @@ PROMPT;
     }
 
     /**
-     * Fallback instructions used when the retrieval was empty and the provider
-     * can search the web natively.
+     * Web search instructions used when no relevant material was retrieved:
+     * web search is the primary source of law for the answer.
      */
     protected function webSearchInstructions(): string
     {
         return <<<'PROMPT'
 RETRIEVED CONTEXT: No relevant material was found in the knowledge base or the user's documents.
- 
+
 WEB SEARCH FALLBACK
 - Use the web search tool to find official Philippine legal sources before answering.
+PROMPT
+            .$this->webSearchGuidance();
+    }
+
+    /**
+     * Web search instructions used when retrieved context exists: retrieved
+     * context is the primary source, and web search is a backup for
+     * investigating, verifying, or checking official sources when asked.
+     */
+    protected function webSearchBackupInstructions(): string
+    {
+        return <<<'PROMPT'
+WEB SEARCH BACKUP
+- The RETRIEVED CONTEXT above is the primary source of law for your answer; rely on it first.
+- Use the web search tool as a backup when the user asks you to investigate, verify, or check sources, when the retrieved context appears missing, stale, or incomplete, or when you need to confirm whether a statute or issuance has been amended.
+PROMPT
+            .$this->webSearchGuidance();
+    }
+
+    /**
+     * Shared web search guidance: official domains, amendment checks,
+     * prescriptive periods, and citation format. Appended verbatim by both the
+     * primary (no retrieval) and backup (with retrieval) web search blocks.
+     */
+    protected function webSearchGuidance(): string
+    {
+        return <<<'PROMPT'
+
 - Prefer official domains: Supreme Court E-Library (sc.judiciary.gov.ph), lawphil.net, officialgazette.gov.ph, dar.gov.ph (agrarian reform), denr.gov.ph, lra.gov.ph (land registration), bir.gov.ph (tax matters affecting real property), and the relevant LGU site where applicable.
 - When researching a statute or administrative issuance, check whether it has been amended and cite the amending law/issuance alongside the original provision.
 - When researching prescriptive or reglementary periods, cite the specific provision or rule stating the period and, where possible, the date it runs from based on the facts given.
 - Cite web results inline as [Web N] and finish with a "Sources" section listing the title, full URL, and the specific statute/section, administrative issuance number, or G.R. number.
 - If the web search returns nothing usable, say so plainly, do not fabricate citations, and state what would be needed to answer the question.
-
 PROMPT;
     }
 

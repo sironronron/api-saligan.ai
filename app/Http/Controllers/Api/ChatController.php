@@ -9,6 +9,8 @@ use App\Services\Chat\ChatService;
 use App\Support\ChatStatus;
 use App\Support\DraftingIntent;
 use App\Support\PlanLimits;
+use Closure;
+use Generator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Laravel\Ai\Streaming\Events\Error as ErrorEvent;
@@ -16,6 +18,7 @@ use Laravel\Ai\Streaming\Events\StreamEnd;
 use Laravel\Ai\Streaming\Events\TextDelta;
 use Laravel\Ai\Streaming\Events\ToolCall;
 use Laravel\Ai\Streaming\Events\ToolResult;
+use Laravel\Octane\Contracts\Client as OctaneClient;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Throwable;
 
@@ -45,144 +48,205 @@ class ChatController extends Controller
         $isDraftingRequest = DraftingIntent::matches($message);
         $isIntakeSubmission = DraftingIntent::isIntakeSubmission($message);
 
-        return response()->stream(function () use ($conversation, $message, $isDraftingRequest, $isIntakeSubmission): void {
-            // Disable output buffering so SSE frames reach the client immediately.
-            // Buffers opened by the caller (e.g. the test runner) are left
-            // intact; per-frame ob_flush()/flush() push our frames through.
+        $frames = $this->chatFrames($conversation, $message, $isDraftingRequest, $isIntakeSubmission);
+
+        return response()->stream($this->streamEmitter($frames), 200, [
+            'Content-Type' => 'text/event-stream',
+            'Cache-Control' => 'no-cache, no-store, must-revalidate',
+            'X-Accel-Buffering' => 'no',
+            'Connection' => 'keep-alive',
+        ]);
+    }
+
+    /**
+     * Emit the given SSE frames to the client.
+     *
+     * RoadRunner streams incrementally only when the StreamedResponse callback
+     * returns a Generator (it ignores echo()/ob_flush()/flush()), so when the
+     * request is served by Octane the callback yields each frame. Outside
+     * Octane (tests, PHP-FPM) the same frames are echoed and flushed so the
+     * response body is still produced.
+     *
+     * @param  Generator<int, string>  $frames
+     * @return Closure(): Generator<int, string>|Closure(): void
+     */
+    protected function streamEmitter(Generator $frames): Closure
+    {
+        if (app()->bound(OctaneClient::class)) {
+            return function () use ($frames): Generator {
+                yield from $frames;
+            };
+        }
+
+        return function () use ($frames): void {
             @ini_set('output_buffering', '0');
             @ini_set('zlib.output_compression', '0');
 
-            $error = null;
-            $completed = false;
-            $intakeRequested = false;
-            $todoRequested = false;
-            $textLength = 0;
-            $lastText = '';
-            $buffering = $isDraftingRequest && ! $isIntakeSubmission;
-            $bufferedText = '';
+            foreach ($frames as $frame) {
+                echo $frame;
 
-            try {
-                $stream = $this->chatService->stream(
-                    $conversation,
-                    $message,
-                    fn (string $status, ?string $label = null) => $this->sse('status', [
-                        'status' => $status,
-                        'label' => $label,
-                    ]),
-                );
-
-                Log::info('Chat streaming started', [
-                    'conversation_id' => $conversation->id,
-                    'message_length' => strlen($message),
-                    'message' => $message,
-                ]);
-
-                $this->sse('status', [
-                    'status' => 'composing',
-                    'label' => ChatStatus::label('composing', $message),
-                ]);
-
-                if ($buffering) {
-                    // The document must wait for the intake form, so the
-                    // client shows a "collecting facts" animation instead of
-                    // any premature text the model may produce.
-                    $this->sse('status', ['status' => 'collecting_facts']);
+                if (ob_get_level() > 0) {
+                    ob_flush();
                 }
 
-                foreach ($stream as $event) {
-                    if ($event instanceof ErrorEvent) {
-                        $error = $event->message;
+                flush();
+            }
+        };
+    }
+
+    /**
+     * Generate the SSE frames for a chat message.
+     *
+     * @return Generator<int, string>
+     */
+    protected function chatFrames(Conversation $conversation, string $message, bool $isDraftingRequest, bool $isIntakeSubmission): Generator
+    {
+        // Status frames raised by the chat service (e.g. "checking sources")
+        // cannot be yielded from inside its callback, so they are queued and
+        // prepended to the next frame emitted from this generator.
+        $pending = [];
+
+        $emit = function (string $event, array $data) use (&$pending): string {
+            $frame = implode('', $pending).$this->sseFrame($event, $data);
+            $pending = [];
+
+            return $frame;
+        };
+
+        $error = null;
+        $completed = false;
+        $intakeRequested = false;
+        $todoRequested = false;
+        $textLength = 0;
+        $lastText = '';
+        $buffering = $isDraftingRequest && ! $isIntakeSubmission;
+        $bufferedText = '';
+
+        try {
+            $stream = $this->chatService->stream(
+                $conversation,
+                $message,
+                function (string $status, ?string $label = null) use (&$pending): void {
+                    $pending[] = $this->sseFrame('status', [
+                        'status' => $status,
+                        'label' => $label,
+                    ]);
+                },
+            );
+
+            Log::info('Chat streaming started', [
+                'conversation_id' => $conversation->id,
+                'message_length' => strlen($message),
+                'message' => $message,
+            ]);
+
+            yield $emit('status', [
+                'status' => 'composing',
+                'label' => ChatStatus::label('composing', $message),
+            ]);
+
+            if ($buffering) {
+                // The document must wait for the intake form, so the
+                // client shows a "collecting facts" animation instead of
+                // any premature text the model may produce.
+                yield $emit('status', ['status' => 'collecting_facts']);
+            }
+
+            foreach ($stream as $event) {
+                if ($event instanceof ErrorEvent) {
+                    $error = $event->message;
+
+                    continue;
+                }
+
+                if ($event instanceof StreamEnd) {
+                    $completed = true;
+                }
+
+                if ($event instanceof TextDelta) {
+                    $textLength += strlen($event->delta);
+                    $lastText .= $event->delta;
+
+                    if ($buffering) {
+                        $bufferedText .= $event->delta;
+                    } else {
+                        yield $emit('delta', ['delta' => $event->delta]);
+                    }
+                }
+
+                if ($event instanceof ToolCall) {
+                    if ($event->toolCall->name === 'request_intake_form') {
+                        $intakeRequested = true;
+
+                        // The form fields are authoritative server-side so
+                        // they match the selected template or the document
+                        // category instead of whatever fields the model
+                        // happened to invent. Previously submitted intake
+                        // values are carried over so a repeated drafting
+                        // request reuses the user's original answers.
+                        yield $emit('tool_call', [
+                            'name' => 'request_intake_form',
+                            'arguments' => [
+                                'document_type' => $event->toolCall->arguments['document_type'] ?? null,
+                                'fields' => $this->chatService->intakeFieldsFor(
+                                    $conversation,
+                                    $message,
+                                    $event->toolCall->arguments['document_type'] ?? null,
+                                ),
+                                'default_values' => $this->chatService->recentIntakeValues($conversation),
+                            ],
+                        ]);
+
+                        // The facts have not been collected yet, so the
+                        // draft must wait until the intake form is
+                        // submitted. Breaking out of the stream keeps any
+                        // premature text from reaching the client and from
+                        // being persisted as an assistant message.
+                        if (! $isIntakeSubmission) {
+                            break;
+                        }
 
                         continue;
                     }
 
-                    if ($event instanceof StreamEnd) {
-                        $completed = true;
-                    }
+                    yield $emit('tool_call', [
+                        'name' => $event->toolCall->name,
+                        'arguments' => $event->toolCall->arguments,
+                    ]);
 
-                    if ($event instanceof TextDelta) {
-                        $textLength += strlen($event->delta);
-                        $lastText .= $event->delta;
-
-                        if ($buffering) {
-                            $bufferedText .= $event->delta;
-                        } else {
-                            $this->sse('delta', ['delta' => $event->delta]);
-                        }
-                    }
-
-                    if ($event instanceof ToolCall) {
-                        if ($event->toolCall->name === 'request_intake_form') {
-                            $intakeRequested = true;
-
-                            // The form fields are authoritative server-side so
-                            // they match the selected template or the document
-                            // category instead of whatever fields the model
-                            // happened to invent. Previously submitted intake
-                            // values are carried over so a repeated drafting
-                            // request reuses the user's original answers.
-                            $this->sse('tool_call', [
-                                'name' => 'request_intake_form',
-                                'arguments' => [
-                                    'document_type' => $event->toolCall->arguments['document_type'] ?? null,
-                                    'fields' => $this->chatService->intakeFieldsFor(
-                                        $conversation,
-                                        $message,
-                                        $event->toolCall->arguments['document_type'] ?? null,
-                                    ),
-                                    'default_values' => $this->chatService->recentIntakeValues($conversation),
-                                ],
-                            ]);
-
-                            // The facts have not been collected yet, so the
-                            // draft must wait until the intake form is
-                            // submitted. Breaking out of the stream keeps any
-                            // premature text from reaching the client and from
-                            // being persisted as an assistant message.
-                            if (! $isIntakeSubmission) {
-                                break;
-                            }
-
-                            continue;
-                        }
-
-                        $this->sse('tool_call', [
-                            'name' => $event->toolCall->name,
-                            'arguments' => $event->toolCall->arguments,
-                        ]);
-
-                        if ($event->toolCall->name === 'create_todo') {
-                            $todoRequested = true;
-                        }
-                    }
-
-                    if ($event instanceof ToolResult) {
-                        $this->sse('tool_result', [
-                            'name' => $event->toolResult->name,
-                            'result' => $event->toolResult->result,
-                        ]);
-
-                        if ($event->toolResult->name === 'create_todo') {
-                            $todoRequested = true;
-                        }
+                    if ($event->toolCall->name === 'create_todo') {
+                        $todoRequested = true;
                     }
                 }
-            } catch (Throwable $exception) {
-                Log::error('Chat streaming failed', [
-                    'conversation_id' => $conversation->id,
-                    'exception' => $exception->getMessage(),
-                    'trace' => $exception->getTraceAsString(),
-                ]);
 
-                // Roll back the user message persisted before streaming so a
-                // client retry does not duplicate it in the conversation.
-                $this->chatService->discardCurrentUserMessage();
+                if ($event instanceof ToolResult) {
+                    yield $emit('tool_result', [
+                        'name' => $event->toolResult->name,
+                        'result' => $event->toolResult->result,
+                    ]);
 
-                $error = 'The AI provider could not complete the response. Please try again.';
+                    if ($event->toolResult->name === 'create_todo') {
+                        $todoRequested = true;
+                    }
+                }
             }
+        } catch (Throwable $exception) {
+            Log::error('Chat streaming failed', [
+                'conversation_id' => $conversation->id,
+                'exception' => $exception->getMessage(),
+                'trace' => $exception->getTraceAsString(),
+            ]);
 
+            // Roll back the user message persisted before streaming so a
+            // client retry does not duplicate it in the conversation.
+            $this->chatService->discardCurrentUserMessage();
+
+            $error = 'The AI provider could not complete the response. Please try again.';
+        }
+
+        try {
             if ($error !== null) {
-                $this->sse('error', ['message' => $error]);
+                yield $emit('error', ['message' => $error]);
             } else {
                 if ($buffering && ! $intakeRequested) {
                     // The model skipped the mandatory intake step. Only a
@@ -206,7 +270,7 @@ class ChatController extends Controller
                             DraftingIntent::extractBracketFields($bufferedText),
                         );
 
-                        $this->sse('tool_call', [
+                        yield $emit('tool_call', [
                             'name' => 'request_intake_form',
                             'arguments' => [
                                 'document_type' => $documentType,
@@ -217,7 +281,7 @@ class ChatController extends Controller
                     } elseif ($bufferedText !== '') {
                         // The draft is complete and free of placeholders, so
                         // the buffered document is a legitimate direct draft.
-                        $this->sse('delta', ['delta' => $bufferedText]);
+                        yield $emit('delta', ['delta' => $bufferedText]);
                     }
                 }
 
@@ -244,7 +308,7 @@ class ChatController extends Controller
                         }
 
                         if ($created !== []) {
-                            $this->sse('tool_result', [
+                            yield $emit('tool_result', [
                                 'name' => 'create_todo',
                                 'result' => json_encode(['items' => $created], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                             ]);
@@ -257,30 +321,30 @@ class ChatController extends Controller
                     }
                 }
 
-                $this->sse('done', ['ok' => $completed]);
+                yield $emit('done', ['ok' => $completed]);
             }
-        }, 200, [
-            'Content-Type' => 'text/event-stream',
-            'Cache-Control' => 'no-cache, no-store, must-revalidate',
-            'X-Accel-Buffering' => 'no',
-            'Connection' => 'keep-alive',
-        ]);
+        } catch (Throwable $exception) {
+            // A failure in the finalization phase must never surface as a bare
+            // 500 (which drops the SSE connection and the CORS headers), so it
+            // is reported through the stream instead.
+            Log::error('Chat stream finalization failed', [
+                'conversation_id' => $conversation->id,
+                'exception' => $exception->getMessage(),
+                'trace' => $exception->getTraceAsString(),
+            ]);
+
+            yield $emit('error', ['message' => 'The response could not be finalized. Please try again.']);
+        }
     }
 
     /**
-     * Write a single SSE frame and flush it to the client.
+     * Build a single SSE frame string.
      *
      * @param  array<string, mixed>  $data
      */
-    protected function sse(string $event, array $data): void
+    protected function sseFrame(string $event, array $data): string
     {
-        echo "event: {$event}\n";
-        echo 'data: '.json_encode($data, JSON_UNESCAPED_UNICODE)."\n\n";
-
-        if (ob_get_level() > 0) {
-            ob_flush();
-        }
-
-        flush();
+        return "event: {$event}\n"
+            .'data: '.json_encode($data, JSON_UNESCAPED_UNICODE)."\n\n";
     }
 }
