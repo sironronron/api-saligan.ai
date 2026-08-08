@@ -26,6 +26,8 @@ use Laravel\Ai\Messages\Message as AiMessage;
 use Laravel\Ai\Providers\Tools\WebSearch;
 use Laravel\Ai\Responses\StreamableAgentResponse;
 use Laravel\Ai\Responses\StreamedAgentResponse;
+use Laravel\Ai\Streaming\Events\Citation;
+use Laravel\Ai\Streaming\Events\ProviderToolEvent;
 
 /**
  * Orchestrates a single chat turn: persists the user message, retrieves
@@ -1124,11 +1126,17 @@ PROMPT;
     }
 
     /**
-     * Extract the web-search citations the provider grounded the answer in
-     * (Gemini exposes these as grounding metadata). They are stored on the
-     * message so the UI can render them alongside the inline [Web N] markers.
+     * Extract the web-search citations the provider grounded the answer in,
+     * stored on the message so the UI can render them alongside the inline
+     * [Web N] markers.
      *
-     * @return array<int, array{url: string, title: string|null}>
+     * Gemini exposes these as grounding metadata on the streamed response.
+     * Anthropic surfaces them as citation events (the [Web N] locations the
+     * model actually attached inline) and, for URLs cited without an attached
+     * location, as the raw results of the web_search_tool_result blocks. All
+     * are deduplicated by URL in first-seen order.
+     *
+     * @return array<int, array{url: string, title: string|null, snippet?: string|null}>
      */
     protected function webCitations(StreamedAgentResponse $response): array
     {
@@ -1141,13 +1149,46 @@ PROMPT;
                 continue;
             }
 
-            $citations[] = [
+            $citations[$url] = [
                 'url' => $url,
                 'title' => is_string($citation->title ?? null) ? $citation->title : null,
             ];
         }
 
-        return $citations;
+        foreach ($response->events ?? [] as $event) {
+            if ($event instanceof Citation) {
+                $url = $event->citation->url ?? null;
+
+                if (! is_string($url) || $url === '') {
+                    continue;
+                }
+
+                $citations[$url] ??= [
+                    'url' => $url,
+                    'title' => is_string($event->citation->title ?? null) ? $event->citation->title : null,
+                ];
+
+                continue;
+            }
+
+            if ($event instanceof ProviderToolEvent && $event->type === 'web_search_tool_result') {
+                foreach ($event->data['search_results'] ?? [] as $result) {
+                    $url = $result['url'] ?? null;
+
+                    if (! is_string($url) || $url === '') {
+                        continue;
+                    }
+
+                    $citations[$url] ??= [
+                        'url' => $url,
+                        'title' => is_string($result['title'] ?? null) ? $result['title'] : null,
+                        'snippet' => is_string($result['snippet'] ?? null) ? $result['snippet'] : null,
+                    ];
+                }
+            }
+        }
+
+        return array_values($citations);
     }
 
     /**
