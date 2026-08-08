@@ -19,12 +19,14 @@ final class MessageSources
     /**
      * Resolve the source cards actually cited by a message.
      *
-     * Only sources referenced inline by the model as [Source N] (official
-     * legal pages), [User Doc N] (uploaded documents), or [Web N] (web search
-     * fallback) are returned, so the UI never shows retrieved context the
-     * model did not rely on. When the model cited nothing inline at all (e.g.
-     * a plain summary of facts), every retrieved chunk stored on the message
-     * is surfaced instead, so the UI still shows what the answer was grounded
+     * Legal pages and uploaded documents are tied to inline [Source N] /
+     * [User Doc N] markers: they only surface when the model actually cited
+     * them, so the UI never shows retrieved context it did not rely on. Web
+     * search results are always surfaced — the provider only records the web
+     * results the answer was grounded in, and the UI renders them in their
+     * own section. When the model cited nothing inline at all (e.g. a plain
+     * summary of facts), every retrieved chunk stored on the message is
+     * surfaced instead, so the UI still shows what the answer was grounded
      * in. Every card carries the citation index it is tied to (1-based, in
      * context order) so inline badges and sidebar cards can be linked.
      *
@@ -90,7 +92,7 @@ final class MessageSources
             $sources[] = self::documentSource($chunk, $index);
         }
 
-        $sources = array_merge($sources, self::webSources($message, $citations['web']));
+        $sources = array_merge($sources, self::webSources($message));
 
         return $sources;
     }
@@ -124,17 +126,19 @@ final class MessageSources
     }
 
     /**
-     * Web-search fallback citations captured from the provider at stream time
-     * (stored in message metadata) and referenced inline as [Web N].
+     * Web-search citations captured from the provider at stream time (stored
+     * in message metadata). Unlike retrieved legal/document sources, these are
+     * always surfaced: the provider only records the web results the answer
+     * was actually grounded in, and the UI renders them in their own section,
+     * so no inline marker is required for them to appear.
      *
-     * @param  array{source: array<int>, doc: array<int>, web: array<int>}  $citations
      * @return array<int, array<string, mixed>>
      */
-    protected static function webSources(Message $message, array $citedIndices): array
+    protected static function webSources(Message $message): array
     {
         $webCitations = $message->metadata['web_citations'] ?? [];
 
-        if (! is_array($webCitations) || $webCitations === [] || $citedIndices === []) {
+        if (! is_array($webCitations) || $webCitations === []) {
             return [];
         }
 
@@ -142,10 +146,6 @@ final class MessageSources
 
         foreach ($webCitations as $index => $citation) {
             $number = $index + 1;
-
-            if (! in_array($number, $citedIndices, true)) {
-                continue;
-            }
 
             $url = $citation['url'] ?? $citation['link'] ?? null;
 

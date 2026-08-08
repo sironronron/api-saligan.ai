@@ -75,12 +75,40 @@ beforeEach(function () {
     };
 });
 
+it('forbids listing web sources in the reply text', function () {
+    $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Gemini);
+
+    expect($instructions)
+        ->toContain('Never cite or list web sources in your reply')
+        ->toContain('no [Web N] markers, page titles, site names, or URLs')
+        ->toContain('clickable source cards automatically')
+        ->toContain('The Sources section must never list web search results')
+        ->toContain('never mention web sources in your reply text');
+});
+
+it('forbids listing web sources even when retrieved context exists', function () {
+    $page = CrawledPage::factory()->for(LegalSource::factory())->create(['law_name' => 'RA No. 6657']);
+    $chunk = LegalChunk::factory()->for($page)->create(['content' => 'Agrarian reform coverage.']);
+
+    $legalChunks = LegalChunk::query()
+        ->with('crawledPage.legalSource')
+        ->whereKey($chunk->id)
+        ->get();
+
+    $instructions = $this->chat->instructionsFor(new RetrievalResult($legalChunks, collect()), Lab::Gemini);
+
+    expect($instructions)
+        ->toContain('The Sources section must never list web search results')
+        ->toContain('no [Web N] markers, page titles, site names, or URLs')
+        ->toContain('never mention web sources in your reply text');
+});
+
 it('instructs web search when no context is retrieved on a web-capable provider', function () {
     $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Gemini);
 
     expect($instructions)
         ->toContain('WEB SEARCH FALLBACK')
-        ->toContain('[Web N]')
+        ->toContain('Never cite or list web sources in your reply')
         ->toContain('lawphil.net');
 });
 

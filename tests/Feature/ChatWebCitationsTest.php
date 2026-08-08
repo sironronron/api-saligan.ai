@@ -78,7 +78,7 @@ it('captures web citations from Anthropic web search tool results', function () 
     ]);
 });
 
-it('deduplicates web citations by url', function () {
+it('deduplicates web citations by url and merges the cited excerpt', function () {
     $response = new StreamedAgentResponse('invocation', new Collection([
         new Citation(
             'event-id',
@@ -105,7 +105,8 @@ it('deduplicates web citations by url', function () {
 
     expect($citations)->toHaveCount(2)
         ->and($citations[0]['url'])->toBe('https://lawphil.net/ra-6657')
-        ->and($citations[0])->not->toHaveKey('snippet')
+        ->and($citations[0]['title'])->toBe('LawPhil')
+        ->and($citations[0]['snippet'])->toBe('First result.')
         ->and($citations[1]['url'])->toBe('https://sc.judiciary.gov.ph/rule-43')
         ->and($citations[1]['snippet'])->toBe('Second result.');
 });

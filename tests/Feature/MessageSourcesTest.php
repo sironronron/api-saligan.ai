@@ -170,9 +170,9 @@ it('exposes citation indices, chunk ids, and full document content', function ()
         ->and($sources[1]['content'])->toBe('My full notes on the case go here.');
 });
 
-it('resolves web citations stored in metadata and cited inline', function () {
+it('surfaces all stored web citations without requiring inline markers', function () {
     $message = Message::factory()->create([
-        'content' => 'According to [Web 1] and [Web 3], the period is 15 days.',
+        'content' => 'According to the authorities, the period is 15 days.',
         'metadata' => [
             'web_citations' => [
                 ['url' => 'https://sc.judiciary.gov.ph/rule-43', 'title' => 'SC E-Library — Rule 43'],
@@ -184,7 +184,7 @@ it('resolves web citations stored in metadata and cited inline', function () {
 
     $sources = MessageSources::for($message);
 
-    expect($sources)->toHaveCount(2)
+    expect($sources)->toHaveCount(3)
         ->and($sources[0])->toMatchArray([
             'type' => 'web',
             'index' => 1,
@@ -194,13 +194,19 @@ it('resolves web citations stored in metadata and cited inline', function () {
         ])
         ->and($sources[1])->toMatchArray([
             'type' => 'web',
+            'index' => 2,
+            'url' => 'https://lawphil.net/reglementary',
+            'title' => 'LawPhil — Reglementary Period',
+        ])
+        ->and($sources[2])->toMatchArray([
+            'type' => 'web',
             'index' => 3,
             'url' => 'https://officialgazette.gov.ph/ra-6657',
             'title' => 'Official Gazette — RA 6657',
         ]);
 });
 
-it('does not surface stored web citations that are not cited inline', function () {
+it('surfaces web citations even when none are referenced inline', function () {
     $message = Message::factory()->create([
         'content' => 'No web citations referenced.',
         'metadata' => [
@@ -210,7 +216,11 @@ it('does not surface stored web citations that are not cited inline', function (
         ],
     ]);
 
-    expect(MessageSources::for($message))->toBe([]);
+    $sources = MessageSources::for($message);
+
+    expect($sources)->toHaveCount(1)
+        ->and($sources[0]['type'])->toBe('web')
+        ->and($sources[0]['url'])->toBe('https://example.gov.ph/statute');
 });
 
 it('surfaces all retrieved sources when nothing is cited inline', function () {

@@ -427,6 +427,7 @@ CITATION INSTRUCTIONS
 - When jurisprudence (G.R. number, case name) is retrieved, state the specific doctrine or ruling being applied, not just the citation. Do not treat a case as controlling authority if the retrieved excerpt does not actually support the point being made.
 - Whenever a transaction, claim, or remedy involves a prescriptive or reglementary period (e.g. periods to file a claim, redeem property, appeal an agency decision, register a document, contest an assessment), flag the applicable period explicitly if it is present in the RETRIEVED CONTEXT, and state what date it runs from based on the facts given. If the period is not in the retrieved context, say so — do not estimate or assume a period from memory.
 - Always finish with a "Sources" section listing every source you actually relied on (statute/section/provision, administrative issuance number, G.R. number, or filename for user documents).
+- The Sources section must never list web search results — no [Web N] markers, page titles, site names, or URLs. Web sources are rendered automatically as clickable cards in the app, so never mention web sources in your reply text.
 - Cite each distinct source exactly once. Never repeat the same statute, case, issuance, or document in the Sources section.
 - Never cite a source that was not retrieved. Never invent G.R. numbers, section numbers, administrative order numbers, or URLs.
 PROMPT;
@@ -752,7 +753,7 @@ PROMPT
 - Prefer official domains: Supreme Court E-Library (sc.judiciary.gov.ph), lawphil.net, officialgazette.gov.ph, dar.gov.ph (agrarian reform), denr.gov.ph, lra.gov.ph (land registration), bir.gov.ph (tax matters affecting real property), and the relevant LGU site where applicable.
 - When researching a statute or administrative issuance, check whether it has been amended and cite the amending law/issuance alongside the original provision.
 - When researching prescriptive or reglementary periods, cite the specific provision or rule stating the period and, where possible, the date it runs from based on the facts given.
-- Cite web results inline as [Web N] and finish with a "Sources" section listing the title, full URL, and the specific statute/section, administrative issuance number, or G.R. number.
+- Never cite or list web sources in your reply: no [Web N] markers, page titles, site names, or URLs, and no "Sources" section for them. The app renders web citations as clickable source cards automatically. Cite the specific statute/section, administrative issuance number, or G.R. number inline where it supports the answer.
 - If the web search returns nothing usable, say so plainly, do not fabricate citations, and state what would be needed to answer the question.
 PROMPT;
     }
@@ -1127,14 +1128,13 @@ PROMPT;
 
     /**
      * Extract the web-search citations the provider grounded the answer in,
-     * stored on the message so the UI can render them alongside the inline
-     * [Web N] markers.
+     * stored on the message so the UI can render them automatically as
+     * clickable cards (the model no longer emits inline [Web N] markers).
      *
      * Gemini exposes these as grounding metadata on the streamed response.
-     * Anthropic surfaces them as citation events (the [Web N] locations the
-     * model actually attached inline) and, for URLs cited without an attached
-     * location, as the raw results of the web_search_tool_result blocks. All
-     * are deduplicated by URL in first-seen order.
+     * Anthropic surfaces them as Citation events and, for URLs cited without
+     * an attached location, as the raw results of the web_search_tool_result
+     * blocks. All are deduplicated by URL in first-seen order.
      *
      * @return array<int, array{url: string, title: string|null, snippet?: string|null}>
      */
@@ -1179,10 +1179,18 @@ PROMPT;
                         continue;
                     }
 
-                    $citations[$url] ??= [
+                    $snippet = is_string($result['snippet'] ?? null) ? $result['snippet'] : null;
+
+                    if (isset($citations[$url])) {
+                        $citations[$url]['snippet'] ??= $snippet;
+
+                        continue;
+                    }
+
+                    $citations[$url] = [
                         'url' => $url,
                         'title' => is_string($result['title'] ?? null) ? $result['title'] : null,
-                        'snippet' => is_string($result['snippet'] ?? null) ? $result['snippet'] : null,
+                        'snippet' => $snippet,
                     ];
                 }
             }
