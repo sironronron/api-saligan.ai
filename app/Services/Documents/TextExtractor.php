@@ -2,7 +2,6 @@
 
 namespace App\Services\Documents;
 
-use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpWord\Element\AbstractContainer;
 use PhpOffice\PhpWord\Element\TextRun;
 use PhpOffice\PhpWord\IOFactory;
@@ -11,12 +10,10 @@ use Smalot\PdfParser\Parser as PdfParser;
 class TextExtractor
 {
     /**
-     * Extract plain text from a stored file based on its MIME type.
+     * Extract plain text from a local file based on its MIME type.
      */
-    public function extract(string $storagePath, string $mimeType): string
+    public function extract(string $fullPath, string $mimeType): string
     {
-        $fullPath = Storage::path($storagePath);
-
         return match (true) {
             $mimeType === 'application/pdf' => $this->extractPdf($fullPath),
             $mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => $this->extractDocx($fullPath),

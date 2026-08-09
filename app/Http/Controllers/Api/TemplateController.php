@@ -90,7 +90,7 @@ class TemplateController extends Controller
             $storagePath = $file->store('template-files');
 
             try {
-                $extracted = trim($this->textExtractor->extract($storagePath, $mimeType));
+                $extracted = trim($this->textExtractor->extract(Storage::path($storagePath), $mimeType));
             } catch (\Throwable $e) {
                 Storage::delete($storagePath);
 

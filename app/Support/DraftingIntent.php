@@ -140,6 +140,12 @@ final class DraftingIntent
 
     /**
      * Determine whether a user message clearly asks to draft a legal document.
+     *
+     * An explicit drafting directive (draft, prepare, write, gumawa, ...)
+     * always counts, even when the request is phrased as a question ("Can you
+     * draft a demand letter?"). Informational questions about legal options
+     * ("Is there any way I can request compensation...?") are advice, not
+     * drafting instructions, so they never trigger the intake gate.
      */
     public static function matches(string $message): bool
     {
@@ -147,18 +153,83 @@ final class DraftingIntent
             return true;
         }
 
+        $needle = mb_strtolower($message);
+
+        // Directives strong enough to count as a drafting request even inside
+        // an informational question ("Can you draft a demand letter?"). Bare
+        // "write" / "make" are deliberately excluded here so phrasings like
+        // "How can I make them pay?" stay advice, not drafting.
+        $imperativeVerbs = [
+            'draft', 'prepare', 'compose', 'create',
+            'write a', 'write the', 'make a', 'make the',
+            'gumawa', 'isulat',
+        ];
+
+        if (self::isInformationalQuestion($needle)) {
+            foreach ($imperativeVerbs as $verb) {
+                if (mb_strpos($needle, $verb) !== false) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        $draftingVerbs = [
+            'draft', 'prepare', 'compose', 'write', 'create', 'make',
+            'gumawa', 'isulat',
+        ];
+
+        foreach ($draftingVerbs as $verb) {
+            if (mb_strpos($needle, $verb) !== false) {
+                return true;
+            }
+        }
+
         $keywords = [
-            'draft', 'prepare', 'compose', 'write', 'letter',
-            'reklamo', 'reklamasyon', 'complaint', 'demand letter',
+            'letter', 'reklamo', 'reklamasyon', 'complaint', 'demand letter',
             'contract', 'agreement', 'affidavit', 'power of attorney',
             'deed of sale', 'kasulatan', 'legal document', 'position paper',
             'pleading', 'petition', 'request', 'requesting', 'certified copy',
         ];
 
-        $needle = mb_strtolower($message);
-
         foreach ($keywords as $keyword) {
             if (mb_strpos($needle, $keyword) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether the message reads as an informational question rather than an
+     * instruction to draft a document. A trailing question mark or any
+     * interrogative phrasing (English or Tagalog/Filipino) marks it as advice
+     * seeking, so bare document keywords no longer classify it as drafting.
+     */
+    private static function isInformationalQuestion(string $needle): bool
+    {
+        if (str_contains($needle, '?')) {
+            return true;
+        }
+
+        $interrogatives = [
+            'can i', 'can we', 'can you', 'could i', 'could we', 'could you',
+            'would i', 'would we', 'would you', 'do i', 'do we', 'does the',
+            'should i', 'should we', 'may i', 'may we', 'is there', 'are there',
+            'is it', 'is this', 'is that', 'was there', 'were there', 'what if',
+            'any way', 'any other way', 'is it possible', 'is that possible',
+            'how do', 'how can', 'how to', 'how would', 'when can', 'where can',
+            'what are', 'what are the', 'what is', 'am i', 'am i entitled',
+            'entitled to', 'allowed to',
+            'pwede', 'pwede ba', 'pwede bang', 'paano', 'ano ba', 'ano ang',
+            'ano po', 'bakit', 'kung', 'kailan', 'saan', 'magkano', 'gaano',
+            'meron bang', 'mayroon bang', 'meron ba', 'mayroon ba',
+        ];
+
+        foreach ($interrogatives as $phrase) {
+            if (str_contains($needle, $phrase)) {
                 return true;
             }
         }
@@ -477,8 +548,8 @@ final class DraftingIntent
     }
 
     /**
-     * Default intake fields used when the model skips the mandatory intake
-     * tool call for a drafting request.
+     * Default intake fields used when the model produced a premature draft
+     * instead of collecting missing facts through the intake tool.
      *
      * @return array<int, array{key: string, label: string, type: string, options?: array<int, string>, required: bool}>
      */
@@ -570,7 +641,8 @@ final class DraftingIntent
 
     /**
      * Guess the document category from a drafting request so the synthetic
-     * intake form can show the right fields when the model skipped the tool.
+     * intake form can show the right fields when the model drafts with
+     * missing facts.
      *
      * @return string|null One of the categories understood by fieldsForDocumentType()
      */
@@ -865,13 +937,18 @@ final class DraftingIntent
 
     /**
      * Whether a bracketed token is a protocol/metadata marker rather than a
-     * fact placeholder (document/todo markers, the intake wrapper, etc.).
+     * fact placeholder (document/todo markers, the intake wrapper, inline
+     * citation tags such as [Source 1], etc.).
      */
     private static function isMetaToken(string $token): bool
     {
         $needle = mb_strtoupper($token);
 
         if (str_starts_with($needle, 'TEMPLATE:')) {
+            return true;
+        }
+
+        if (preg_match('/^(SOURCE|USER DOC|WEB)\s+\d+$/', $needle) === 1) {
             return true;
         }
 

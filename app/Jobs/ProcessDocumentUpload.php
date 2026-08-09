@@ -8,6 +8,7 @@ use App\Models\Document;
 use App\Models\DocumentChunk;
 use App\Services\Ai\EmbeddingService;
 use App\Services\Documents\DocumentChunker;
+use App\Services\Documents\DocumentEncryptor;
 use App\Services\Documents\ImageOcrExtractor;
 use App\Services\Documents\TextExtractor;
 use Illuminate\Bus\Queueable;
@@ -16,6 +17,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Storage;
 use Throwable;
 
 class ProcessDocumentUpload implements ShouldQueue
@@ -58,6 +60,7 @@ class ProcessDocumentUpload implements ShouldQueue
         ImageOcrExtractor $ocr,
         DocumentChunker $chunker,
         EmbeddingService $embeddings,
+        DocumentEncryptor $encryptor,
     ): void {
         $document = $this->document;
 
@@ -75,9 +78,21 @@ class ProcessDocumentUpload implements ShouldQueue
 
         $mimeType = $document->mime_type ?? '';
 
-        $text = $this->isImage($mimeType)
-            ? $ocr->extract($document->storage_path, $mimeType)
-            : $extractor->extract($document->storage_path, $mimeType);
+        // Encrypted documents are decrypted to a temporary local file for
+        // extraction and removed again as soon as extraction completes, so
+        // plaintext never persists on disk.
+        $decryptedPath = $encryptor->decryptToTemp($document->storage_path);
+        $path = $decryptedPath ?? Storage::path($document->storage_path);
+
+        try {
+            $text = $this->isImage($mimeType)
+                ? $ocr->extract($path, $mimeType)
+                : $extractor->extract($path, $mimeType);
+        } finally {
+            if ($decryptedPath !== null) {
+                @unlink($decryptedPath);
+            }
+        }
 
         // Extracted text (especially OCR output from photos) can carry invalid
         // UTF-8 byte sequences. Sanitize it so the subsequent embedding and

@@ -50,6 +50,29 @@ it('request intake form handle tolerates a missing document type', function () {
         ->toHaveKey('fields');
 });
 
+it('fires the gathering_facts status when the intake form tool runs', function () {
+    $statuses = [];
+
+    $tool = new RequestIntakeFormTool(function (string $status, ?string $label = null) use (&$statuses): void {
+        $statuses[] = [$status, $label];
+    });
+
+    $tool->handle(new Request([
+        'document_type' => 'complaint',
+        'fields' => [['key' => 'complainant_name', 'label' => 'Complainant', 'type' => 'text', 'required' => true]],
+    ]));
+
+    expect($statuses)->toBe([['gathering_facts', null]]);
+});
+
+it('does not fire a status when the intake form tool has no callback', function () {
+    $result = (new RequestIntakeFormTool)->handle(new Request([
+        'document_type' => 'complaint',
+    ]));
+
+    expect(json_decode($result, true))->toHaveKey('document_type', 'complaint');
+});
+
 it('create todo schema serializes to a valid tool definition', function () {
     $schema = (new CreateTodoTool('019fcbbb-5c51-7168-bad0-128742198ebd'))->schema(new JsonSchemaTypeFactory);
 

@@ -45,7 +45,7 @@ class GeminiContextCache
                 ->withHeaders(['x-goog-api-key' => $this->apiKey()])
                 ->acceptJson()
                 ->asJson()
-                ->timeout(30)
+                ->timeout((int) config('saligan.context_caching.create_timeout', 10))
                 ->post('/cachedContents', [
                     'model' => 'models/'.$model,
                     'displayName' => 'saligan-system-prompt',

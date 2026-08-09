@@ -66,6 +66,11 @@ return [
         'enabled' => (bool) env('GEMINI_CONTEXT_CACHING', true),
         'ttl_seconds' => (int) env('GEMINI_CONTEXT_CACHE_TTL', 3600),
         'refresh_seconds' => (int) env('GEMINI_CONTEXT_CACHE_REFRESH', 3000),
+        // How long to wait when (re)creating the CachedContent on the request
+        // path before giving up. Creation happens synchronously on a cache
+        // miss, so a hung call must fail fast — the caller then proceeds
+        // without cached-input pricing instead of blocking the stream start.
+        'create_timeout' => (int) env('GEMINI_CONTEXT_CACHE_CREATE_TIMEOUT', 10),
     ],
 
     /*
@@ -80,6 +85,20 @@ return [
         'chunk_overlap' => (int) env('DOCUMENT_CHUNK_OVERLAP', 50),
         'queue' => env('DOCUMENT_PROCESSING_QUEUE', 'document-processing'),
         'image_extensions' => ['jpg', 'jpeg', 'png', 'webp', 'gif', 'tiff', 'heic'],
+
+        /*
+        |--------------------------------------------------------------------------
+        | At-rest encryption
+        |--------------------------------------------------------------------------
+        |
+        | When enabled, uploaded documents are encrypted with a per-file key
+        | before they are written to disk and decrypted on the fly when served
+        | or processed. Existing plaintext files remain readable until deleted;
+        | they are detected by the absence of the encryption header.
+        |
+        */
+
+        'encrypt_at_rest' => (bool) env('DOCUMENT_ENCRYPT_AT_REST', true),
 
         /*
         |--------------------------------------------------------------------------

@@ -10,8 +10,18 @@ use Laravel\Ai\Tools\Request;
 
 class CreateTodoTool implements Tool
 {
+    /**
+     * @param  (callable(string, ?string): void)|null  $onStatus  Fired the
+     *                                                            moment the
+     *                                                            model calls
+     *                                                            this tool, so
+     *                                                            status reflects
+     *                                                            actual tool
+     *                                                            execution.
+     */
     public function __construct(
         public readonly string $conversationId,
+        private readonly mixed $onStatus = null,
     ) {}
 
     /**
@@ -45,6 +55,8 @@ class CreateTodoTool implements Tool
      */
     public function handle(Request $request): string
     {
+        $this->onStatus?->__invoke('preparing_next_steps');
+
         $items = $request->array('items') ?? [];
         $created = [];
 

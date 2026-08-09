@@ -2,7 +2,6 @@
 
 namespace App\Services\Documents;
 
-use Illuminate\Support\Facades\Storage;
 use Laravel\Ai\Contracts\Agent;
 use Laravel\Ai\Enums\Lab;
 use Laravel\Ai\Files\LocalImage;
@@ -11,13 +10,11 @@ use Laravel\Ai\Promptable;
 class ImageOcrExtractor
 {
     /**
-     * Transcribe the text contained in a stored image using a vision-capable
+     * Transcribe the text contained in a local image using a vision-capable
      * model.
      */
-    public function extract(string $storagePath, string $mimeType): string
+    public function extract(string $fullPath, string $mimeType): string
     {
-        $fullPath = Storage::path($storagePath);
-
         [$provider, $model] = $this->resolveProvider();
 
         $agent = new class implements Agent

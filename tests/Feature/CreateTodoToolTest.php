@@ -48,3 +48,20 @@ it('defaults missing status fields', function () {
     expect($result['items'][0]['status'])->toBe('pending')
         ->and($result['items'][0]['priority'])->toBeNull();
 });
+
+it('fires the preparing_next_steps status when the todo tool runs', function () {
+    $user = User::factory()->create();
+    $conversation = Conversation::factory()->for($user)->create();
+
+    $statuses = [];
+
+    $tool = new CreateTodoTool($conversation->id, function (string $status, ?string $label = null) use (&$statuses): void {
+        $statuses[] = [$status, $label];
+    });
+
+    $tool->handle(new Request([
+        'items' => [['title' => 'File the complaint at the RTC', 'status' => 'pending']],
+    ]));
+
+    expect($statuses)->toBe([['preparing_next_steps', null]]);
+});

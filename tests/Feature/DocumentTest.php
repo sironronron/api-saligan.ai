@@ -7,6 +7,7 @@ use App\Models\LegalCase;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\User;
+use App\Services\Documents\DocumentEncryptor;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
@@ -54,6 +55,33 @@ it('stores an uploaded document and queues ingestion', function () {
     ]);
 
     Queue::assertPushed(ProcessDocumentUpload::class);
+});
+
+it('stores an uploaded document encrypted at rest', function () {
+    Queue::fake();
+    Storage::fake('local');
+
+    $this->actingAs($this->user)
+        ->postJson('/api/documents', [
+            'file' => UploadedFile::fake()->createWithContent('memo.txt', 'Plain legal notes.'),
+            'title' => 'My memo',
+        ])
+        ->assertCreated();
+
+    $path = Document::where('user_id', $this->user->id)->firstOrFail()->storage_path;
+
+    expect(Storage::get($path))
+        ->toStartWith(DocumentEncryptor::MAGIC)
+        ->not->toContain('Plain legal notes.');
+
+    $decrypted = app(DocumentEncryptor::class)->decryptToTemp($path);
+
+    expect($decrypted)->not->toBeNull();
+
+    $content = file_get_contents($decrypted);
+    @unlink($decrypted);
+
+    expect($content)->toBe('Plain legal notes.');
 });
 
 it('accepts image uploads for OCR processing', function () {
@@ -257,6 +285,34 @@ it('serves a viewable document inline with its content', function () {
         ->assertHeader('X-Content-Type-Options', 'nosniff');
 
     expect($response->streamedContent())->toBe('%PDF-1.4 fake content');
+});
+
+it('serves an encrypted document after decrypting it on the fly', function () {
+    Storage::fake('local');
+
+    $original = '%PDF-1.4 encrypted-at-rest content';
+
+    Storage::put('documents/source.pdf', $original);
+
+    $encryptor = app(DocumentEncryptor::class);
+    $encryptor->encrypt(Storage::path('documents/source.pdf'), 'documents/memo.pdf');
+
+    Storage::delete('documents/source.pdf');
+
+    $document = Document::factory()->for($this->user)->create([
+        'storage_path' => 'documents/memo.pdf',
+        'original_filename' => 'memo.pdf',
+        'mime_type' => 'application/pdf',
+    ]);
+
+    $response = $this->actingAs($this->user)
+        ->getJson("/api/documents/{$document->id}/file")
+        ->assertOk()
+        ->assertHeader('Content-Type', 'application/pdf')
+        ->assertHeaderContains('Content-Disposition', 'inline')
+        ->assertHeader('X-Content-Type-Options', 'nosniff');
+
+    expect($response->streamedContent())->toBe($original);
 });
 
 it('serves non-viewable documents as an attachment', function () {

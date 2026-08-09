@@ -10,6 +10,19 @@ use Laravel\Ai\Tools\Request;
 class RequestIntakeFormTool implements Tool
 {
     /**
+     * @param  (callable(string, ?string): void)|null  $onStatus  Fired the
+     *                                                            moment the
+     *                                                            model calls
+     *                                                            this tool, so
+     *                                                            status reflects
+     *                                                            actual tool
+     *                                                            execution.
+     */
+    public function __construct(
+        private readonly mixed $onStatus = null,
+    ) {}
+
+    /**
      * Get the tool name used in the schema and model conversations.
      */
     public function name(): string
@@ -42,6 +55,8 @@ class RequestIntakeFormTool implements Tool
      */
     public function handle(Request $request): string
     {
+        $this->onStatus?->__invoke('gathering_facts');
+
         $documentType = $request->string('document_type') ?? null;
         $fields = $request->array('fields') ?? [];
 

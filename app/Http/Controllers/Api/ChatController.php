@@ -121,15 +121,19 @@ class ChatController extends Controller
         $lastText = '';
         $buffering = $isDraftingRequest && ! $isIntakeSubmission;
         $bufferedText = '';
+        $draftStarted = false;
 
         try {
             $stream = $this->chatService->stream(
                 $conversation,
                 $message,
-                function (string $status, ?string $label = null) use (&$pending): void {
+                function (string $status, ?string $label = null) use (&$pending, $message): void {
                     $pending[] = $this->sseFrame('status', [
                         'status' => $status,
-                        'label' => $label,
+                        // Statuses fired by the tools carry only the status
+                        // key, so the label is derived from the user's message
+                        // here — that keeps every status personalized.
+                        'label' => $label ?? ChatStatus::label($status, $message),
                     ]);
                 },
             );
@@ -166,6 +170,19 @@ class ChatController extends Controller
                     $textLength += strlen($event->delta);
                     $lastText .= $event->delta;
 
+                    // The instant the model begins the actual document — the
+                    // opening marker appears — report drafting as the current
+                    // step. This is code-driven (the marker is real output),
+                    // not the model narrating what it is about to do.
+                    if (! $draftStarted && str_contains($lastText, '[[DOCUMENT_START]]')) {
+                        $draftStarted = true;
+
+                        yield $emit('status', [
+                            'status' => 'drafting_document',
+                            'label' => ChatStatus::label('drafting_document', $message),
+                        ]);
+                    }
+
                     if ($buffering) {
                         $bufferedText .= $event->delta;
                     } else {
@@ -183,6 +200,17 @@ class ChatController extends Controller
                         // happened to invent. Previously submitted intake
                         // values are carried over so a repeated drafting
                         // request reuses the user's original answers.
+                        if (! $isIntakeSubmission) {
+                            // The stream is cut off right after the tool
+                            // call, before the tool's handle() ever runs, so
+                            // the status is reported here — the model just
+                            // chose the intake step, which is the real signal.
+                            yield $emit('status', [
+                                'status' => 'gathering_facts',
+                                'label' => ChatStatus::label('gathering_facts', $message),
+                            ]);
+                        }
+
                         yield $emit('tool_call', [
                             'name' => 'request_intake_form',
                             'arguments' => [
@@ -248,11 +276,12 @@ class ChatController extends Controller
                 yield $emit('error', ['message' => $error]);
             } else {
                 if ($buffering && ! $intakeRequested) {
-                    // The model skipped the mandatory intake step. Only a
-                    // complete, fact-complete draft is a real document; a
-                    // premature draft with bracketed placeholders (or no
-                    // document at all) is discarded and re-collected through
-                    // the intake form instead.
+                    // The model drafts directly with the facts it already
+                    // has. The intake form is only triggered when the draft
+                    // shows the model still needs facts (bracketed
+                    // placeholders, an empty reply, or no document markers);
+                    // such a premature draft is discarded and re-collected
+                    // through the intake form instead.
                     $premature = $bufferedText === ''
                         || DraftingIntent::containsBrackets($bufferedText)
                         || ! DraftingIntent::isCompleteDocument($bufferedText);

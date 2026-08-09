@@ -8,6 +8,7 @@ use App\Models\DocumentChunk;
 use App\Models\User;
 use App\Services\Ai\EmbeddingService;
 use App\Services\Documents\DocumentChunker;
+use App\Services\Documents\DocumentEncryptor;
 use App\Services\Documents\ImageOcrExtractor;
 use App\Services\Documents\TextExtractor;
 use Illuminate\Http\Client\Request;
@@ -52,6 +53,7 @@ it('extracts, chunks, embeds, and stores chunks for a text document', function (
         app(ImageOcrExtractor::class),
         app(DocumentChunker::class),
         app(EmbeddingService::class),
+        app(DocumentEncryptor::class),
     );
 
     expect($document->fresh()->status)->toBe(DocumentStatus::Ready)
@@ -76,10 +78,44 @@ it('stores a single chunk for a short text document', function () {
         app(ImageOcrExtractor::class),
         app(DocumentChunker::class),
         app(EmbeddingService::class),
+        app(DocumentEncryptor::class),
     );
 
     expect($document->fresh()->status)->toBe(DocumentStatus::Ready)
         ->and(DocumentChunk::where('document_id', $document->id)->count())->toBe(1);
+});
+
+it('extracts text from an encrypted stored document', function () {
+    $user = User::factory()->create();
+
+    $text = implode("\n\n", array_fill(0, 30, str_repeat('agricultural lease and tenancy. ', 20)));
+
+    Storage::put('documents/plain.txt', $text);
+
+    app(DocumentEncryptor::class)->encrypt(Storage::path('documents/plain.txt'), 'documents/encrypted.txt');
+
+    Storage::delete('documents/plain.txt');
+
+    $document = Document::factory()->for($user)->create([
+        'storage_path' => 'documents/encrypted.txt',
+        'mime_type' => 'text/plain',
+        'status' => DocumentStatus::Queued,
+    ]);
+
+    (new ProcessDocumentUpload($document))->handle(
+        app(TextExtractor::class),
+        app(ImageOcrExtractor::class),
+        app(DocumentChunker::class),
+        app(EmbeddingService::class),
+        app(DocumentEncryptor::class),
+    );
+
+    expect($document->fresh()->status)->toBe(DocumentStatus::Ready)
+        ->and($document->chunks()->count())->toBeGreaterThan(1)
+        ->and($document->chunks()->first()->content)->toContain('agricultural lease');
+
+    // The plaintext must never have been written to the storage disk.
+    expect(Storage::get('documents/encrypted.txt'))->toStartWith(DocumentEncryptor::MAGIC);
 });
 
 it('marks a document as failed when no text can be extracted', function () {
@@ -101,6 +137,7 @@ it('marks a document as failed when no text can be extracted', function () {
             app(ImageOcrExtractor::class),
             app(DocumentChunker::class),
             app(EmbeddingService::class),
+            app(DocumentEncryptor::class),
         );
         $this->fail('Expected an exception for empty text.');
     } catch (DocumentProcessingException) {
@@ -124,8 +161,8 @@ it('uses OCR to extract text from an uploaded image', function () {
 
     $ocr = Mockery::mock(ImageOcrExtractor::class);
     $ocr->shouldReceive('extract')
-        ->with('documents/scan.png', 'image/png')
         ->once()
+        ->withArgs(fn (string $path, string $mime) => $mime === 'image/png' && str_ends_with($path, 'documents/scan.png'))
         ->andReturn('REPUBLIC OF THE PHILIPPINES
 Deed of Absolute Sale');
 
@@ -134,6 +171,7 @@ Deed of Absolute Sale');
         $ocr,
         app(DocumentChunker::class),
         app(EmbeddingService::class),
+        app(DocumentEncryptor::class),
     );
 
     expect($document->fresh()->status)->toBe(DocumentStatus::Ready)
@@ -164,6 +202,7 @@ it('marks an image as failed when OCR returns no text', function () {
             $ocr,
             app(DocumentChunker::class),
             app(EmbeddingService::class),
+            app(DocumentEncryptor::class),
         );
         $this->fail('Expected an exception for empty OCR output.');
     } catch (DocumentProcessingException) {
@@ -192,6 +231,7 @@ it('sanitizes invalid UTF-8 so extracted text never breaks downstream requests',
         app(ImageOcrExtractor::class),
         app(DocumentChunker::class),
         app(EmbeddingService::class),
+        app(DocumentEncryptor::class),
     );
 
     $content = $document->chunks()->first()->content;
@@ -220,6 +260,7 @@ it('strips null bytes that Postgres would otherwise reject', function () {
         app(ImageOcrExtractor::class),
         app(DocumentChunker::class),
         app(EmbeddingService::class),
+        app(DocumentEncryptor::class),
     );
 
     expect($document->fresh()->status)->toBe(DocumentStatus::Ready)
@@ -248,6 +289,7 @@ it('fails loudly when the embedding count does not match the chunk count', funct
             app(ImageOcrExtractor::class),
             app(DocumentChunker::class),
             $embeddings,
+            app(DocumentEncryptor::class),
         );
         $this->fail('Expected a RuntimeException for the vector/chunk mismatch.');
     } catch (RuntimeException) {

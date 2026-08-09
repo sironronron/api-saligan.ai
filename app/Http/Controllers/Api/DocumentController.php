@@ -8,16 +8,24 @@ use App\Http\Resources\DocumentResource;
 use App\Jobs\ProcessDocumentUpload;
 use App\Models\Document;
 use App\Models\LegalCase;
+use App\Services\Documents\DocumentEncryptor;
 use App\Support\PlanLimits;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class DocumentController extends Controller
 {
+    public function __construct(
+        private readonly DocumentEncryptor $encryptor,
+    ) {
+        //
+    }
+
     /**
      * List the authenticated user's uploaded documents, optionally scoped to a case.
      */
@@ -70,12 +78,20 @@ class DocumentController extends Controller
 
         $originalFilename = $file->getClientOriginalName();
 
+        $storagePath = 'documents/'.Str::uuid().'.'.($file->getClientOriginalExtension() ?: 'bin');
+
+        if (config('saligan.documents.encrypt_at_rest', true)) {
+            $this->encryptor->encrypt((string) ($file->getRealPath() ?: $file->getPathname()), $storagePath);
+        } else {
+            $file->storeAs('documents', basename($storagePath), 'local');
+        }
+
         $document = Document::create([
             'user_id' => $request->user()->id,
             'case_id' => $validated['case_id'] ?? null,
             'title' => $validated['title'] ?? pathinfo($originalFilename, PATHINFO_FILENAME),
             'original_filename' => $originalFilename,
-            'storage_path' => $file->store('documents', 'local'),
+            'storage_path' => $storagePath,
             'mime_type' => $file->getClientMimeType(),
             'status' => DocumentStatus::Queued,
         ]);
@@ -138,6 +154,17 @@ class DocumentController extends Controller
 
         $mimeType = $document->mime_type ?: 'application/octet-stream';
 
+        $disposition = $validated['disposition'] ?? $this->defaultDisposition($mimeType);
+
+        if ($this->encryptor->isEncrypted($document->storage_path)) {
+            return $this->streamDecryptedFile(
+                $document->storage_path,
+                $document->original_filename,
+                $mimeType,
+                $disposition,
+            );
+        }
+
         return Storage::response(
             $document->storage_path,
             $document->original_filename,
@@ -146,7 +173,29 @@ class DocumentController extends Controller
                 'Cache-Control' => 'private, no-store',
                 'X-Content-Type-Options' => 'nosniff',
             ],
-            $validated['disposition'] ?? $this->defaultDisposition($mimeType),
+            $disposition,
+        );
+    }
+
+    /**
+     * Stream an encrypted stored document after decrypting it on the fly, so
+     * the plaintext never touches the disk during a download.
+     */
+    protected function streamDecryptedFile(string $storagePath, string $filename, string $mimeType, string $disposition): StreamedResponse
+    {
+        return response()->streamDownload(
+            function () use ($storagePath): void {
+                foreach ($this->encryptor->decryptStream($storagePath) as $chunk) {
+                    echo $chunk;
+                }
+            },
+            $filename,
+            [
+                'Content-Type' => $mimeType,
+                'Cache-Control' => 'private, no-store',
+                'X-Content-Type-Options' => 'nosniff',
+            ],
+            $disposition,
         );
     }
 

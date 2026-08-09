@@ -131,7 +131,57 @@ it('stops the stream when the model calls the intake form tool', function () {
     $this->assertDatabaseHas('messages', ['role' => MessageRole::User]);
 });
 
-it('emits a synthetic intake form when the model skips the mandatory tool', function () {
+it('reports gathering_facts when the model chooses the intake form', function () {
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        makeToolCallEvent('request_intake_form', ['fields' => []]),
+        new TextDelta(id: 'a', messageId: 'm1', delta: 'Here is your draft before we collect the facts…', timestamp: 2),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 3),
+    ]));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'Draft me a reklamo for illegal occupation.',
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->toContain('"status":"gathering_facts"')
+        ->toContain('"label":"Gathering the facts needed for your complaint"')
+        ->toContain('"name":"request_intake_form"')
+        ->not->toContain('Here is your draft before we collect the facts');
+});
+
+it('reports drafting_document the instant the opening marker streams', function () {
+    $draft = "[[DOCUMENT_START]]\nRe: Request for Certified Copy of CLOA\n\nPlease release the certified copy of CLOA No. 01-123-456.\n[[DOCUMENT_END]]";
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        new TextDelta(id: 'a', messageId: 'm1', delta: $draft, timestamp: 1),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
+    ]));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => "I need to write DAR requesting a certified copy of my late father's CLOA.",
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->toContain('"status":"drafting_document"')
+        ->toContain('"label":"Drafting your government transaction letter"')
+        ->toContain('Please release the certified copy of CLOA No. 01-123-456');
+});
+
+it('emits a synthetic intake form when the model leaves a premature draft', function () {
     $this->app->instance(ChatService::class, makeFakeChatService([
         new TextDelta(id: 'a', messageId: 'm1', delta: 'I need your details first.', timestamp: 1),
         new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
@@ -253,6 +303,16 @@ it('ignores protocol markers when detecting or extracting bracketed placeholders
         ->and(DraftingIntent::containsBrackets('No unknown facts here.'))->toBeFalse();
 });
 
+it('ignores citation tags when detecting or extracting bracketed placeholders', function () {
+    $text = "[[DOCUMENT_START]]\nPursuant to [Source 1] and [User Doc 2], the tenant owes [Rent Amount].\n[[DOCUMENT_END]]";
+
+    expect(DraftingIntent::containsBrackets($text))->toBeTrue()
+        ->and(array_column(DraftingIntent::extractBracketFields($text), 'key'))->toBe(['rent_amount'])
+        ->and(DraftingIntent::containsBrackets('See [Source 1] and [User Doc 2] for the legal basis.'))->toBeFalse()
+        ->and(DraftingIntent::containsBrackets('Based on [Web 3].'))->toBeFalse()
+        ->and(DraftingIntent::containsBrackets('Pursuant to [Source of Funds] disclosure rules.'))->toBeTrue();
+});
+
 it('detects a complete marked document by its opening marker alone', function () {
     expect(DraftingIntent::isCompleteDocument("[[DOCUMENT_START]]\nBody.\n[[DOCUMENT_END]]"))->toBeTrue()
         ->and(DraftingIntent::isCompleteDocument("[[DOCUMENT_START]]\nNo closing marker"))->toBeTrue()
@@ -280,6 +340,34 @@ it('streams a complete draft missing the closing marker without the intake form'
 
     expect($body)
         ->toContain('Please release the certified copy of CLOA No. 01-123-456')
+        ->not->toContain('"name":"request_intake_form"')
+        ->toContain('event: done');
+
+    $this->assertDatabaseCount('messages', 2);
+    $this->assertDatabaseHas('messages', ['role' => MessageRole::Assistant]);
+});
+
+it('streams a complete cited draft without the intake form', function () {
+    $draft = "[[DOCUMENT_START]]\nRe: Demand for Payment of Unpaid Rent\n\nPursuant to [Source 1], Civil Code Article 1654, the tenant owes the unpaid rent.\n[[DOCUMENT_END]]";
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        new TextDelta(id: 'a', messageId: 'm1', delta: $draft, timestamp: 1),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
+    ]));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'Draft a demand letter for unpaid rent.',
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->toContain('the tenant owes the unpaid rent')
         ->not->toContain('"name":"request_intake_form"')
         ->toContain('event: done');
 
@@ -657,6 +745,21 @@ it('detects drafting intent from the user message', function () {
         ->and(DraftingIntent::matches('I need to write DAR requesting a certified copy of my late father\'s CLOA.'))->toBeTrue()
         ->and(DraftingIntent::matches('Compose a petition for the barangay captain.'))->toBeTrue()
         ->and(DraftingIntent::matches('Explain RA 6657, please.'))->toBeFalse();
+});
+
+it('does not treat informational questions as drafting requests', function () {
+    expect(DraftingIntent::matches('Papano kung nabagsakan ng RFID barrier yung kotse ko? Are there any way I can request for a just compensation from the damages my car got?'))->toBeFalse()
+        ->and(DraftingIntent::matches('Can I request compensation for the damage to my car?'))->toBeFalse()
+        ->and(DraftingIntent::matches('Is there a way to ask for just compensation?'))->toBeFalse()
+        ->and(DraftingIntent::matches('How can I request a certified copy of my CLOA?'))->toBeFalse()
+        ->and(DraftingIntent::matches('What should a demand letter contain?'))->toBeFalse()
+        ->and(DraftingIntent::matches('Paano kung hindi sila nagbayad ng renta?'))->toBeFalse();
+});
+
+it('still drafts when a drafting directive is phrased as a question', function () {
+    expect(DraftingIntent::matches('Can you draft a demand letter?'))->toBeTrue()
+        ->and(DraftingIntent::matches('Pwede bang gumawa ka ng kasulatan ng bilihan?'))->toBeTrue()
+        ->and(DraftingIntent::matches('Could you prepare a complaint for me?'))->toBeTrue();
 });
 
 it('provides default intake fields for the synthetic fallback', function () {

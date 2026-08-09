@@ -41,11 +41,54 @@ final class ChatStatus
             'searching_web' => $topic !== null
                 ? "Searching the web for more on {$topic}"
                 : 'Searching the web for more information',
+            'gathering_facts' => ($document = self::document($question)) !== null
+                ? "Gathering the facts needed for your {$document}"
+                : 'Gathering the facts needed for your document…',
+            'drafting_document' => ($document = self::document($question)) !== null
+                ? "Drafting your {$document}"
+                : 'Drafting your document…',
+            'preparing_next_steps' => ($document = self::document($question)) !== null
+                ? "Preparing the next steps for your {$document}"
+                : 'Preparing your next-steps checklist…',
             'composing' => $topic !== null
                 ? "Composing your answer about {$topic}"
                 : 'Composing your answer',
             default => Str::headline($status),
         };
+    }
+
+    /**
+     * A short, lowercased phrase naming the document being drafted (e.g.
+     * "demand letter", "deed of absolute sale") when the message names one,
+     * so the drafting statuses read as if written for that document. Falls
+     * back to the generic document category, then to null. Intake form
+     * submissions carry field values rather than a request, so they never
+     * produce a document name.
+     */
+    private static function document(string $question): ?string
+    {
+        if (str_starts_with($question, '[Intake Form Submission]')) {
+            return null;
+        }
+
+        $template = LegalTemplateLibrary::resolveForMessage($question);
+
+        if ($template !== null && filled($template['document_type'] ?? null)) {
+            $name = Str::of($template['document_type'])
+                ->replace('_', ' ')
+                ->remove(' general')
+                ->lower()
+                ->trim()
+                ->toString();
+
+            if ($name !== '' && $name !== 'custom') {
+                return $name;
+            }
+        }
+
+        $category = DraftingIntent::documentTypeFor($question);
+
+        return $category !== null ? mb_strtolower($category) : null;
     }
 
     /**
