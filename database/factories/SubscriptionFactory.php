@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Models\Organization;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\User;
@@ -20,9 +21,12 @@ class SubscriptionFactory extends Factory
     public function definition(): array
     {
         return [
+            'organization_id' => Organization::factory(),
             'user_id' => User::factory(),
             'plan_id' => Plan::factory(),
             'status' => Subscription::STATUS_ACTIVE,
+            'seats_purchased' => 1,
+            'price_per_seat' => 200000,
             'current_period_start' => now()->startOfMonth(),
             'current_period_end' => now()->endOfMonth(),
         ];
@@ -35,17 +39,6 @@ class SubscriptionFactory extends Factory
     {
         return $this->state(fn (array $attributes) => [
             'plan_id' => Plan::factory()->pro(),
-        ]);
-    }
-
-    /**
-     * The subscription is still in its trial period.
-     */
-    public function onTrial(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'status' => Subscription::STATUS_ACTIVE,
-            'trial_ends_at' => now()->addDays(10),
         ]);
     }
 }

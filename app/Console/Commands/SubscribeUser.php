@@ -9,7 +9,7 @@ use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 
-#[Signature('subscribe:user {user : User id or email} {--plan= : Plan slug (starter, pro, firm)} {--interval=monthly : Billing interval (monthly, annual)} {--trial-days= : Grant as an active trial for this many days}')]
+#[Signature('subscribe:user {user : User id or email} {--plan= : Plan slug (starter, pro, firm)} {--interval=monthly : Billing interval (monthly, annual)}')]
 #[Description('Manually grant a user an active subscription on a specific plan')]
 class SubscribeUser extends Command
 {
@@ -35,9 +35,8 @@ class SubscribeUser extends Command
         }
 
         $interval = $this->option('interval') ?? Plan::INTERVAL_MONTHLY;
-        $trialDays = (int) $this->option('trial-days');
 
-        $subscription = $this->grantSubscription($user, $plan, $interval, $trialDays);
+        $subscription = $this->grantSubscription($user, $plan, $interval);
 
         $this->info("Subscribed {$user->email} to {$plan->name} ({$interval}) [{$subscription->status}].");
 
@@ -86,7 +85,7 @@ class SubscribeUser extends Command
      * Create or move the user's current subscription to the given plan,
      * marking it active immediately so they get full access.
      */
-    protected function grantSubscription(User $user, Plan $plan, string $interval, int $trialDays): Subscription
+    protected function grantSubscription(User $user, Plan $plan, string $interval): Subscription
     {
         $periodEnd = $interval === Plan::INTERVAL_ANNUAL
             ? now()->addYear()
@@ -94,11 +93,11 @@ class SubscribeUser extends Command
 
         $attributes = [
             'plan_id' => $plan->id,
+            'organization_id' => $user->organization_id,
             'interval' => $interval,
             'status' => Subscription::STATUS_ACTIVE,
             'current_period_start' => now()->startOfDay(),
             'current_period_end' => $periodEnd,
-            'trial_ends_at' => $trialDays > 0 ? now()->addDays($trialDays) : null,
             'cancelled_at' => null,
             'paymongo_subscription_id' => null,
             'paymongo_customer_id' => null,

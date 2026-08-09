@@ -21,7 +21,7 @@
         "smalot/pdfparser": "^2.12",
         "spiral/roadrunner-cli": "^2.6.0",
         "spiral/roadrunner-http": "^3.3.0",
-        "vladimir-yuldashev/laravel-queue-rabbitmq": "*"
+        "vladimir-yuldashev/laravel-queue-rabbitmq": "^15.0"
     },
     "require-dev": {
         "fakerphp/faker": "^1.23",

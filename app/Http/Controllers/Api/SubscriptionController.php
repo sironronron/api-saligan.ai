@@ -10,9 +10,11 @@ use App\Models\User;
 use App\Services\Billing\BillingGatewayManager;
 use App\Services\Billing\LemonSqueezyClient;
 use App\Services\Billing\PaymongoClient;
+use App\Services\Billing\SeatBillingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 
 class SubscriptionController extends Controller
 {
@@ -20,6 +22,7 @@ class SubscriptionController extends Controller
         private readonly PaymongoClient $paymongo,
         private readonly LemonSqueezyClient $lemonsqueezy,
         private readonly BillingGatewayManager $gateways,
+        private readonly SeatBillingService $seats,
     ) {
         //
     }
@@ -42,28 +45,51 @@ class SubscriptionController extends Controller
 
         $user = $request->user();
 
-        if ($user->subscription?->isActive() === true) {
+        // Serialize checkout creation per user so two concurrent requests
+        // cannot both pass the "no active subscription" check below and each
+        // create a subscription (and a provider charge).
+        $lock = Cache::lock("subscription.checkout.{$user->id}", 30);
+
+        if (! $lock->get()) {
             abort(response()->json([
-                'message' => 'You already have an active subscription. Change your plan instead.',
-            ], 422));
+                'message' => 'A checkout is already being created. Please try again.',
+            ], 409));
         }
 
-        $frontendUrl = rtrim((string) config('app.frontend_url'), '/');
+        try {
+            $current = $user->fresh()->subscription;
 
-        $gateway = $this->gateways->resolve($plan, $billingInterval);
+            if ($current?->isActive() === true) {
+                abort(response()->json([
+                    'message' => 'You already have an active subscription. Change your plan instead.',
+                ], 422));
+            }
 
-        $result = $gateway->initiateCheckout(
-            user: $user,
-            plan: $plan,
-            interval: $billingInterval,
-            successUrl: "{$frontendUrl}/settings/billing?{$gateway->name()->value}=return",
-            cancelUrl: "{$frontendUrl}/pricing",
-        );
+            if ($current !== null && $current->status !== Subscription::STATUS_CANCELLED) {
+                abort(response()->json([
+                    'message' => 'A subscription is already pending. Cancel it before starting a new checkout.',
+                ], 422));
+            }
 
-        return response()->json([
-            'data' => (new SubscriptionResource($result['subscription']))->resolve(),
-            'checkout' => $result['checkout'],
-        ], 201);
+            $frontendUrl = rtrim((string) config('app.frontend_url'), '/');
+
+            $gateway = $this->gateways->resolve($plan, $billingInterval);
+
+            $result = $gateway->initiateCheckout(
+                user: $user,
+                plan: $plan,
+                interval: $billingInterval,
+                successUrl: "{$frontendUrl}/settings/billing?{$gateway->name()->value}=return",
+                cancelUrl: "{$frontendUrl}/pricing",
+            );
+
+            return response()->json([
+                'data' => (new SubscriptionResource($result['subscription']))->resolve(),
+                'checkout' => $result['checkout'],
+            ], 201);
+        } finally {
+            $lock->release();
+        }
     }
 
     /**
@@ -119,6 +145,49 @@ class SubscriptionController extends Controller
 
         return response()->json([
             'data' => (new SubscriptionResource($subscription->fresh()->load('plan')))->resolve(),
+        ]);
+    }
+
+    /**
+     * Purchase additional seats on the organization's subscription. Admins
+     * only; logged as a billing event so the next invoice reflects the change.
+     */
+    public function addSeats(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'quantity' => ['required', 'integer', 'min:1', 'max:100'],
+        ]);
+
+        $user = $request->user();
+
+        abort_unless($user->hasActiveMembership(), 403);
+
+        $subscription = $this->seats->addSeats($user->organization, $user, (int) $validated['quantity']);
+
+        return response()->json([
+            'data' => (new SubscriptionResource($subscription->load('plan')))->resolve(),
+        ]);
+    }
+
+    /**
+     * Remove purchased seats from the organization's subscription. Admins
+     * only; blocked when the reduction would drop below the active member
+     * count. Logged as a billing event.
+     */
+    public function removeSeats(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'quantity' => ['required', 'integer', 'min:1', 'max:100'],
+        ]);
+
+        $user = $request->user();
+
+        abort_unless($user->hasActiveMembership(), 403);
+
+        $subscription = $this->seats->removeSeats($user->organization, $user, (int) $validated['quantity']);
+
+        return response()->json([
+            'data' => (new SubscriptionResource($subscription->load('plan')))->resolve(),
         ]);
     }
 
@@ -243,7 +312,6 @@ class SubscriptionController extends Controller
 
         $subscription->update([
             'status' => Subscription::STATUS_ACTIVE,
-            'trial_ends_at' => null,
             'current_period_start' => $payload['created_at'] ?? now(),
             'current_period_end' => $payload['renews_at'] ?? $this->periodEnd($subscription),
             'cancelled_at' => null,
@@ -283,6 +351,7 @@ class SubscriptionController extends Controller
 
         return Subscription::create([
             'user_id' => $user->id,
+            'organization_id' => $user->organization_id,
             'plan_id' => $plan->id,
             'interval' => $interval,
             'gateway' => Subscription::GATEWAY_LEMONSQUEEZY,
@@ -300,7 +369,7 @@ class SubscriptionController extends Controller
     protected function mapLemonSqueezyStatus(?string $status): ?string
     {
         return match ($status) {
-            'active', 'on_trial' => Subscription::STATUS_ACTIVE,
+            'active' => Subscription::STATUS_ACTIVE,
             'cancelled', 'expired' => Subscription::STATUS_CANCELLED,
             'past_due', 'unpaid' => Subscription::STATUS_PAST_DUE,
             'paused' => Subscription::STATUS_PAUSED,
@@ -339,7 +408,6 @@ class SubscriptionController extends Controller
 
         $subscription->update([
             'status' => Subscription::STATUS_ACTIVE,
-            'trial_ends_at' => null,
             'current_period_start' => now()->startOfDay(),
             'current_period_end' => $periodEnd,
             'cancelled_at' => null,

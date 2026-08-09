@@ -237,3 +237,102 @@ it('forbids attaching a document to another user case', function () {
         ->postJson("/api/documents/{$document->id}/attach", ['case_id' => $case->id])
         ->assertForbidden();
 });
+
+it('serves a viewable document inline with its content', function () {
+    Storage::fake('local');
+
+    $document = Document::factory()->for($this->user)->create([
+        'storage_path' => 'documents/memo.pdf',
+        'original_filename' => 'memo.pdf',
+        'mime_type' => 'application/pdf',
+    ]);
+
+    Storage::put('documents/memo.pdf', '%PDF-1.4 fake content');
+
+    $response = $this->actingAs($this->user)
+        ->getJson("/api/documents/{$document->id}/file")
+        ->assertOk()
+        ->assertHeader('Content-Type', 'application/pdf')
+        ->assertHeaderContains('Content-Disposition', 'inline')
+        ->assertHeader('X-Content-Type-Options', 'nosniff');
+
+    expect($response->streamedContent())->toBe('%PDF-1.4 fake content');
+});
+
+it('serves non-viewable documents as an attachment', function () {
+    Storage::fake('local');
+
+    $document = Document::factory()->for($this->user)->create([
+        'storage_path' => 'documents/contract.docx',
+        'original_filename' => 'contract.docx',
+        'mime_type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ]);
+
+    Storage::put('documents/contract.docx', 'PK fake content');
+
+    $this->actingAs($this->user)
+        ->getJson("/api/documents/{$document->id}/file")
+        ->assertOk()
+        ->assertHeaderContains('Content-Disposition', 'attachment');
+});
+
+it('honours an explicit disposition override', function () {
+    Storage::fake('local');
+
+    $document = Document::factory()->for($this->user)->create([
+        'storage_path' => 'documents/memo.pdf',
+        'original_filename' => 'memo.pdf',
+        'mime_type' => 'application/pdf',
+    ]);
+
+    Storage::put('documents/memo.pdf', '%PDF-1.4 fake content');
+
+    $this->actingAs($this->user)
+        ->getJson("/api/documents/{$document->id}/file?disposition=attachment")
+        ->assertOk()
+        ->assertHeaderContains('Content-Disposition', 'attachment');
+});
+
+it('forbids serving another user document', function () {
+    Storage::fake('local');
+
+    $document = Document::factory()->for(User::factory())->create([
+        'storage_path' => 'documents/other.pdf',
+        'mime_type' => 'application/pdf',
+    ]);
+
+    Storage::put('documents/other.pdf', '%PDF-1.4 fake content');
+
+    $this->actingAs($this->user)
+        ->getJson("/api/documents/{$document->id}/file")
+        ->assertForbidden();
+});
+
+it('returns 404 when the stored file is missing', function () {
+    Storage::fake('local');
+
+    $document = Document::factory()->for($this->user)->create([
+        'storage_path' => 'documents/gone.pdf',
+        'mime_type' => 'application/pdf',
+    ]);
+
+    $this->actingAs($this->user)
+        ->getJson("/api/documents/{$document->id}/file")
+        ->assertNotFound();
+});
+
+it('requires an active subscription to serve a document file', function () {
+    Storage::fake('local');
+
+    $user = User::factory()->create();
+    $document = Document::factory()->for($user)->create([
+        'storage_path' => 'documents/memo.pdf',
+        'mime_type' => 'application/pdf',
+    ]);
+
+    Storage::put('documents/memo.pdf', '%PDF-1.4 fake content');
+
+    $this->actingAs($user)
+        ->getJson("/api/documents/{$document->id}/file")
+        ->assertStatus(402);
+});

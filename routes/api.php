@@ -6,25 +6,30 @@ use App\Http\Controllers\Api\Admin\SystemPromptController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\ConversationController;
+use App\Http\Controllers\Api\DemoRequestController;
 use App\Http\Controllers\Api\DocumentController;
 use App\Http\Controllers\Api\ExportController;
 use App\Http\Controllers\Api\FeedbackController;
 use App\Http\Controllers\Api\GeneratedDocumentController;
 use App\Http\Controllers\Api\LegalCaseController;
+use App\Http\Controllers\Api\OrganizationController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\TemplateController;
 use App\Http\Controllers\Api\TodoController;
 use Illuminate\Support\Facades\Route;
 
-Route::post('/register', [AuthController::class, 'register']);
-Route::post('/login', [AuthController::class, 'login']);
-Route::post('/forgot-password', [AuthController::class, 'sendPasswordResetLink']);
-Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:auth');
+Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login');
+Route::post('/forgot-password', [AuthController::class, 'sendPasswordResetLink'])->middleware('throttle:auth');
+Route::post('/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:auth');
 Route::post('/subscriptions/webhook', [SubscriptionController::class, 'webhook']);
 Route::post('/subscriptions/webhook/lemonsqueezy', [SubscriptionController::class, 'lemonsqueezyWebhook']);
 
 Route::get('/plans', [PlanController::class, 'index']);
+
+Route::post('/demo-requests', [DemoRequestController::class, 'store'])
+    ->middleware('throttle:demo-request');
 
 Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('/user', [AuthController::class, 'user']);
@@ -34,10 +39,25 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::post('/subscription', [SubscriptionController::class, 'store']);
     Route::post('/subscription/change-plan', [SubscriptionController::class, 'changePlan']);
     Route::post('/subscription/cancel', [SubscriptionController::class, 'cancel']);
+    Route::post('/subscription/seats', [SubscriptionController::class, 'addSeats']);
+    Route::delete('/subscription/seats', [SubscriptionController::class, 'removeSeats']);
+
+    Route::get('/organizations', [OrganizationController::class, 'show']);
+    Route::post('/organizations', [OrganizationController::class, 'store']);
+    Route::get('/organizations/members', [OrganizationController::class, 'members']);
+    Route::delete('/organizations/members/{member}', [OrganizationController::class, 'removeMember']);
+    Route::post('/organizations/members/{member}/suspend', [OrganizationController::class, 'suspendMember']);
+    Route::post('/organizations/members/{member}/resume', [OrganizationController::class, 'resumeMember']);
+
+    Route::get('/organizations/invitations', [OrganizationController::class, 'indexInvitations']);
+    Route::post('/organizations/invitations', [OrganizationController::class, 'storeInvitation']);
+    Route::delete('/organizations/invitations/{invitation}', [OrganizationController::class, 'revokeInvitation']);
+    Route::post('/invitations/{invitation}/accept', [OrganizationController::class, 'acceptInvitation']);
 
     Route::middleware('active_subscription')->group(function (): void {
         Route::apiResource('documents', DocumentController::class);
         Route::post('/documents/{document}/attach', [DocumentController::class, 'attach']);
+        Route::get('/documents/{document}/file', [DocumentController::class, 'file']);
 
         Route::get('/generated-documents', [GeneratedDocumentController::class, 'index']);
 
@@ -54,6 +74,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
 
         Route::get('/templates', [TemplateController::class, 'index']);
         Route::post('/templates', [TemplateController::class, 'store']);
+        Route::post('/templates/{template}/fill', [TemplateController::class, 'fill']);
         Route::delete('/templates/{template}', [TemplateController::class, 'destroy']);
 
         Route::apiResource('cases', LegalCaseController::class);

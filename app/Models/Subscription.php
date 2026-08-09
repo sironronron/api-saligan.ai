@@ -7,8 +7,10 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 #[Fillable([
+    'organization_id',
     'user_id',
     'plan_id',
     'interval',
@@ -18,9 +20,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'lemonsqueezy_subscription_id',
     'lemonsqueezy_customer_id',
     'status',
+    'seats_purchased',
+    'price_per_seat',
     'current_period_start',
     'current_period_end',
-    'trial_ends_at',
     'cancelled_at',
 ])]
 class Subscription extends Model
@@ -56,9 +59,18 @@ class Subscription extends Model
         return [
             'current_period_start' => 'date',
             'current_period_end' => 'date',
-            'trial_ends_at' => 'datetime',
             'cancelled_at' => 'datetime',
+            'seats_purchased' => 'integer',
+            'price_per_seat' => 'integer',
         ];
+    }
+
+    /**
+     * The organization this subscription belongs to.
+     */
+    public function organization(): BelongsTo
+    {
+        return $this->belongsTo(Organization::class);
     }
 
     /**
@@ -86,11 +98,22 @@ class Subscription extends Model
     }
 
     /**
-     * Whether the subscription is still within its trial window.
+     * The billing events recorded against this subscription.
      */
-    public function onTrial(): bool
+    public function billingEvents(): HasMany
     {
-        return $this->trial_ends_at !== null && $this->trial_ends_at->isFuture();
+        return $this->hasMany(BillingEvent::class);
+    }
+
+    /**
+     * The amount the next invoice should bill for, in centavos:
+     * seats purchased times the per-seat price.
+     */
+    public function nextInvoiceAmount(): int
+    {
+        $pricePerSeat = $this->price_per_seat ?? $this->plan?->priceForInterval($this->interval ?? 'monthly') ?? 0;
+
+        return $this->seats_purchased * $pricePerSeat;
     }
 
     /**

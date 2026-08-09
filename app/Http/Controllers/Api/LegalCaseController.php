@@ -15,6 +15,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class LegalCaseController extends Controller
 {
@@ -75,7 +76,7 @@ class LegalCaseController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
-        $validated = $request->validate($this->rules());
+        $validated = $request->validate($this->rules(request: $request));
 
         PlanLimits::ensureActiveAccess($request->user());
 
@@ -145,7 +146,7 @@ class LegalCaseController extends Controller
     {
         abort_unless($case->user_id === $request->user()->id, 403);
 
-        $validated = $request->validate($this->rules(excludeRequired: true));
+        $validated = $request->validate($this->rules(excludeRequired: true, request: $request));
 
         $case->update($validated);
 
@@ -258,7 +259,7 @@ class LegalCaseController extends Controller
      *
      * @return array<string, mixed>
      */
-    protected function rules(bool $excludeRequired = false): array
+    protected function rules(bool $excludeRequired = false, ?Request $request = null): array
     {
         $required = fn (string $rule): array => $excludeRequired ? ['sometimes', $rule] : ['required', $rule];
 
@@ -274,7 +275,17 @@ class LegalCaseController extends Controller
             'due_date' => ['nullable', 'date'],
             'tags' => ['nullable', 'array'],
             'tags.*' => ['string', 'max:50'],
-            'default_template_id' => ['nullable', 'uuid', 'exists:templates,id'],
+            // Only system templates, the user's own templates, or templates
+            // owned by other members of the user's organization may be set as
+            // the case default, so a case can never reference another user's
+            // private template.
+            'default_template_id' => [
+                'nullable',
+                'uuid',
+                Rule::exists('templates', 'id')->where(function ($query) use ($request): void {
+                    $query->visibleTo($request->user());
+                }),
+            ],
         ];
     }
 

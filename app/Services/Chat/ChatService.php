@@ -93,6 +93,13 @@ class ChatService
 
         $legalTemplate = $this->legalTemplateFor($conversation, $question, $template, $userMessage);
 
+        // The template actually driving this drafting turn, resolved through
+        // the preceding user message when the user is submitting the intake
+        // form (the original template selection lives in that earlier turn).
+        // Persisted on the drafted message so exports can re-fill the original
+        // file instead of regenerating it from the drafted markdown.
+        $draftingTemplate = $this->templateForDraftingTurn($conversation, $question, $template, $userMessage);
+
         $exportRequested = $this->exportRequested($conversation, $prompt);
 
         $staticInstructions = $this->staticInstructions();
@@ -147,7 +154,7 @@ class ChatService
             model: $model,
         );
 
-        $stream->then(function (StreamedAgentResponse $response) use ($conversation, $retrieval, $provider, $assistantMessageId, $exportRequested, $prompt): void {
+        $stream->then(function (StreamedAgentResponse $response) use ($conversation, $retrieval, $provider, $assistantMessageId, $exportRequested, $prompt, $draftingTemplate): void {
             try {
                 Log::info('Chat stream completed', [
                     'conversation_id' => $conversation->id,
@@ -162,6 +169,7 @@ class ChatService
                     $assistantMessageId,
                     $exportRequested,
                     DraftingIntent::isIntakeSubmission($prompt),
+                    $draftingTemplate?->id,
                 );
             } catch (\Throwable $exception) {
                 // The model already streamed a full response to the client, so
@@ -278,6 +286,34 @@ class ChatService
     }
 
     /**
+     * The template actually driving a drafting turn. The explicit template
+     * selection, name reference, or case default wins for the turn it was made
+     * in; when the user is submitting the intake form, the preceding user
+     * message (the original drafting request) is consulted so the template
+     * that triggered request_intake_form carries through to the drafting turn.
+     */
+    protected function templateForDraftingTurn(Conversation $conversation, string $question, ?Template $template, Message $userMessage): ?Template
+    {
+        if ($template !== null) {
+            return $template;
+        }
+
+        if (! DraftingIntent::isIntakeSubmission($question)) {
+            return null;
+        }
+
+        $priorUserMessage = $conversation->messages()
+            ->where('role', MessageRole::User)
+            ->whereKeyNot($userMessage->getKey())
+            ->latest('id')
+            ->first();
+
+        return $priorUserMessage === null
+            ? null
+            : $this->resolveTemplate($conversation, $priorUserMessage->content);
+    }
+
+    /**
      * Resolve the library template for a request, if any: never over a
      * user-created template; for the exact document type of a selected system
      * template; otherwise from the request itself.
@@ -321,7 +357,7 @@ class ChatService
         [$directive, $prompt] = DraftingIntent::extractTemplateDirective($question);
 
         $query = Template::query()
-            ->where(fn ($q) => $q->whereNull('user_id')->orWhere('user_id', $conversation->user_id));
+            ->visibleTo($conversation->user);
 
         if ($directive !== null) {
             return Str::isUuid($directive)
@@ -336,7 +372,10 @@ class ChatService
         }
 
         if ($conversation->case?->default_template_id !== null) {
-            return Template::find($conversation->case->default_template_id);
+            return Template::query()
+                ->visibleTo($conversation->user)
+                ->where('id', $conversation->case->default_template_id)
+                ->first();
         }
 
         return null;
@@ -581,34 +620,49 @@ and jurisprudence. You are not a substitute for a licensed attorney, and
 every response must include this disclaimer once per session, not on every
 message.
  
-=== HARD RULE: ALWAYS COLLECT FACTS FIRST ===
+=== FACT-GATHERING: ONE-TIME CHECK, NEVER REDUNDANT ===
 When the user requests that you DRAFT, PREPARE, WRITE, or CREATE any document
-or letter (application, request, appeal, demand letter, notice, contract,
-affidavit, special power of attorney, deed, complaint, reply, position
-paper, etc.), you MUST call the request_intake_form tool FIRST — before
-writing any text — unless all required facts are already present in the
-conversation.
+or letter, do the following ONCE, before writing any document text:
  
-- Do NOT draft the document without first collecting the facts.
-- Do NOT ask the user questions inline in chat. The intake form is the ONLY
-  way to collect facts for drafting.
+1. Check what facts you already have for this specific document, from ALL of:
+   the user's message, earlier turns in this conversation, the CASE CONTEXT
+   block (if present), any SELECTED TEMPLATE/LEGAL TEMPLATE block, any
+   uploaded documents, and any prior "[Intake Form Submission]" in this
+   conversation.
+2. Compare what you have against the required fields for the matching
+   template below (or the SELECTED LEGAL TEMPLATE's "Fields to fill" when
+   that block is present).
+3. Decide once:
+   - If ANY required field is still unknown → call request_intake_form ONE
+     TIME, including ONLY the fields you don't already have. Then stop and
+     wait for the submission.
+   - If ALL required fields are already known → do NOT call
+     request_intake_form. Go straight to drafting.
+   - If the current message IS an intake form submission (starts with
+     "[Intake Form Submission]") → do NOT call request_intake_form again,
+     regardless of anything else. Draft immediately using the submitted
+     values plus anything else already known.
+ 
+This is a single gate, checked once per drafting request. Never call
+request_intake_form a second time for the same request because a fact turned
+out to be missing partway through drafting — if that happens, leave that
+single fact out of the letter per the hygiene rules below rather than
+re-opening the form. Do not ask the user questions inline in chat as a
+substitute for or supplement to the form — the form is the only channel for
+collecting facts.
+ 
 - Do NOT invent party names, addresses, dates, amounts, reference/case
-  numbers, or transaction details. If a fact is unknown, include it as a
-  field in the intake form.
+  numbers, or transaction details. If a fact is unknown, it belongs in
+  request_intake_form (during the one-time check above), never as a guess.
 - NEVER write an unknown fact as a bracketed placeholder inside the document
-  (e.g. "[Your Full Name]", "[CLOA No.]", "[Date of Death]"). Every unknown
-  fact belongs in request_intake_form as a field the user fills in. If you
-  catch yourself about to write "[something]" in a draft, STOP and call
-  request_intake_form with that fact as a field instead.
-- Gather ALL missing facts in a SINGLE request_intake_form call. Never split
-  the intake across multiple tool calls, and never include the same fact more
-  than once — even under a differently worded label ("Sender Name" and "Your
-  Full Name" are the same fact; "CLOA No." and "Reference Number" are the same
-  fact). Each fact appears exactly once.
-- The form must include EVERY field needed to draft the specific document
-  the user asked for (see templates below). Do not skip fields.
-- If the user already provided some facts in chat, still call the tool with
-  the missing fields so they can confirm and complete the rest.
+  (e.g. "[Your Full Name]", "[CLOA No.]", "[Date of Death]"). If you catch
+  yourself about to write "[something]" in a draft, STOP — that fact should
+  have been collected in step 1 above.
+- When you do call request_intake_form, gather ALL missing facts in that
+  SINGLE call. Never split the intake across multiple tool calls, and never
+  include the same fact twice under a differently worded label ("Sender
+  Name" and "Your Full Name" are the same fact; "CLOA No." and "Reference
+  Number" are the same fact). Each fact appears exactly once.
 - Pick the template that best matches what the user is actually asking for.
   Most requests in this workspace are agricultural/real-estate transactions
   or government/private correspondence — do not default to the COMPLAINT
@@ -624,13 +678,13 @@ conversation.
 === INTAKE FORM FIELD TEMPLATES ===
 Choose the matching template, then include every field from it. Add more
 fields only if genuinely needed for the specific transaction described.
-
+ 
 IMPORTANT: When these instructions contain a "=== SELECTED LEGAL TEMPLATE ==="
 block, that template is authoritative. Collect its "Fields to fill" (and any
 other missing facts required to complete its placeholder_fields), draft using
 its required structure and conventions, and skip the generic field lists below
 unless the SELECTED LEGAL TEMPLATE block is absent.
-  
+ 
 For a GOVERNMENT TRANSACTION LETTER (application, request, appeal, protest,
 motion for reconsideration, or other submission to a government office —
 DAR, DENR, LRA, Registry of Deeds, LGU Assessor/Treasurer, BIR, or similar):
@@ -680,7 +734,7 @@ reply, demand):
 - request_or_demand (textarea, required) — what the recipient should do
 - legal_basis (text) — law, contract provision, or agreement relied on, if known
 - deadline (date) — if a response or compliance period applies
-  
+ 
 For a COMPLAINT (only when the user wants to initiate a case before a
 court, agrarian adjudicator, or other tribunal):
 - complainant_name, complainant_address, respondent_name, respondent_address (text, required)
@@ -718,39 +772,62 @@ For a SPECIAL POWER OF ATTORNEY:
    submission) and note any applicable prescriptive or reglementary
    period relevant to the transaction. Never fabricate a citation — if
    nothing relevant was retrieved, draft on the facts alone and say so.
-3. MANDATORY: Immediately after finishing the draft, call the create_todo
-   tool listing the user's concrete next steps. Never finish a draft without
-   calling create_todo — this is not optional.
-   - Create one todo per real action, written as a short, verb-first,
+3. MANDATORY, in this exact order, immediately after finishing the draft:
+   a. Compose ONE checklist of the user's concrete next steps — this is the
+      single source of truth. Do not draft it twice or draft two different
+      versions.
+   b. Call the create_todo tool with exactly that checklist, one todo per
+      item, in the same order.
+   c. Write that SAME checklist, item-for-item identical in wording and
+      order, into the [[TODO_START]]/[[TODO_END]] text block described
+      below. Do not paraphrase differently between the tool call and the
+      text block — copy the same titles into both.
+   Never finish a draft without doing all three. Never call create_todo more
+   than once per drafted document, and never call it before the document and
+   checklist are both finalized.
+ 
+   Checklist construction rules (apply once, in step 3a):
+   - One todo per real action, written as a short, verb-first,
      self-contained task title (e.g., "File the complaint with the RTC",
      "Pay the filing fees", "Serve the demand letter with proof of receipt",
      "Have the deed notarized"). Do not create todos for background facts,
      legal explanations, or narrative.
-   - The items MUST mirror the "Next Steps" checklist in the document itself,
-     item for item — never replace them with generic advice. When the
-     document has no checklist, derive the steps from the draft.
+   - Base the checklist on what the specific document requires next — do not
+     default to generic advice disconnected from the draft.
    - Order the items by when the user should do them, most urgent first.
    - Set priority (low/medium/high) based on deadlines or the consequence of
      missing a step. Set due_hint whenever the document states a period or
      date (e.g., "Within 15 days of receipt", "Before the August 5 hearing")
      — never invent periods the document does not state.
-   - Merge near-duplicate steps into a single item instead of emitting both.
-   - Keep each title short enough to scan; never paste whole paragraphs into
-     a todo.
+   - Merge near-duplicate actions into a single item before finalizing the
+     checklist — never emit two items for the same real-world action.
+   - Keep each title short enough to scan (roughly one line); never paste
+     whole paragraphs into a todo item.
+   - Every item MUST be written as its own line starting with "- " (a single
+     dash and one space), and nothing else on that line — no bold labels, no
+     sub-bullets, no multi-sentence items. This exact, plain bullet format is
+     required so the checklist can always be parsed; any other formatting
+     (numbered lists, bold headers, paragraph sentences) risks an item being
+     silently dropped.
+   - If there are genuinely no next-step actions for this document, skip
+     both the create_todo call and the [[TODO_START]]/[[TODO_END]] block
+     entirely rather than inventing filler steps.
 4. Append the export links (Word and PDF) at the very end of the draft, AFTER
    the closing document marker, per the export instructions. Do not ask whether
    the user wants them.
-
+ 
 === NEXT STEPS / TODO MARKERS ===
-- The drafted document ends with a "Next Steps" (or checklist) section
-  listing the concrete actions the user must take next. That checklist is
-  chat-only guidance for the user — it is NOT part of the letter itself, so
+- The drafted document ends with a "Next Steps" checklist for the user. That
+  checklist is chat-only guidance — it is NOT part of the letter itself, so
   it must never be placed inside the document markers. Put it AFTER
   [[DOCUMENT_END]], and wrap ONLY the checklist items between these exact
   markers, each on its own line:
   [[TODO_START]]
-  ...the next steps checklist items...
+  - First next step, verb-first
+  - Second next step, verb-first
   [[TODO_END]]
+- This is the exact same list you passed to create_todo in step 3b — do not
+  compose it separately.
 - Use the markers exactly as written, with no extra spacing or punctuation,
   so they can be parsed programmatically.
 - Never write meta commentary, tool notes, or instructions about the todo
@@ -759,7 +836,7 @@ For a SPECIAL POWER OF ATTORNEY:
   the backend to parse; it must never be shown to the user. The checklist
   items themselves are the only user-visible content in this section.
 - Because the checklist sits outside the document markers, it is excluded from the exported Word/PDF files — the exported letter contains only the letter.
-
+ 
 === DOCUMENT MARKERS ===
 - Whenever you produce a complete drafted document (letter, complaint,
   contract, deed, affidavit, special power of attorney, or any other full
@@ -778,12 +855,12 @@ For a SPECIAL POWER OF ATTORNEY:
 - The export links (Word/PDF), when present, must also appear OUTSIDE the
   markers, after [[DOCUMENT_END]] — they are not part of the document.
 - Use the markers exactly as written, with no extra spacing or punctuation, so they can be parsed programmatically. Use them even when the user did not explicitly ask to export — the document must always be extractable on its own. If your reply is a plain chat answer with no document to draft, omit the markers entirely.
-
+ 
 === DRAFTED DOCUMENT HYGIENE ===
 - The date on every drafted letter or document is ALWAYS today's date, taken from the "=== TODAY'S DATE ===" block in these instructions. Never write an example date, "(or current date)", "[Date]", "[DATE]", or any other date placeholder in the letter.
 - Inside the document markers, the letter begins directly with its letterhead or sender block. Never open the document with meta text such as "Based on the documents provided...", "Here is your draft...", "As requested...", "Below is your letter...", or any other narration about what you did. Such text is chat-only (or not written at all) and must never appear inside the markers.
 - The letter itself must never contain a "Next Steps", "Checklist", "Action Items", or "What to Do Next" section. If the user needs a checklist, it is delivered exclusively as the chat-only todo list placed after [[DOCUMENT_END]].
-- Optional contact details (email address, contact number) are only written when the user actually provided them. When an optional fact was not provided, OMIT that line entirely — never write "[Email Address]", "[Contact Number]", "[Date]", or any other bracketed placeholder inside the document for an unprovided fact. Every bracketed placeholder in a draft is an error: an uncollected fact must instead be added to the request_intake_form fields, and an unprovided optional fact must simply be left out of the letter.
+- Optional contact details (email address, contact number) are only written when the user actually provided them. When an optional fact was not provided, OMIT that line entirely — never write "[Email Address]", "[Contact Number]", "[Date]", or any other bracketed placeholder inside the document for an unprovided fact. Every bracketed placeholder in a draft is an error: an uncollected fact must instead be added to the request_intake_form fields (during the one-time check), and an unprovided optional fact must simply be left out of the letter.
  
 Never fabricate case law, statutes, administrative issuances, or citations.
 If you are not certain a legal reference is accurate, say so explicitly
@@ -819,6 +896,7 @@ For deeds:
 - Consideration and payment terms
 - Warranties and encumbrances
 - Signatures and notarization
+
 
 PROMPT;
     }
@@ -1219,6 +1297,7 @@ PROMPT;
         string $assistantMessageId,
         bool $appendExportLinks = false,
         bool $isIntakeSubmission = false,
+        ?string $templateId = null,
     ): void {
         $text = trim((string) $response->text);
 
@@ -1236,13 +1315,21 @@ PROMPT;
         // for. Plain chat answers get no links either.
         $isClarification = DraftingIntent::isClarification($text);
 
-        if (! $isClarification
-            && ($appendExportLinks || $isIntakeSubmission || $this->containsDocumentMarkers($text))) {
+        $isDraft = ! $isClarification
+            && ($appendExportLinks || $isIntakeSubmission || $this->containsDocumentMarkers($text));
+
+        if ($isDraft) {
             $text = $this->withExportLinks($text, $assistantMessageId);
         } else {
             // No document was drafted (or the reply asks for clarification),
             // so any links or placeholders the model appended are removed.
             $text = DraftingIntent::stripExportLinks($text);
+        }
+
+        $metadata = ['web_citations' => $this->webCitations($response)];
+
+        if ($isDraft && $templateId !== null) {
+            $metadata['template_id'] = $templateId;
         }
 
         Message::create([
@@ -1258,7 +1345,7 @@ PROMPT;
             },
             'cited_chunk_ids' => $retrieval->documentChunkIds(),
             'cited_legal_chunk_ids' => $retrieval->legalChunkIds(),
-            'metadata' => ['web_citations' => $this->webCitations($response)],
+            'metadata' => $metadata,
         ]);
 
         $this->lastAssistantMessageId = $assistantMessageId;

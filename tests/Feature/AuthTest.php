@@ -21,6 +21,22 @@ it('registers a new user', function () {
     ]);
 });
 
+it('does not allow mass-assigning the admin flag', function () {
+    $user = User::create([
+        'name' => 'Jane Doe',
+        'email' => 'jane@example.com',
+        'password' => Hash::make('password123'),
+        'is_admin' => true,
+    ]);
+
+    expect($user->is_admin)->not->toBeTrue();
+
+    $this->assertDatabaseHas('users', [
+        'email' => 'jane@example.com',
+        'is_admin' => false,
+    ]);
+});
+
 it('rejects registration with a duplicate email', function () {
     User::factory()->create(['email' => 'taken@example.com']);
 
@@ -52,6 +68,40 @@ it('rejects login with invalid credentials', function () {
         'password' => 'wrong-password',
     ])->assertUnprocessable()
         ->assertJsonPath('message', 'The provided credentials do not match our records.');
+});
+
+it('throttles repeated login attempts', function () {
+    $user = User::factory()->create(['password' => Hash::make('secret123')]);
+
+    for ($i = 0; $i < 5; $i++) {
+        $this->postJson('/api/login', [
+            'email' => $user->email,
+            'password' => 'wrong-password',
+        ])->assertUnprocessable();
+    }
+
+    $this->postJson('/api/login', [
+        'email' => $user->email,
+        'password' => 'secret123',
+    ])->assertStatus(429);
+});
+
+it('throttles registration requests per IP', function () {
+    for ($i = 0; $i < 10; $i++) {
+        $this->postJson('/api/register', [
+            'name' => 'Jane Doe',
+            'email' => "jane{$i}@example.com",
+            'password' => 'password123',
+            'password_confirmation' => 'password123',
+        ])->assertCreated();
+    }
+
+    $this->postJson('/api/register', [
+        'name' => 'Jane Doe',
+        'email' => 'overflow@example.com',
+        'password' => 'password123',
+        'password_confirmation' => 'password123',
+    ])->assertStatus(429);
 });
 
 it('requires authentication for the user endpoint', function () {

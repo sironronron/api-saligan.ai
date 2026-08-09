@@ -21,6 +21,13 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->statefulApi();
 
+        // The app is served behind nginx on the same host, so requests carry
+        // X-Forwarded-* headers. Trusting the local proxy gives accurate
+        // client IPs (for rate limiting) and lets HTTPS be detected so the
+        // session cookie is flagged Secure. If the box sits behind a remote
+        // load balancer or CDN, add that proxy's address here instead.
+        $middleware->trustProxies(at: ['127.0.0.1', '::1']);
+
         $middleware->api(append: [
             EncryptCookies::class,
             AddQueuedCookiesToResponse::class,

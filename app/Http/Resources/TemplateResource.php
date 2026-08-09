@@ -28,6 +28,7 @@ class TemplateResource extends JsonResource
             'placeholder_fields' => $this->placeholder_fields ?? [],
             'default_for_case_types' => $this->default_for_case_types ?? [],
             'is_system' => $this->isSystem(),
+            'is_docx' => $this->isDocxFileTemplate(),
             'content' => $this->isSystem() ? null : $this->content,
             'created_at' => $this->created_at,
         ];

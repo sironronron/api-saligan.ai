@@ -27,7 +27,17 @@ class CreateTodoTool implements Tool
      */
     public function description(): string
     {
-        return 'MANDATORY after drafting any legal document. Create todo items for the concrete next steps the user must take for this specific document or case — one item per real action, verb-first and self-contained (e.g., "File the complaint with the RTC", "Pay the filing fees", "Serve the demand letter with proof of receipt", "Have the deed notarized"). Mirror the document\'s own "Next Steps" checklist item for item; do not replace it with generic advice. Set priority (low/medium/high) and due_hint only when the document states a deadline or period (e.g., "Within 15 days of receipt") — never invent them. Order by urgency and merge near-duplicate steps. Call this tool immediately after drafting — never skip it; if there are no follow-up actions, call it with a single item describing the next step anyway.';
+        return 'Create todo items for the concrete next steps the user must take for the document just drafted — '
+            .'one item per real action, verb-first and self-contained (e.g., "File the complaint with the RTC", '
+            .'"Pay the filing fees", "Serve the demand letter with proof of receipt", "Have the deed notarized"). '
+            .'Call this exactly once per drafted document, immediately after the document and its checklist are '
+            .'finalized — never call it before the document is complete, and never call it more than once for the '
+            .'same document. The items you pass here must be identical in wording and order to the checklist you '
+            .'write in the [[TODO_START]]/[[TODO_END]] text block — build the checklist once and use it for both. '
+            .'Set priority (low/medium/high) and due_hint only when the document itself states a deadline or period '
+            .'(e.g., "Within 15 days of receipt") — never invent them. Order by urgency and merge near-duplicate '
+            .'steps. If the document genuinely has no follow-up actions, do NOT call this tool at all — never '
+            .'fabricate a placeholder item just to have something to call it with.';
     }
 
     /**

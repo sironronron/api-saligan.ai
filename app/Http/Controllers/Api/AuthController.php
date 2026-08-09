@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\UserResource;
+use App\Models\Invitation;
 use App\Models\User;
+use App\Services\Organizations\OrganizationService;
 use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -17,8 +19,12 @@ use Illuminate\Validation\Rules\Password as PasswordRule;
 
 class AuthController extends Controller
 {
+    public function __construct(private readonly OrganizationService $organizations) {}
+
     /**
-     * Register a new user and start an authenticated session.
+     * Register a new user and start an authenticated session. The user either
+     * creates a new organization (becoming its owner) via `organization_name`,
+     * or joins an existing one via an invite link token.
      */
     public function register(Request $request): JsonResponse
     {
@@ -26,13 +32,31 @@ class AuthController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:users,email'],
             'password' => ['required', 'confirmed', PasswordRule::min(8)],
+            'organization_name' => ['nullable', 'string', 'max:255'],
+            'invite_token' => ['nullable', 'string'],
         ]);
+
+        abort_if(
+            filled($validated['organization_name'] ?? null) && filled($validated['invite_token'] ?? null),
+            422,
+            'Provide either an organization name or an invitation token, not both.',
+        );
 
         $user = User::create([
             'name' => $validated['name'],
             'email' => $validated['email'],
             'password' => Hash::make($validated['password']),
         ]);
+
+        if (filled($validated['organization_name'] ?? null)) {
+            $this->organizations->createOrganization($validated['organization_name'], $user);
+        }
+
+        if (filled($validated['invite_token'] ?? null)) {
+            $invitation = Invitation::query()->where('token', $validated['invite_token'])->first();
+            abort_if($invitation === null, 422, 'This invitation link is invalid.');
+            $this->organizations->acceptInvite($user, $invitation);
+        }
 
         Auth::login($user);
 

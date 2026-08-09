@@ -50,16 +50,4 @@ return [
     */
 
     'base_url' => env('PAYMONGO_BASE_URL', 'https://api.paymongo.com'),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Trial
-    |--------------------------------------------------------------------------
-    |
-    | New accounts start on the Starter plan with a free trial of this many
-    | days before a subscription is required.
-    |
-    */
-
-    'trial_days' => env('PAYMONGO_TRIAL_DAYS', 14),
 ];

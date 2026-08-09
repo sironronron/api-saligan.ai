@@ -22,7 +22,19 @@ class RequestIntakeFormTool implements Tool
      */
     public function description(): string
     {
-        return 'MANDATORY FIRST STEP when the user asks you to draft, prepare, write, or create ANY legal document (complaint, demand letter, contract, affidavit, special power of attorney, deed of sale, etc.). Call this tool to request the needed facts via a structured form. Never draft a legal document without calling this tool first, and never ask the user for facts inline in chat.';
+        return 'Requests missing facts from the user via a structured form, for drafting a legal document '
+            .'(complaint, demand letter, contract, affidavit, special power of attorney, deed of sale, etc.). '
+            .'Call this ONLY when required facts for the requested document are not yet known — e.g. the user gave '
+            .'a bare instruction ("draft a complaint letter") with no supporting details, or a specific required '
+            .'field for the chosen document type is still unknown after checking the conversation, the case '
+            .'context, and any uploaded documents or template. '
+            .'Do NOT call this if the needed facts are already available from prior chat messages, case context, '
+            .'uploaded documents, or a previously submitted intake form — extract and reuse what is already known. '
+            .'Call this AT MOST ONCE per drafting request. Once you have called it (or once you have determined no '
+            .'call is needed), proceed straight to drafting — never call it again for the same request unless the '
+            .'user explicitly asks to add or change facts afterward. '
+            .'When you do call it, include ONLY the fields whose values you do not already have — never re-request '
+            .'a fact you already know.';
     }
 
     /**

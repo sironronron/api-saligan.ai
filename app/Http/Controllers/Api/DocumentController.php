@@ -14,6 +14,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class DocumentController extends Controller
 {
@@ -118,6 +119,38 @@ class DocumentController extends Controller
     }
 
     /**
+     * Serve the stored file to its owner. PDFs, images, and plain-text files
+     * are served inline so they can be previewed in the browser; everything
+     * else is served as an attachment. Clients may force either disposition
+     * via the `disposition` query parameter.
+     */
+    public function file(Request $request, Document $document): StreamedResponse
+    {
+        abort_unless($document->user_id === $request->user()->id, 403);
+
+        $validated = $request->validate([
+            'disposition' => ['nullable', 'in:inline,attachment'],
+        ]);
+
+        if (! Storage::exists($document->storage_path)) {
+            abort(404, 'The file is no longer available.');
+        }
+
+        $mimeType = $document->mime_type ?: 'application/octet-stream';
+
+        return Storage::response(
+            $document->storage_path,
+            $document->original_filename,
+            [
+                'Content-Type' => $mimeType,
+                'Cache-Control' => 'private, no-store',
+                'X-Content-Type-Options' => 'nosniff',
+            ],
+            $validated['disposition'] ?? $this->defaultDisposition($mimeType),
+        );
+    }
+
+    /**
      * Delete a document and its chunks (cascaded).
      */
     public function destroy(Request $request, Document $document): JsonResponse
@@ -129,5 +162,22 @@ class DocumentController extends Controller
         $document->delete();
 
         return response()->json(null, 204);
+    }
+
+    /**
+     * Whether the browser can render the MIME type inline.
+     */
+    private function isViewable(string $mimeType): bool
+    {
+        return in_array($mimeType, ['application/pdf', 'text/plain', 'text/markdown', 'text/md'], true)
+            || str_starts_with($mimeType, 'image/');
+    }
+
+    /**
+     * Serve viewable types inline, everything else as a download.
+     */
+    private function defaultDisposition(string $mimeType): string
+    {
+        return $this->isViewable($mimeType) ? 'inline' : 'attachment';
     }
 }

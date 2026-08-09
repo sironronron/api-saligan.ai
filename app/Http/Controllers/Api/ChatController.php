@@ -137,7 +137,6 @@ class ChatController extends Controller
             Log::info('Chat streaming started', [
                 'conversation_id' => $conversation->id,
                 'message_length' => strlen($message),
-                'message' => $message,
             ]);
 
             yield $emit('status', [

@@ -21,7 +21,6 @@ it('grants a user an active subscription on a specific plan', function () {
         ->and($subscription->interval)->toBe(Plan::INTERVAL_MONTHLY)
         ->and($subscription->current_period_start->toDateString())->toBe(now()->toDateString())
         ->and($subscription->current_period_end->toDateString())->toBe(now()->addMonth()->toDateString())
-        ->and($subscription->trial_ends_at)->toBeNull()
         ->and($subscription->paymongo_subscription_id)->toBeNull();
 });
 
@@ -51,20 +50,6 @@ it('supports an annual interval', function () {
 
     expect($subscription->interval)->toBe(Plan::INTERVAL_ANNUAL)
         ->and($subscription->current_period_end->toDateString())->toBe(now()->addYear()->toDateString());
-});
-
-it('grants a trial period when trial days are given', function () {
-    $user = User::factory()->create();
-    Plan::factory()->starter()->create();
-
-    $this->artisan('subscribe:user', [
-        'user' => $user->email,
-        '--plan' => Plan::SLUG_STARTER,
-        '--trial-days' => 14,
-    ])->assertExitCode(0);
-
-    expect($user->subscription->onTrial())->toBeTrue()
-        ->and($user->subscription->trial_ends_at->toDateString())->toBe(now()->addDays(14)->toDateString());
 });
 
 it('moves an existing subscription to the new plan', function () {

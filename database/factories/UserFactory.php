@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Models\Organization;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Facades\Hash;
@@ -36,12 +37,13 @@ class UserFactory extends Factory
 
     /**
      * Indicate that the user is an administrator.
+     *
+     * is_admin is intentionally not fillable, so the flag is set on the
+     * instance after it is made rather than through mass assignment.
      */
     public function admin(): static
     {
-        return $this->state(fn (array $attributes) => [
-            'is_admin' => true,
-        ]);
+        return $this->afterMaking(fn (User $user) => $user->forceFill(['is_admin' => true]));
     }
 
     /**
@@ -52,5 +54,25 @@ class UserFactory extends Factory
         return $this->state(fn (array $attributes) => [
             'email_verified_at' => null,
         ]);
+    }
+
+    /**
+     * Indicate that the user is an active member of the given organization.
+     */
+    public function memberOf(Organization $organization, string $role = User::ORG_ROLE_MEMBER, string $status = User::ORG_STATUS_ACTIVE): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'organization_id' => $organization->id,
+            'org_role' => $role,
+            'org_status' => $status,
+        ]);
+    }
+
+    /**
+     * Indicate that the user owns the given organization.
+     */
+    public function ownerOf(Organization $organization): static
+    {
+        return $this->memberOf($organization, User::ORG_ROLE_OWNER);
     }
 }

@@ -157,16 +157,16 @@ it('mandates the intake form before any legal document drafting', function () {
     $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama);
 
     expect($instructions)
-        ->toContain('request_intake_form tool FIRST')
-        ->toContain('Do NOT draft the document without first collecting the facts')
-        ->toContain('Do NOT ask the user questions inline')
+        ->toContain('before writing any document text')
+        ->toContain('If ANY required field is still unknown')
+        ->toContain('Do not ask the user questions inline')
         ->toContain('always pass a document_type argument')
         ->toContain('NEVER write an unknown fact as a bracketed placeholder')
-        ->toContain('request_intake_form with that fact as a field instead')
-        ->toContain('Gather ALL missing facts in a SINGLE request_intake_form call')
+        ->toContain('an uncollected fact must instead be added to the request_intake_form fields')
+        ->toContain('Never split the intake across multiple tool calls')
         ->toContain('INTAKE FORM FIELD TEMPLATES')
         ->toContain('For a COMPLAINT (only when the user wants to initiate a case before a')
-        ->toContain('call the create_todo');
+        ->toContain('Call the create_todo tool');
 });
 
 it('places the next steps checklist outside the document markers', function () {
@@ -186,14 +186,14 @@ it('gives precise todo creation guidance for next steps', function () {
     $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama);
 
     expect($instructions)
-        ->toContain('call the create_todo')
+        ->toContain('Call the create_todo tool')
         ->toContain('verb-first')
         ->toContain('self-contained task title')
-        ->toContain('MUST mirror the "Next Steps" checklist')
+        ->toContain('the exact same list you passed to create_todo in step 3b')
         ->toContain('Order the items by when the user should do them')
         ->toContain('Set priority (low/medium/high)')
         ->toContain('Set due_hint whenever the document states a period or')
-        ->toContain('Merge near-duplicate steps');
+        ->toContain('Merge near-duplicate actions');
 });
 
 it('lets the system append export links instead of the model writing them', function () {

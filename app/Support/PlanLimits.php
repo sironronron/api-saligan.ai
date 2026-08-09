@@ -21,9 +21,7 @@ class PlanLimits
 
         $subscription = $user->subscription;
 
-        return $subscription !== null
-            && $subscription->isActive()
-            && $subscription->trial_ends_at === null;
+        return $subscription !== null && $subscription->isActive();
     }
 
     /**

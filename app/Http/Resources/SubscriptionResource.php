@@ -37,9 +37,13 @@ class SubscriptionResource extends JsonResource
             'plan' => new PlanResource($plan),
             'current_period_start' => $this->current_period_start?->toDateString(),
             'current_period_end' => $this->current_period_end?->toDateString(),
-            'trial_ends_at' => $this->trial_ends_at?->toIso8601String(),
             'cancelled_at' => $this->cancelled_at?->toIso8601String(),
-            'on_trial' => $this->onTrial(),
+            'seats' => [
+                'purchased' => $this->seats_purchased,
+                'price_per_seat' => $this->price_per_seat,
+                'next_invoice_amount' => $this->nextInvoiceAmount(),
+                'next_invoice_pesos' => round($this->nextInvoiceAmount() / 100, 2),
+            ],
             'usage' => [
                 'messages' => $messages + [
                     'overage' => $overage,

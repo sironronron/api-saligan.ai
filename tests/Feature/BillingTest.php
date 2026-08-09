@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Support\PlanLimits;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
@@ -175,6 +176,28 @@ it('rejects subscribing while an active subscription exists', function () {
         ->assertStatus(422);
 });
 
+it('rejects starting a checkout while a payment is already pending', function () {
+    Subscription::factory()->for($this->user)->create([
+        'plan_id' => $this->pro->id,
+        'status' => Subscription::STATUS_INCOMPLETE,
+    ]);
+
+    $this->actingAs($this->user)
+        ->postJson('/api/subscription', ['plan_id' => $this->pro->id])
+        ->assertStatus(422)
+        ->assertJsonPath('message', 'A subscription is already pending. Cancel it before starting a new checkout.');
+});
+
+it('rejects a checkout while another checkout is being created', function () {
+    Cache::lock("subscription.checkout.{$this->user->id}", 30)->get();
+
+    $this->actingAs($this->user)
+        ->postJson('/api/subscription', ['plan_id' => $this->pro->id])
+        ->assertStatus(409);
+
+    Cache::lock("subscription.checkout.{$this->user->id}", 30)->forceRelease();
+});
+
 it('shows the current subscription with usage', function () {
     Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
     UsageCounter::factory()->for($this->user)->create([
@@ -241,7 +264,6 @@ it('activates a subscription on invoice paid webhook', function () {
         'plan_id' => $this->starter->id,
         'paymongo_subscription_id' => 'subs_test123',
         'status' => Subscription::STATUS_INCOMPLETE,
-        'trial_ends_at' => now()->addDays(5),
     ]);
 
     config(['paymongo.webhook_secret' => 'test-secret']);
@@ -269,7 +291,6 @@ it('activates a subscription on invoice paid webhook', function () {
     $subscription = Subscription::firstWhere('paymongo_subscription_id', 'subs_test123');
 
     expect($subscription->status)->toBe(Subscription::STATUS_ACTIVE)
-        ->and($subscription->trial_ends_at)->toBeNull()
         ->and($subscription->current_period_end)->not->toBeNull();
 });
 
@@ -381,22 +402,6 @@ it('blocks creating a case over the active case limit', function () {
     ])->assertStatus(402);
 
     expect($response->json('upgrade_required'))->toBeTrue();
-});
-
-it('blocks access during a trial — only paid subscriptions grant access', function () {
-    Subscription::factory()->for($this->user)->create([
-        'plan_id' => $this->starter->id,
-        'status' => Subscription::STATUS_ACTIVE,
-        'trial_ends_at' => now()->addDays(5),
-    ]);
-    Queue::fake();
-    Storage::fake('local');
-
-    $this->actingAs($this->user)->getJson('/api/documents')
-        ->assertStatus(402);
-
-    $this->actingAs($this->user)->postJson('/api/conversations', [])
-        ->assertStatus(402);
 });
 
 it('counts messages beyond the cap as overage when the plan has an overage price', function () {

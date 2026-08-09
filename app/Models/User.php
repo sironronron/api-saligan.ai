@@ -6,20 +6,33 @@ namespace App\Models;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
-use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
-#[Fillable(['name', 'email', 'password', 'is_admin'])]
+#[Fillable(['name', 'email', 'password', 'organization_id', 'org_role', 'org_status'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
     use HasApiTokens, HasFactory, Notifiable;
+
+    public const ORG_ROLE_OWNER = 'owner';
+
+    public const ORG_ROLE_ADMIN = 'admin';
+
+    public const ORG_ROLE_MEMBER = 'member';
+
+    public const ORG_STATUS_ACTIVE = 'active';
+
+    public const ORG_STATUS_INVITED = 'invited';
+
+    public const ORG_STATUS_SUSPENDED = 'suspended';
 
     /**
      * Get the attributes that should be cast.
@@ -33,6 +46,46 @@ class User extends Authenticatable
             'password' => 'hashed',
             'is_admin' => 'boolean',
         ];
+    }
+
+    /**
+     * The organization this user belongs to, if any.
+     */
+    public function organization(): BelongsTo
+    {
+        return $this->belongsTo(Organization::class);
+    }
+
+    /**
+     * Whether the user belongs to an organization.
+     */
+    public function hasOrganization(): bool
+    {
+        return $this->organization_id !== null;
+    }
+
+    /**
+     * Whether the user owns their organization.
+     */
+    public function isOrganizationOwner(): bool
+    {
+        return $this->org_role === self::ORG_ROLE_OWNER;
+    }
+
+    /**
+     * Whether the user can manage the organization's members, invites, and seats.
+     */
+    public function canManageOrganization(): bool
+    {
+        return in_array($this->org_role, [self::ORG_ROLE_OWNER, self::ORG_ROLE_ADMIN], true);
+    }
+
+    /**
+     * Whether the user's organization membership is currently active.
+     */
+    public function hasActiveMembership(): bool
+    {
+        return $this->hasOrganization() && $this->org_status === self::ORG_STATUS_ACTIVE;
     }
 
     /**
@@ -76,15 +129,21 @@ class User extends Authenticatable
     }
 
     /**
-     * The user's billing subscription.
+     * The billing subscription that governs this user's access. Subscriptions
+     * belong to the organization, not the individual, so this resolves through
+     * the user's organization; accounts without an organization fall back to
+     * their own latest subscription row (admins and legacy rows).
      */
-    public function subscription(): HasOne
+    protected function subscription(): Attribute
     {
-        return $this->hasOne(Subscription::class)->latestOfMany();
+        return Attribute::get(function (): ?Subscription {
+            return $this->organization?->subscription
+                ?? $this->subscriptions()->latest('id')->first();
+        });
     }
 
     /**
-     * All billing subscriptions for this user.
+     * All billing subscriptions created by this user as the purchaser.
      */
     public function subscriptions(): HasMany
     {
@@ -92,7 +151,7 @@ class User extends Authenticatable
     }
 
     /**
-     * The current plan via the active subscription.
+     * The current plan via the organization's active subscription.
      */
     public function plan(): ?Plan
     {

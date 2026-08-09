@@ -33,6 +33,7 @@ class PaymongoGateway implements PaymentGateway
 
         $subscription = Subscription::create([
             'user_id' => $user->id,
+            'organization_id' => $user->organization_id,
             'plan_id' => $plan->id,
             'interval' => $interval,
             'gateway' => BillingGateway::Paymongo->value,
