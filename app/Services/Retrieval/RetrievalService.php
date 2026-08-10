@@ -20,7 +20,9 @@ class RetrievalService
      * Embed the query and retrieve context from both the shared legal
      * knowledge base (priority 1) and the user's own documents (priority 2).
      * When a case is given, document retrieval is scoped to the documents
-     * attached to that case.
+     * attached to that case. When no case is given (general chat), only
+     * general documents (not attached to any case) are retrieved —
+     * case-specific documents stay scoped to their case.
      */
     public function retrieve(User $user, string $query, ?LegalCase $case = null): RetrievalResult
     {
@@ -40,11 +42,18 @@ class RetrievalService
         $documentChunks = DocumentChunk::query()
             ->select(['id', 'document_id', 'user_id', 'chunk_index', 'content'])
             ->where('user_id', $user->id)
-            ->with('document:id,title,original_filename')
-            ->when($case !== null, fn ($query) => $query->whereHas(
-                'document',
-                fn ($documentQuery) => $documentQuery->where('case_id', $case->id),
-            ))
+            ->with('document:id,title,original_filename,case_id')
+            ->when(
+                $case !== null,
+                fn ($query) => $query->whereHas(
+                    'document',
+                    fn ($documentQuery) => $documentQuery->where('case_id', $case->id),
+                ),
+                fn ($query) => $query->whereHas(
+                    'document',
+                    fn ($documentQuery) => $documentQuery->whereNull('case_id'),
+                ),
+            )
             ->whereVectorSimilarTo(
                 'embedding',
                 $embedding,
