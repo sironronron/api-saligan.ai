@@ -118,6 +118,21 @@ class ChatService
             ? $this->buildInstructions($retrieval, $provider, $exportRequested, $case, $template, $legalTemplate, staticInstructions: '', user: $conversation->user)
             : $this->buildInstructions($retrieval, $provider, $exportRequested, $case, $template, $legalTemplate, $staticInstructions, user: $conversation->user);
 
+        // The legal-drafting disclaimer is included only on the first
+        // drafting turn in a conversation. Once any assistant message
+        // carries it, subsequent turns skip it.
+        if (! $this->hasDisclaimerBeenShown($conversation)) {
+            $instructions .= "\n\n=== DISCLAIMER ===\n"
+                .'IMPORTANT: You are a legal research and drafting-support assistant, '
+                .'not a licensed Philippine attorney. Include the following disclaimer '
+                .'once at the end of your first drafted document in this session, '
+                .'outside the [[DOCUMENT_END]] marker: '
+                .'"Disclaimer: I\'m a legal research and drafting-support assistant, '
+                .'not a licensed Philippine attorney. This analysis should be reviewed '
+                .'by your lawyer before use in negotiation or litigation." '
+                .'Do NOT include this disclaimer on subsequent messages in this session.';
+        }
+
         // Web search is always offered when the provider supports it: it is the
         // primary source when retrieval is empty and a backup for verifying or
         // investigating sources when retrieved context exists.
@@ -683,9 +698,7 @@ You are a legal drafting assistant that helps users prepare documents and
 correspondence related to agricultural and real estate matters — transactions
 with government entities, transactions with private parties, and general
 formal legal letters — grounded in applicable rules, provisions, amendments,
-and jurisprudence. You are not a substitute for a licensed attorney, and
-every response must include this disclaimer once per session, not on every
-message.
+and jurisprudence. You are not a substitute for a licensed attorney.
  
 === FACT-GATHERING: DRAFT WITH WHAT YOU HAVE, COLLECT ONLY WHAT YOU NEED ===
 When the user requests that you DRAFT, PREPARE, WRITE, or CREATE any document
@@ -1028,7 +1041,7 @@ For a SPECIAL POWER OF ATTORNEY:
   ([[DOCUMENT_START]]) and a defined end ([[DOCUMENT_END]]). Never omit the
   closing marker, and never place anything inside the markers other than the
   letter itself.
-- Everything OUTSIDE the markers is chat-only and must never be duplicated inside them: no "Here is your draft" preamble, no confirmations, no explanations of what you did, and no legal-advice disclaimer. The once-per-session disclaimer belongs OUTSIDE the markers.
+- Everything OUTSIDE the markers is chat-only and must never be duplicated inside them: no "Here is your draft" preamble, no confirmations, no explanations of what you did. If the === DISCLAIMER === block is present in your instructions, include that disclaimer text OUTSIDE the markers (after [[DOCUMENT_END]]).
 - The "Next Steps" checklist and its [[TODO_START]]/[[TODO_END]] markers belong OUTSIDE the document markers, after [[DOCUMENT_END]], so they stay out of the exported Word/PDF files.
 - The export links (Word/PDF), when present, must also appear OUTSIDE the
   markers, after [[DOCUMENT_END]] — they are not part of the document.
@@ -1039,6 +1052,7 @@ For a SPECIAL POWER OF ATTORNEY:
 - Inside the document markers, the letter begins directly with its letterhead or sender block. Never open the document with meta text such as "Based on the documents provided...", "Here is your draft...", "As requested...", "Below is your letter...", or any other narration about what you did. Such text is chat-only (or not written at all) and must never appear inside the markers.
 - The letter itself must never contain a "Next Steps", "Checklist", "Action Items", or "What to Do Next" section. If the user needs a checklist, it is delivered exclusively as the chat-only todo list placed after [[DOCUMENT_END]].
 - Optional contact details (email address, contact number) are only written when the user actually provided them. When an optional fact was not provided, OMIT that line entirely — never write "[Email Address]", "[Contact Number]", "[Date]", or any other bracketed placeholder inside the document for an unprovided fact. Every bracketed placeholder in a draft is an error: an uncollected fact must instead be added to the request_intake_form fields, and an unprovided optional fact must simply be left out of the letter.
+- NUMBERED LISTS: Use sequential numbering (1., 2., 3., etc.) for all numbered paragraphs, items, and lists. Never repeat "1." on every line — each item must have its own sequential number. This applies to all sections: THE PARTIES, STATEMENT OF FACTS, PRAYER, and any other numbered content.
  
 Never fabricate case law, statutes, administrative issuances, or citations.
 If you are not certain a legal reference is accurate, say so explicitly
@@ -1222,6 +1236,19 @@ PROMPT;
     protected function openaiConfigured(): bool
     {
         return filled(config('ai.providers.openai.key'));
+    }
+
+    /**
+     * Whether the legal-drafting disclaimer has already appeared in an
+     * assistant message in this conversation. Used to inject the disclaimer
+     * instruction only on the first drafting turn.
+     */
+    protected function hasDisclaimerBeenShown(Conversation $conversation): bool
+    {
+        return $conversation->messages()
+            ->where('role', MessageRole::Assistant)
+            ->where('content', 'LIKE', '%not a substitute for a licensed attorney%')
+            ->exists();
     }
 
     /**

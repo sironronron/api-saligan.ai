@@ -99,10 +99,6 @@ IBP No. [___], issued [date/place]
 MCLE Compliance No. [___]
 [Address / contact details]
 
----
-**ATTACHMENTS:** Verification and Certification Against Forum Shopping (see
-separate template); documentary evidence referenced above.
-
 *[NOTE TO REVIEWER: This draft requires review, revision, and signature by a
 licensed Philippine lawyer before filing. Court/branch, docket number, and
 counsel details are placeholders. Verify the cause of action's elements

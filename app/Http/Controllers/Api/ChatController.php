@@ -202,6 +202,16 @@ class ChatController extends Controller
                     // not the model narrating what it is about to do.
                     if (! $draftStarted && str_contains($lastText, '[[DOCUMENT_START]]')) {
                         $draftStarted = true;
+                        // Once drafting begins, stop buffering and stream
+                        // the document character-by-character for smoothness.
+                        $buffering = false;
+
+                        // Release any buffered text that preceded the marker
+                        // (e.g. the marker itself and any preamble).
+                        if ($bufferedText !== '') {
+                            yield $emit('delta', ['delta' => $bufferedText]);
+                            $bufferedText = '';
+                        }
 
                         yield $emit('status', [
                             'status' => 'drafting_document',

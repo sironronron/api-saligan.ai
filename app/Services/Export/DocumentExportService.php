@@ -41,7 +41,9 @@ class DocumentExportService
         $lines = preg_split('/\R/', $markdown);
 
         foreach ($lines as $line) {
-            if (str_starts_with($line, '### ')) {
+            if (preg_match('/^x-{4,}x$/', trim($line))) {
+                $section->addHtml('<hr>');
+            } elseif (str_starts_with($line, '### ')) {
                 $section->addTitle(substr($line, 4), 3);
             } elseif (str_starts_with($line, '## ')) {
                 $section->addTitle(substr($line, 3), 2);
@@ -90,6 +92,7 @@ class DocumentExportService
     p { margin-bottom: 8pt; }
     ul, ol { margin-left: 20pt; margin-bottom: 8pt; }
     li { margin-bottom: 4pt; }
+    hr { border: none; border-top: 1px solid #999999; margin: 8pt 0; }
     code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; font-size: 10pt; }
     strong { font-weight: bold; }
     em { font-style: italic; }
@@ -182,6 +185,15 @@ HTML;
 
         $cleaned = preg_replace('/^\s*\[\[(TODO|DOCUMENT)_(START|END)\]\]\s*$/m', '', (string) $cleaned);
         $cleaned = preg_replace('/^\s*Next Steps Checklist Created Below Using create_todo Tool:\s*$/im', '', (string) $cleaned);
+
+        // Strip the ATTACHMENTS section: the heading, any horizontal rule
+        // before it, and the body text that follows until the next heading
+        // or end of document.
+        $cleaned = preg_replace(
+            '/\s*-{3,}\s*\*{0,2}\s*ATTACHMENTS?\s*\*{0,2}\s*:?\s*.*?(?=\n\s*(?:#{1,6}\s|\*{2}\s*\[NOTE|$))/is',
+            '',
+            (string) $cleaned,
+        );
 
         $cleaned = $this->stripPreamble((string) $cleaned);
         $cleaned = $this->normalizeDatePlaceholders((string) $cleaned);
@@ -416,6 +428,17 @@ HTML;
                 continue;
             }
 
+            // Strip counsel placeholder lines: "Roll of Attorneys No. [___]",
+            // "PTR No. [___], issued [date/place]", etc.
+            if (preg_match('/^\s*(?:Roll of Attorneys|PTR|IBP|MCLE)\s+No\.\s*\[[_]+\]\s*/i', $trimmed) === 1) {
+                continue;
+            }
+
+            // Strip standalone bracketed placeholders like "[Address / contact details]"
+            if (preg_match('/^\s*\[(?:[_]+|[A-Za-z \/]+)\]\s*$/', $trimmed) === 1) {
+                continue;
+            }
+
             $out[] = $line;
         }
 
@@ -471,6 +494,17 @@ HTML;
 
         foreach ($lines as $line) {
             $trimmed = rtrim($line);
+
+            // Horizontal divider: x---x pattern → <hr>
+            if (preg_match('/^x-{4,}x$/', trim($trimmed))) {
+                if ($list !== null) {
+                    $out[] = "</{$list}>";
+                    $list = null;
+                }
+                $out[] = '<hr>';
+
+                continue;
+            }
 
             if ($this->isBulletLine($trimmed)) {
                 if ($list !== 'ul') {
