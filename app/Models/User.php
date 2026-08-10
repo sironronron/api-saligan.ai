@@ -15,7 +15,21 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
-#[Fillable(['name', 'email', 'password', 'organization_id', 'org_role', 'org_status'])]
+#[Fillable([
+    'name',
+    'email',
+    'password',
+    'organization_id',
+    'org_role',
+    'org_status',
+    'kyc_role',
+    'kyc_role_other',
+    'kyc_use_case',
+    'kyc_use_case_other',
+    'kyc_document_types',
+    'kyc_experience_level',
+    'kyc_completed_at',
+])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -45,7 +59,18 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'is_admin' => 'boolean',
+            'kyc_completed_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Whether the user has completed the optional onboarding profile
+     * (role + primary use case). A null completed-at timestamp means the
+     * user skipped onboarding, so no profile-based calibration applies.
+     */
+    public function hasKycProfile(): bool
+    {
+        return $this->kyc_completed_at !== null;
     }
 
     /**

@@ -17,9 +17,14 @@ class RequestIntakeFormTool implements Tool
      *                                                            status reflects
      *                                                            actual tool
      *                                                            execution.
+     * @param  bool  $suppressed  When true, the case context already supplies
+     *                            the facts, so the tool does not collect a form
+     *                            — it instructs the model to draft directly
+     *                            from the case context instead.
      */
     public function __construct(
         private readonly mixed $onStatus = null,
+        private readonly bool $suppressed = false,
     ) {}
 
     /**
@@ -55,6 +60,16 @@ class RequestIntakeFormTool implements Tool
      */
     public function handle(Request $request): string
     {
+        if ($this->suppressed) {
+            // The case context already supplies the facts, so the form is not
+            // shown. The model receives this directive as the tool result and
+            // must draft straight from the case context instead of interrupting
+            // the user — and never call this tool again for the same request.
+            return 'INTAKE FORM SUPPRESSED: the CASE CONTEXT above already contains the facts needed to draft this document. '
+                .'Do NOT call request_intake_form again and do NOT ask the user for these facts in chat. '
+                .'Draft the complete document now using the CASE CONTEXT, the conversation history, and any uploaded documents.';
+        }
+
         $this->onStatus?->__invoke('gathering_facts');
 
         $documentType = $request->string('document_type') ?? null;

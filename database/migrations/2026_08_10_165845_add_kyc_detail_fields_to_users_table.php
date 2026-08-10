@@ -12,10 +12,8 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('users', function (Blueprint $table) {
-            $table->foreignId('organization_id')->nullable()->after('id')->index()
-                ->constrained()->nullOnDelete();
-            $table->string('org_role', 20)->nullable()->after('is_admin');
-            $table->string('org_status', 20)->nullable()->after('org_role');
+            $table->string('kyc_document_types', 255)->nullable()->after('kyc_use_case_other');
+            $table->string('kyc_experience_level', 40)->nullable()->after('kyc_document_types');
         });
     }
 
@@ -25,8 +23,10 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('users', function (Blueprint $table) {
-            $table->dropConstrainedForeignId('organization_id');
-            $table->dropColumn(['org_role', 'org_status']);
+            $table->dropColumn([
+                'kyc_document_types',
+                'kyc_experience_level',
+            ]);
         });
     }
 };

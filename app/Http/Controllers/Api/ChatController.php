@@ -9,11 +9,14 @@ use App\Services\Chat\ChatService;
 use App\Support\ChatStatus;
 use App\Support\DraftingIntent;
 use App\Support\PlanLimits;
+use App\Support\WebCitationParser;
 use Closure;
 use Generator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Laravel\Ai\Streaming\Events\Citation;
 use Laravel\Ai\Streaming\Events\Error as ErrorEvent;
+use Laravel\Ai\Streaming\Events\ProviderToolEvent;
 use Laravel\Ai\Streaming\Events\StreamEnd;
 use Laravel\Ai\Streaming\Events\TextDelta;
 use Laravel\Ai\Streaming\Events\ToolCall;
@@ -122,6 +125,8 @@ class ChatController extends Controller
         $buffering = $isDraftingRequest && ! $isIntakeSubmission;
         $bufferedText = '';
         $draftStarted = false;
+        $webSeen = [];
+        $webIndex = 0;
 
         try {
             $stream = $this->chatService->stream(
@@ -166,6 +171,27 @@ class ChatController extends Controller
                     $completed = true;
                 }
 
+                // Web citations stream live, the instant the provider records
+                // one, so the sources panel fills in before the answer ends.
+                // Deduplicated by URL in first-seen order — the same numbering
+                // the persisted web_citations metadata gets on reload.
+                if ($event instanceof Citation || ($event instanceof ProviderToolEvent && $event->type === 'web_search_tool_result')) {
+                    foreach (WebCitationParser::fromEvent($event) as $citation) {
+                        $url = $citation['url'];
+
+                        if (isset($webSeen[$url])) {
+                            $webSeen[$url]['snippet'] ??= $citation['snippet'] ?? null;
+
+                            continue;
+                        }
+
+                        $webSeen[$url] = $citation;
+                        $webIndex++;
+
+                        yield $emit('citation', WebCitationParser::source($citation, $webIndex));
+                    }
+                }
+
                 if ($event instanceof TextDelta) {
                     $textLength += strlen($event->delta);
                     $lastText .= $event->delta;
@@ -192,6 +218,19 @@ class ChatController extends Controller
 
                 if ($event instanceof ToolCall) {
                     if ($event->toolCall->name === 'request_intake_form') {
+                        // When the case already supplies the facts (a filled
+                        // description and/or uploaded documents), the intake
+                        // form is suppressed: the model must draft directly
+                        // from the case context instead of interrupting the
+                        // user for facts the case already holds. The stream
+                        // continues and the tool executes server-side with a
+                        // directive to draft from the case context; the
+                        // premature-draft fallback below still catches drafts
+                        // that genuinely turned out to need more facts.
+                        if (! $isIntakeSubmission && $this->chatService->caseSuppliesFacts($conversation)) {
+                            continue;
+                        }
+
                         $intakeRequested = true;
 
                         // The form fields are authoritative server-side so
@@ -276,39 +315,36 @@ class ChatController extends Controller
                 yield $emit('error', ['message' => $error]);
             } else {
                 if ($buffering && ! $intakeRequested) {
-                    // The model drafts directly with the facts it already
-                    // has. The intake form is only triggered when the draft
-                    // shows the model still needs facts (bracketed
-                    // placeholders, an empty reply, or no document markers);
-                    // such a premature draft is discarded and re-collected
-                    // through the intake form instead.
-                    $premature = $bufferedText === ''
-                        || DraftingIntent::containsBrackets($bufferedText)
-                        || ! DraftingIntent::isCompleteDocument($bufferedText);
-
-                    if ($premature) {
+                    // The model asked for the missing facts in chat using the
+                    // [[NEED_INFO]] marker contract. Those questions become
+                    // the intake form — the user answers exactly what the
+                    // model asked for — so the reply is not delivered as a
+                    // dead-end clarification. Fields the case context already
+                    // covers are dropped, and the model's question text is
+                    // discarded rather than persisted as an assistant message.
+                    if (DraftingIntent::needsInfo($bufferedText)) {
                         if ($bufferedText !== '') {
                             $this->chatService->discardLastAssistantMessage();
                         }
 
-                        $documentType = DraftingIntent::documentTypeFor($message);
+                        $fields = DraftingIntent::intakeFieldsFromNeedsInfo($bufferedText);
 
-                        $fields = DraftingIntent::mergeIntakeFields(
-                            $this->chatService->intakeFieldsFor($conversation, $message, $documentType),
-                            DraftingIntent::extractBracketFields($bufferedText),
-                        );
+                        if ($this->chatService->caseSuppliesFacts($conversation)) {
+                            $fields = $this->chatService->dropCaseCoveredFields($conversation, $fields);
+                        }
 
                         yield $emit('tool_call', [
                             'name' => 'request_intake_form',
                             'arguments' => [
-                                'document_type' => $documentType,
+                                'document_type' => DraftingIntent::documentTypeFor($message),
                                 'fields' => $fields,
                                 'default_values' => $this->chatService->recentIntakeValues($conversation),
                             ],
                         ]);
                     } elseif ($bufferedText !== '') {
-                        // The draft is complete and free of placeholders, so
-                        // the buffered document is a legitimate direct draft.
+                        // Any other buffered reply is the model's answer — a
+                        // legitimate direct draft (markers waived when the
+                        // case supplies the facts) or a plain chat reply.
                         yield $emit('delta', ['delta' => $bufferedText]);
                     }
                 }
@@ -373,6 +409,6 @@ class ChatController extends Controller
     protected function sseFrame(string $event, array $data): string
     {
         return "event: {$event}\n"
-            .'data: '.json_encode($data, JSON_UNESCAPED_UNICODE)."\n\n";
+            .'data: '.json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)."\n\n";
     }
 }

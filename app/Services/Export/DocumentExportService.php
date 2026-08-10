@@ -397,8 +397,8 @@ HTML;
     /**
      * Drop lines that are only bracketed placeholders for facts the user never
      * provided (e.g. "[Contact Number]", "[Email Address]") and dangling
-     * "Label: [Placeholder]" lines. Citation tags such as [Web 1], [Source 1],
-     * and [User Doc 1] are untouched because they carry a digit.
+     * "Label: [Placeholder]" lines. Citation tags such as [Web 1], [SRC K3F9],
+     * and [DOC X1Y2] are untouched because they carry a digit.
      */
     protected function stripBracketPlaceholderLines(string $body): string
     {

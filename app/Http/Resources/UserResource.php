@@ -26,6 +26,13 @@ class UserResource extends JsonResource
             'organization_id' => $this->organization_id,
             'org_role' => $this->org_role,
             'org_status' => $this->org_status,
+            'kyc_role' => $this->kyc_role,
+            'kyc_role_other' => $this->kyc_role_other,
+            'kyc_use_case' => $this->kyc_use_case,
+            'kyc_use_case_other' => $this->kyc_use_case_other,
+            'kyc_document_types' => $this->kyc_document_types,
+            'kyc_experience_level' => $this->kyc_experience_level,
+            'kyc_completed_at' => $this->kyc_completed_at,
             'created_at' => $this->created_at,
         ];
     }

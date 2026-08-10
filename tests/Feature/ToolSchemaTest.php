@@ -73,6 +73,35 @@ it('does not fire a status when the intake form tool has no callback', function 
     expect(json_decode($result, true))->toHaveKey('document_type', 'complaint');
 });
 
+it('suppressed intake form tool instructs the model to draft from the case context', function () {
+    $tool = new RequestIntakeFormTool(suppressed: true);
+
+    $result = $tool->handle(new Request([
+        'document_type' => 'formal letter',
+        'fields' => [['key' => 'facts', 'label' => 'Facts', 'type' => 'textarea', 'required' => true]],
+    ]));
+
+    expect($result)
+        ->toContain('INTAKE FORM SUPPRESSED')
+        ->toContain('Draft the complete document now using the CASE CONTEXT')
+        ->not->toContain('"fields"');
+});
+
+it('suppressed intake form tool does not fire the gathering_facts status', function () {
+    $statuses = [];
+
+    $tool = new RequestIntakeFormTool(function (string $status, ?string $label = null) use (&$statuses): void {
+        $statuses[] = [$status, $label];
+    }, suppressed: true);
+
+    $tool->handle(new Request([
+        'document_type' => 'formal letter',
+        'fields' => [],
+    ]));
+
+    expect($statuses)->toBe([]);
+});
+
 it('create todo schema serializes to a valid tool definition', function () {
     $schema = (new CreateTodoTool('019fcbbb-5c51-7168-bad0-128742198ebd'))->schema(new JsonSchemaTypeFactory);
 

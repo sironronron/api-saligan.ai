@@ -7,6 +7,14 @@ use Illuminate\Support\Str;
 final class DraftingIntent
 {
     /**
+     * The marker a model reply must open with when it needs facts and writes
+     * its questions out in chat instead of completing the draft. Everything
+     * after the marker line is converted into intake form fields, so the
+     * questions the user answers are exactly the ones the model asked for.
+     */
+    public const NEED_INFO_MARKER = '[[NEED_INFO]]';
+
+    /**
      * Canonical intake field definitions. Each key is the single source of
      * truth for a fact's human-readable label, input type, and optional
      * grouping or conditional visibility. Bracket placeholders that match a
@@ -722,6 +730,26 @@ final class DraftingIntent
     }
 
     /**
+     * Whether a marker-less reply is a substantive drafted document rather
+     * than a plain chat answer: it must open like a legal document (letter
+     * salutation or a Republic of the Philippines caption), close like one
+     * (a signature block or a notarial acknowledgement), and be long enough
+     * to be a real draft. Used so export links still reach drafts the model
+     * forgot to wrap in the boundary markers.
+     */
+    public static function isSubstantiveDraft(string $text): bool
+    {
+        if (mb_strlen($text) < 400) {
+            return false;
+        }
+
+        $opens = preg_match('/(?m)^\s*(?:Dear |Ginoong |Ginang |Kgg\.?|REPUBLIC OF THE PHILIPPINES|REPUBLIKA NG PILIPINAS)/i', $text) === 1;
+        $closes = preg_match('/(?:Very truly yours|Respectfully yours|Truly yours|Yours faithfully|Sincerely|Gumagalang|Lubos na gumagalang|SUBSCRIBED AND SWORN|ACKNOWLEDGMENT)/i', $text) === 1;
+
+        return $opens && $closes;
+    }
+
+    /**
      * Whether the text contains unknown facts written as bracketed
      * placeholders (e.g. "[Your Full Name]", "[CLOA No.]"). Meta tokens such
      * as the document markers or the intake submission wrapper are ignored.
@@ -742,6 +770,99 @@ final class DraftingIntent
     public static function isCompleteDocument(string $text): bool
     {
         return str_contains($text, '[[DOCUMENT_START]]');
+    }
+
+    /**
+     * Whether a drafting reply asks for the facts it needs via the
+     * [[NEED_INFO]] marker. This is the single contract for re-opening the
+     * intake form from a model response: the form is only triggered when the
+     * model explicitly signals it cannot complete the draft without more
+     * information.
+     */
+    public static function needsInfo(string $text): bool
+    {
+        return str_contains($text, self::NEED_INFO_MARKER);
+    }
+
+    /**
+     * Extract the questions a model asked for after the [[NEED_INFO]] marker,
+     * one per line, stripped of bullet/prefix decorations. Returns an empty
+     * array when the marker is absent or nothing readable follows it.
+     *
+     * @return array<int, string>
+     */
+    public static function extractNeedsInfoQuestions(string $text): array
+    {
+        $markerIndex = strrpos($text, self::NEED_INFO_MARKER);
+
+        if ($markerIndex === false) {
+            return [];
+        }
+
+        $questions = [];
+
+        foreach (explode("\n", substr($text, $markerIndex + strlen(self::NEED_INFO_MARKER))) as $line) {
+            $line = trim((string) preg_replace('/^[\s\->*•.\d]+\s*/u', '', $line));
+
+            if ($line === '' || preg_match('/[a-z0-9]/i', $line) !== 1) {
+                continue;
+            }
+
+            $questions[] = $line;
+        }
+
+        return $questions;
+    }
+
+    /**
+     * Convert a model response carrying the [[NEED_INFO]] marker into intake
+     * form fields, so the form collects exactly the facts the model said it
+     * was missing. Questions that match a canonical concept collapse onto its
+     * key (and type/section/conditional); the rest keep a slugged key derived
+     * from the question's subject. The model's own wording becomes the field
+     * label.
+     *
+     * @return array<int, array{key: string, label: string, type: string, section?: string, conditional?: array{field: string, values: array<int, string>}, required: bool}>
+     */
+    public static function intakeFieldsFromNeedsInfo(string $text): array
+    {
+        if (! self::needsInfo($text)) {
+            return [];
+        }
+
+        $fields = [];
+        $seen = [];
+
+        foreach (self::extractNeedsInfoQuestions($text) as $question) {
+            $key = self::synonymFor($question) ?? Str::slug(self::questionSubject($question), '_', 'en');
+
+            if ($key === '' || isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+
+            $definition = self::CANONICAL_FIELDS[$key] ?? null;
+
+            $field = [
+                'key' => $key,
+                'label' => $question,
+                'type' => $definition['type'] ?? self::questionFieldType($question),
+                'required' => true,
+            ];
+
+            if (isset($definition['section'])) {
+                $field['section'] = $definition['section'];
+            }
+
+            if (isset($definition['conditional'])) {
+                $field['conditional'] = $definition['conditional'];
+            }
+
+            $fields[] = $field;
+        }
+
+        return $fields;
     }
 
     /**
@@ -938,7 +1059,7 @@ final class DraftingIntent
     /**
      * Whether a bracketed token is a protocol/metadata marker rather than a
      * fact placeholder (document/todo markers, the intake wrapper, inline
-     * citation tags such as [Source 1], etc.).
+     * citation tags such as [SRC K3F9], [DOC X1Y2], or [Source 1], etc.).
      */
     private static function isMetaToken(string $token): bool
     {
@@ -949,6 +1070,10 @@ final class DraftingIntent
         }
 
         if (preg_match('/^(SOURCE|USER DOC|WEB)\s+\d+$/', $needle) === 1) {
+            return true;
+        }
+
+        if (preg_match('/^(SRC|DOC)\s+[A-Z0-9]+$/', $needle) === 1) {
             return true;
         }
 
@@ -979,6 +1104,55 @@ final class DraftingIntent
 
         if (str_contains($needle, 'facts') || str_contains($needle, 'description')
             || str_contains($needle, 'details') || str_contains($needle, 'statement')) {
+            return 'textarea';
+        }
+
+        return 'text';
+    }
+
+    /**
+     * The subject a fact-gathering question is really about, used to derive a
+     * stable key when the question does not match a canonical concept — e.g.
+     * "What is the amount being demanded?" → "the amount being demanded".
+     */
+    private static function questionSubject(string $question): string
+    {
+        $subject = rtrim(trim($question), " \t\n\r?.,");
+
+        $subject = preg_replace(
+            '/^(?:what|who|whom|whose|when|where|why|which|how)\s+(?:is|are|was|were|do|does|did|would|could|should|can|will|shall|have|has)\s+/i',
+            '',
+            $subject,
+        ) ?? $subject;
+
+        $subject = preg_replace(
+            '/^(?:please\s+)?(?:provide|state|indicate|give|share|enter|tell|supply|specify)\s+(?:me\s+)?(?:your\s+|the\s+|a\s+|an\s+)?/i',
+            '',
+            $subject,
+        ) ?? $subject;
+
+        return trim($subject) === '' ? $question : trim($subject);
+    }
+
+    /**
+     * Infer the intake input type from a fact-gathering question's wording.
+     */
+    private static function questionFieldType(string $text): string
+    {
+        $needle = mb_strtolower($text);
+
+        if (str_contains($needle, 'date') || str_contains($needle, 'deadline') || str_contains($needle, 'when')) {
+            return 'date';
+        }
+
+        if (str_contains($needle, 'number') || str_contains($needle, 'amount')
+            || str_contains($needle, 'how much') || str_contains($needle, 'how many')) {
+            return 'number';
+        }
+
+        if (str_contains($needle, 'facts') || str_contains($needle, 'description')
+            || str_contains($needle, 'details') || str_contains($needle, 'statement')
+            || str_contains($needle, 'narrative') || str_contains($needle, 'explain')) {
             return 'textarea';
         }
 

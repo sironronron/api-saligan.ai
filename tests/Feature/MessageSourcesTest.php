@@ -9,6 +9,7 @@ use App\Models\LegalChunk;
 use App\Models\LegalSource;
 use App\Models\Message;
 use App\Models\User;
+use App\Support\CitationTokens;
 use App\Support\MessageSources;
 
 it('resolves legal and document source cards actually cited by a message', function () {
@@ -31,10 +32,14 @@ it('resolves legal and document source cards actually cited by a message', funct
         'content' => 'My notes on the case.',
     ]);
 
+    $tokens = CitationTokens::assign([(string) $page->id, (string) $document->id]);
+    $legalToken = $tokens[(string) $page->id];
+    $docToken = $tokens[(string) $document->id];
+
     $message = Message::factory()->create([
         'role' => MessageRole::Assistant,
         'provider' => ChatProvider::Ollama,
-        'content' => 'Under [Source 1], agrarian reform applies. See also [User Doc 1].',
+        'content' => "Under [SRC {$legalToken}], agrarian reform applies. See also [DOC {$docToken}].",
         'cited_legal_chunk_ids' => [$legalChunk->id],
         'cited_chunk_ids' => [$docChunk->id],
     ]);
@@ -43,11 +48,13 @@ it('resolves legal and document source cards actually cited by a message', funct
 
     expect($sources)->toHaveCount(2)
         ->and($sources[0]['type'])->toBe('legal')
+        ->and($sources[0]['token'])->toBe($legalToken)
         ->and($sources[0]['label'])->toBe('RA No. 6657')
         ->and($sources[0]['source_name'])->toBe('LawPhil')
         ->and($sources[0]['url'])->toBe($page->url)
         ->and($sources[0]['excerpt'])->toContain('Comprehensive Agrarian Reform Law')
         ->and($sources[1]['type'])->toBe('document')
+        ->and($sources[1]['token'])->toBe($docToken)
         ->and($sources[1]['label'])->toBe('case-brief.pdf');
 });
 
@@ -62,8 +69,10 @@ it('omits retrieved sources that were not cited inline', function () {
     $document = Document::factory()->for($user)->create(['original_filename' => 'case-brief.pdf']);
     $docChunk = DocumentChunk::factory()->for($document)->for($user)->create(['content' => 'My notes.']);
 
+    $tokens = CitationTokens::assign([(string) $firstPage->id, (string) $secondPage->id, (string) $document->id]);
+
     $message = Message::factory()->create([
-        'content' => 'Only the first source was used [Source 1].',
+        'content' => "Only the first source was used [SRC {$tokens[(string) $firstPage->id]}].",
         'cited_legal_chunk_ids' => [$firstChunk->id, $secondChunk->id],
         'cited_chunk_ids' => [$docChunk->id],
     ]);
@@ -75,14 +84,16 @@ it('omits retrieved sources that were not cited inline', function () {
         ->and(collect($sources)->pluck('label'))->not->toContain('case-brief.pdf');
 });
 
-it('resolves citation indices against the order sources appear in context', function () {
+it('resolves sources by citation token regardless of retrieval order', function () {
     $firstPage = CrawledPage::factory()->create(['law_name' => 'RA No. 6657']);
     $secondPage = CrawledPage::factory()->create(['law_name' => 'RA No. 8371']);
     $firstChunk = LegalChunk::factory()->for($firstPage)->create(['content' => 'Agrarian reform coverage.']);
     $secondChunk = LegalChunk::factory()->for($secondPage)->create(['content' => 'IPRA coverage.']);
 
+    $tokens = CitationTokens::assign([(string) $firstPage->id, (string) $secondPage->id]);
+
     $message = Message::factory()->create([
-        'content' => 'As stated in [Source 2], the IPRA law applies.',
+        'content' => "As stated in [SRC {$tokens[(string) $secondPage->id]}], the IPRA law applies.",
         'cited_legal_chunk_ids' => [$firstChunk->id, $secondChunk->id],
     ]);
 
@@ -92,9 +103,32 @@ it('resolves citation indices against the order sources appear in context', func
         ->and($sources[0]['label'])->toBe('RA No. 8371');
 });
 
+it('resolves legacy [Source N] / [User Doc N] markers by position', function () {
+    $firstPage = CrawledPage::factory()->create(['law_name' => 'RA No. 6657']);
+    $secondPage = CrawledPage::factory()->create(['law_name' => 'RA No. 8371']);
+    $firstChunk = LegalChunk::factory()->for($firstPage)->create(['content' => 'Agrarian reform coverage.']);
+    $secondChunk = LegalChunk::factory()->for($secondPage)->create(['content' => 'IPRA coverage.']);
+
+    $user = User::factory()->create();
+    $document = Document::factory()->for($user)->create(['original_filename' => 'case-brief.pdf']);
+    $docChunk = DocumentChunk::factory()->for($document)->for($user)->create(['content' => 'My notes.']);
+
+    $message = Message::factory()->create([
+        'content' => 'As stated in [Source 2] and [User Doc 1], the rules apply.',
+        'cited_legal_chunk_ids' => [$firstChunk->id, $secondChunk->id],
+        'cited_chunk_ids' => [$docChunk->id],
+    ]);
+
+    $sources = MessageSources::for($message);
+
+    expect($sources)->toHaveCount(2)
+        ->and($sources[0]['label'])->toBe('RA No. 8371')
+        ->and($sources[1]['label'])->toBe('case-brief.pdf');
+});
+
 it('omits sources that no longer exist', function () {
     $message = Message::factory()->create([
-        'content' => 'Cites [Source 1].',
+        'content' => 'Cites [SRC AAAA].',
         'cited_legal_chunk_ids' => [fake()->uuid()],
         'cited_chunk_ids' => [fake()->uuid()],
     ]);
@@ -114,9 +148,11 @@ it('deduplicates source cards that share the same source', function () {
     $firstDocChunk = DocumentChunk::factory()->for($document)->for($user)->create(['content' => 'Note one.']);
     $secondDocChunk = DocumentChunk::factory()->for($document)->for($user)->create(['content' => 'Note two.']);
 
+    $tokens = CitationTokens::assign([(string) $page->id, (string) $document->id]);
+
     $message = Message::factory()->create([
         'role' => MessageRole::Assistant,
-        'content' => 'See [Source 1] and [User Doc 1].',
+        'content' => "See [SRC {$tokens[(string) $page->id]}] and [DOC {$tokens[(string) $document->id]}].",
         'cited_legal_chunk_ids' => [$firstChunk->id, $secondChunk->id],
         'cited_chunk_ids' => [$firstDocChunk->id, $secondDocChunk->id],
     ]);
@@ -130,7 +166,7 @@ it('deduplicates source cards that share the same source', function () {
         ->and($sources[1]['label'])->toBe('case-brief.pdf');
 });
 
-it('exposes citation indices, chunk ids, and a limited cited-text excerpt', function () {
+it('exposes citation tokens, indices, chunk ids, and a limited cited-text excerpt', function () {
     $user = User::factory()->create();
 
     $page = CrawledPage::factory()->create(['law_name' => 'RA No. 6657', 'url' => 'https://lawphil.net/ra6657']);
@@ -145,8 +181,12 @@ it('exposes citation indices, chunk ids, and a limited cited-text excerpt', func
         'chunk_index' => 5,
     ]);
 
+    $tokens = CitationTokens::assign([(string) $page->id, (string) $document->id]);
+    $legalToken = $tokens[(string) $page->id];
+    $docToken = $tokens[(string) $document->id];
+
     $message = Message::factory()->create([
-        'content' => 'See [Source 1] and [User Doc 1].',
+        'content' => "See [SRC {$legalToken}] and [DOC {$docToken}].",
         'cited_legal_chunk_ids' => [$legalChunk->id],
         'cited_chunk_ids' => [$docChunk->id],
     ]);
@@ -156,6 +196,7 @@ it('exposes citation indices, chunk ids, and a limited cited-text excerpt', func
     expect($sources[0])->toMatchArray([
         'type' => 'legal',
         'index' => 1,
+        'token' => $legalToken,
         'id' => $legalChunk->id,
         'chunk_index' => 3,
         'domain' => 'lawphil.net',
@@ -163,6 +204,7 @@ it('exposes citation indices, chunk ids, and a limited cited-text excerpt', func
         ->and($sources[1])->toMatchArray([
             'type' => 'document',
             'index' => 1,
+            'token' => $docToken,
             'id' => $docChunk->id,
             'chunk_index' => 5,
             'document_id' => $document->id,
@@ -271,8 +313,10 @@ it('keeps strict filtering when any source is cited inline', function () {
     $document = Document::factory()->for($user)->create(['original_filename' => 'case-brief.pdf']);
     $docChunk = DocumentChunk::factory()->for($document)->for($user)->create(['content' => 'My notes.']);
 
+    $tokens = CitationTokens::assign([(string) $firstPage->id, (string) $secondPage->id, (string) $document->id]);
+
     $message = Message::factory()->create([
-        'content' => 'Only the first law applies [Source 1].',
+        'content' => "Only the first law applies [SRC {$tokens[(string) $firstPage->id]}].",
         'cited_legal_chunk_ids' => [$firstChunk->id, $secondChunk->id],
         'cited_chunk_ids' => [$docChunk->id],
     ]);

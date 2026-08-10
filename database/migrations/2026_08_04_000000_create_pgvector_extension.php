@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Database\Migrations\Migration;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
@@ -18,6 +19,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::connection()->getPdo()->exec('DROP EXTENSION IF EXISTS vector');
+        DB::statement('DROP EXTENSION IF EXISTS vector');
     }
 };

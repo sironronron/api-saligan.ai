@@ -8,6 +8,7 @@ use App\Models\LegalChunk;
 use App\Models\LegalSource;
 use App\Models\User;
 use App\Services\Retrieval\RetrievalService;
+use App\Support\CitationTokens;
 use Illuminate\Support\Facades\Http;
 
 beforeEach(function () {
@@ -91,7 +92,7 @@ it('scopes document retrieval to the documents attached to a case', function () 
         ->and($result->documentChunks->first()->id)->toBe($caseChunk->id);
 });
 
-it('builds a context block with source labels', function () {
+it('builds a context block with labeled sources', function () {
     $source = LegalSource::factory()->create(['name' => 'LawPhil']);
     $page = CrawledPage::factory()->for($source)->create(['law_name' => 'RA No. 6657']);
     LegalChunk::factory()->for($page)->create([
@@ -112,12 +113,14 @@ it('builds a context block with source labels', function () {
         '*/api/embed' => Http::response(['embeddings' => [array_fill(0, 768, 1.0)]], 200),
     ]);
 
+    $tokens = CitationTokens::assign([(string) $page->id, (string) $document->id]);
+
     $block = app(RetrievalService::class)->retrieve($this->user, 'agrarian reform')->contextBlock();
 
     expect($block)
-        ->toContain('[Source 1]')
+        ->toContain('[SRC '.$tokens[(string) $page->id].']')
         ->toContain('RA No. 6657')
-        ->toContain('[User Doc 1]')
+        ->toContain('[DOC '.$tokens[(string) $document->id].']')
         ->toContain('case-notes.pdf');
 });
 
@@ -150,14 +153,19 @@ it('labels each distinct source exactly once when it has multiple chunks', funct
         '*/api/embed' => Http::response(['embeddings' => [array_fill(0, 768, 1.0)]], 200),
     ]);
 
+    $tokens = CitationTokens::assign([(string) $page->id, (string) $document->id]);
+    $srcMarker = '[SRC '.$tokens[(string) $page->id].']';
+    $docMarker = '[DOC '.$tokens[(string) $document->id].']';
+
     $block = app(RetrievalService::class)->retrieve($this->user, 'agrarian reform')->contextBlock();
 
     expect($block)
-        ->toContain('[Source 1]')
-        ->not->toContain('[Source 2]')
+        ->toContain($srcMarker)
         ->toContain('First section of RA 6657.')
         ->toContain('Second section of RA 6657.')
-        ->toContain('[User Doc 1]')
-        ->not->toContain('[User Doc 2]')
+        ->toContain($docMarker)
         ->toContain('case-notes.pdf');
+
+    expect(substr_count($block, $srcMarker))->toBe(1)
+        ->and(substr_count($block, $docMarker))->toBe(1);
 });

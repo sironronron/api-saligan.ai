@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\DocumentController;
 use App\Http\Controllers\Api\ExportController;
 use App\Http\Controllers\Api\FeedbackController;
 use App\Http\Controllers\Api\GeneratedDocumentController;
+use App\Http\Controllers\Api\KycController;
 use App\Http\Controllers\Api\LegalCaseController;
 use App\Http\Controllers\Api\OrganizationController;
 use App\Http\Controllers\Api\PlanController;
@@ -34,6 +35,10 @@ Route::post('/demo-requests', [DemoRequestController::class, 'store'])
 Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('/user', [AuthController::class, 'user']);
     Route::post('/logout', [AuthController::class, 'logout']);
+
+    Route::get('/kyc', [KycController::class, 'show']);
+    Route::put('/kyc', [KycController::class, 'store']);
+    Route::delete('/kyc', [KycController::class, 'destroy']);
 
     Route::get('/subscription', [SubscriptionController::class, 'show']);
     Route::post('/subscription', [SubscriptionController::class, 'store']);

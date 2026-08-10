@@ -181,9 +181,15 @@ it('reports drafting_document the instant the opening marker streams', function 
         ->toContain('Please release the certified copy of CLOA No. 01-123-456');
 });
 
-it('emits a synthetic intake form when the model leaves a premature draft', function () {
+it('triggers the intake form when the model asks for facts with the marker', function () {
+    $reply = "I need a few more details before I can draft your complaint.\n\n"
+        ."[[NEED_INFO]]\n"
+        ."What is the sender's full name?\n"
+        ."What amount is being demanded?\n"
+        .'By what date must payment be made?';
+
     $this->app->instance(ChatService::class, makeFakeChatService([
-        new TextDelta(id: 'a', messageId: 'm1', delta: 'I need your details first.', timestamp: 1),
+        new TextDelta(id: 'a', messageId: 'm1', delta: $reply, timestamp: 1),
         new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
     ]));
 
@@ -201,15 +207,21 @@ it('emits a synthetic intake form when the model leaves a premature draft', func
     expect($body)
         ->toContain('event: tool_call')
         ->toContain('"name":"request_intake_form"')
-        ->toContain('"plaintiff_name_and_details"')
-        ->not->toContain('I need your details first.')
+        // The form collects exactly the questions the model asked for.
+        ->toContain('What is the sender\'s full name?')
+        ->toContain('What amount is being demanded?')
+        ->toContain('By what date must payment be made?')
+        ->toContain('"sender_name"')
+        // The question text itself is never delivered as a chat reply.
+        ->not->toContain('[[NEED_INFO]]')
+        ->not->toContain('I need a few more details')
         ->toContain('event: done');
 
     $this->assertDatabaseCount('messages', 1);
     $this->assertDatabaseHas('messages', ['role' => MessageRole::User]);
 });
 
-it('discards a premature bracketed draft and collects its placeholders in the form', function () {
+it('delivers a bracketed draft as-is when the model did not use the marker', function () {
     $draft = "Republic of the Philippines\nDAR Provincial Office\n\nRe: Request for Certified Copy of CLOA\n\nPlease release the certified copy of CLOA No. [CLOA Number] of my late father, [Father's Full Name], who died on [Date of Death].\n\nSincerely,\n[Your Full Name]";
 
     $this->app->instance(ChatService::class, makeFakeChatService([
@@ -228,23 +240,15 @@ it('discards a premature bracketed draft and collects its placeholders in the fo
 
     $body = $response->streamedContent();
 
+    // Without the [[NEED_INFO]] marker the intake form is never triggered — the
+    // reply is the model's answer, delivered exactly as it wrote it.
     expect($body)
-        ->not->toContain('Please release the certified copy of CLOA')
-        ->toContain('event: tool_call')
-        ->toContain('"name":"request_intake_form"')
-        ->toContain('"document_type":"government transaction letter"')
-        ->toContain('"sender_name"')
-        ->toContain('"reference_number"')
-        ->toContain('"deceased_name"')
-        ->toContain('"date_of_death"')
-        // Bracket placeholders that duplicate a base fact collapse onto the
-        // canonical field instead of being asked again.
-        ->not->toContain('"cloa_number"')
-        ->not->toContain('"your_full_name"')
+        ->toContain('Please release the certified copy of CLOA')
+        ->not->toContain('"name":"request_intake_form"')
         ->toContain('event: done');
 
-    $this->assertDatabaseCount('messages', 1);
-    $this->assertDatabaseHas('messages', ['role' => MessageRole::User]);
+    $this->assertDatabaseCount('messages', 2);
+    $this->assertDatabaseHas('messages', ['role' => MessageRole::Assistant]);
 });
 
 it('streams a complete placeholder-free draft without the intake form', function () {
@@ -275,6 +279,114 @@ it('streams a complete placeholder-free draft without the intake form', function
     $this->assertDatabaseHas('messages', ['role' => MessageRole::Assistant]);
 });
 
+it('suppresses the intake form when the case already supplies the facts', function () {
+    $draft = "[[DOCUMENT_START]]\nRe: Demand for Payment\n\nMaria Santos built a house on my land in Barangay San Jose.\n[[DOCUMENT_END]]";
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        makeToolCallEvent('request_intake_form', ['document_type' => 'formal letter', 'fields' => []]),
+        new TextDelta(id: 'a', messageId: 'm1', delta: $draft, timestamp: 2),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 3),
+    ]));
+
+    $case = LegalCase::factory()->for($this->user)->create([
+        'description' => 'Maria Santos built a house on my land in Barangay San Jose without permission.',
+    ]);
+
+    $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'Draft a demand letter to Maria Santos.',
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    // The model called the tool, but the case context already has the facts,
+    // so no intake form frame reaches the client and the direct draft does.
+    expect($body)
+        ->not->toContain('event: tool_call')
+        ->not->toContain('"name":"request_intake_form"')
+        ->toContain('Maria Santos built a house on my land in Barangay San Jose')
+        ->toContain('event: done');
+});
+
+it('delivers a marker-less direct draft instead of the intake form when the case supplies facts', function () {
+    $draft = "Republic of the Philippines\nBarangay San Jose\n\nDear Sir/Madam,\n\nPlease vacate the land you built your house on.\n\nVery truly yours,\nJuan Dela Cruz";
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        new TextDelta(id: 'a', messageId: 'm1', delta: $draft, timestamp: 1),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
+    ]));
+
+    $case = LegalCase::factory()->for($this->user)->create([
+        'description' => 'Maria Santos built a house on my land in Barangay San Jose without permission.',
+    ]);
+
+    $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'Draft a demand letter to Maria Santos.',
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    // Even though the model omitted the document markers (which would normally
+    // be treated as a premature draft needing the intake form), the case facts
+    // mean the draft is delivered as-is rather than re-collected.
+    expect($body)
+        ->not->toContain('"name":"request_intake_form"')
+        ->toContain('Please vacate the land you built your house on')
+        ->toContain('event: done');
+});
+
+it('re-collects facts through the intake form when the case-supplied model asks with the marker', function () {
+    $reply = "[[NEED_INFO]]\n"
+        ."What is the sender's full name?\n"
+        ."What is the exact amount demanded?\n"
+        .'By what date must payment be made?';
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        new TextDelta(id: 'a', messageId: 'm1', delta: $reply, timestamp: 1),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
+    ]));
+
+    $case = LegalCase::factory()->for($this->user)->create([
+        'description' => 'Maria Santos built a house on my land in Barangay San Jose without permission.',
+    ]);
+
+    $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+
+    $response = $this->actingAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'Draft a demand letter using the facts in this case.',
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    // Even when the case context holds the narrative facts, the model's
+    // [[NEED_INFO]] marker is the authoritative signal that it still needs
+    // specifics — those questions become the intake form instead of a
+    // dead-end clarification, with the facts the case already covers dropped.
+    expect($body)
+        ->toContain('event: tool_call')
+        ->toContain('"name":"request_intake_form"')
+        ->toContain('What is the sender\'s full name?')
+        ->toContain('What is the exact amount demanded?')
+        ->not->toContain('[[NEED_INFO]]')
+        ->toContain('event: done');
+
+    // The question reply is discarded; only the user message persists.
+    $this->assertDatabaseCount('messages', 1);
+    $this->assertDatabaseHas('messages', ['role' => MessageRole::User]);
+});
+
 it('extracts bracketed placeholders into canonical intake fields', function () {
     $fields = DraftingIntent::extractBracketFields(
         "CLOA No. [CLOA Number] of my late father, [Father's Full Name], who died on [Date of Death].\n"
@@ -294,6 +406,45 @@ it('extracts bracketed placeholders into canonical intake fields', function () {
         ->and(count($fields))->toBe(5);
 });
 
+it('maps a marker reply into intake fields from the questions asked', function () {
+    $fields = DraftingIntent::intakeFieldsFromNeedsInfo(
+        "[[NEED_INFO]]\n"
+        ."- What is the sender's full name?\n"
+        ."- What amount is being demanded?\n"
+        .'- By what date must payment be made?'
+    );
+
+    expect(array_column($fields, 'key'))->toBe([
+        'sender_name',
+        'request_or_demand',
+        'date',
+    ])
+        ->and(array_column($fields, 'label'))->toBe([
+            'What is the sender\'s full name?',
+            'What amount is being demanded?',
+            'By what date must payment be made?',
+        ])
+        ->and(array_column($fields, 'type'))->toBe(['text', 'textarea', 'date'])
+        ->and($fields[0]['required'])->toBeTrue();
+});
+
+it('dedupes marker questions that map to the same canonical fact', function () {
+    $fields = DraftingIntent::intakeFieldsFromNeedsInfo(
+        "[[NEED_INFO]]\n"
+        ."What is the sender's full name?\n"
+        ."Please provide the sender's full name.\n"
+        ."What is the sender's address?"
+    );
+
+    expect(array_column($fields, 'key'))->toBe(['sender_name', 'sender_address']);
+});
+
+it('returns no fields when a reply lacks the marker', function () {
+    expect(DraftingIntent::intakeFieldsFromNeedsInfo('I need your details first.'))->toBe([])
+        ->and(DraftingIntent::needsInfo('I need your details first.'))->toBeFalse()
+        ->and(DraftingIntent::needsInfo("[[NEED_INFO]]\nWhat is your name?"))->toBeTrue();
+});
+
 it('ignores protocol markers when detecting or extracting bracketed placeholders', function () {
     $text = "[[DOCUMENT_START]]\n[[TODO_START]]\n[Intake Form Submission]\n[Template: barangay_complaint]\n\nSincerely, [Your Full Name]\n[[TODO_END]]\n[[DOCUMENT_END]]";
 
@@ -304,10 +455,11 @@ it('ignores protocol markers when detecting or extracting bracketed placeholders
 });
 
 it('ignores citation tags when detecting or extracting bracketed placeholders', function () {
-    $text = "[[DOCUMENT_START]]\nPursuant to [Source 1] and [User Doc 2], the tenant owes [Rent Amount].\n[[DOCUMENT_END]]";
+    $text = "[[DOCUMENT_START]]\nPursuant to [SRC K3F9] and [DOC X1Y2], the tenant owes [Rent Amount].\n[[DOCUMENT_END]]";
 
     expect(DraftingIntent::containsBrackets($text))->toBeTrue()
         ->and(array_column(DraftingIntent::extractBracketFields($text), 'key'))->toBe(['rent_amount'])
+        ->and(DraftingIntent::containsBrackets('See [SRC K3F9] and [DOC X1Y2] for the legal basis.'))->toBeFalse()
         ->and(DraftingIntent::containsBrackets('See [Source 1] and [User Doc 2] for the legal basis.'))->toBeFalse()
         ->and(DraftingIntent::containsBrackets('Based on [Web 3].'))->toBeFalse()
         ->and(DraftingIntent::containsBrackets('Pursuant to [Source of Funds] disclosure rules.'))->toBeTrue();
@@ -317,6 +469,14 @@ it('detects a complete marked document by its opening marker alone', function ()
     expect(DraftingIntent::isCompleteDocument("[[DOCUMENT_START]]\nBody.\n[[DOCUMENT_END]]"))->toBeTrue()
         ->and(DraftingIntent::isCompleteDocument("[[DOCUMENT_START]]\nNo closing marker"))->toBeTrue()
         ->and(DraftingIntent::isCompleteDocument('A partial reply.'))->toBeFalse();
+});
+
+it('recognizes a substantive marker-less letter as a drafted document', function () {
+    $letter = "Republic of the Philippines\nBarangay San Jose\n\nDear Sir/Madam,\n\nRe: Demand for Payment\n\nThis letter is a formal demand for payment. Maria Santos built a house on the land I own in Barangay San Jose without my permission, and despite repeated requests she has refused to vacate the premises or to pay any rent, compensation, or damages for the unlawful occupation.\n\nKindly settle the amount due on or before fifteen days from receipt of this letter, otherwise we shall be constrained to take legal action without further notice. This demand is made without prejudice to any remedies available under law.\n\nVery truly yours,\nJuan Dela Cruz\nBarangay San Jose, Cavite";
+
+    expect(DraftingIntent::isSubstantiveDraft($letter))->toBeTrue()
+        ->and(DraftingIntent::isSubstantiveDraft('A short reply.'))->toBeFalse()
+        ->and(DraftingIntent::isSubstantiveDraft('Could you please provide the specific details so I can draft the letter for you?'))->toBeFalse();
 });
 
 it('streams a complete draft missing the closing marker without the intake form', function () {
@@ -348,7 +508,7 @@ it('streams a complete draft missing the closing marker without the intake form'
 });
 
 it('streams a complete cited draft without the intake form', function () {
-    $draft = "[[DOCUMENT_START]]\nRe: Demand for Payment of Unpaid Rent\n\nPursuant to [Source 1], Civil Code Article 1654, the tenant owes the unpaid rent.\n[[DOCUMENT_END]]";
+    $draft = "[[DOCUMENT_START]]\nRe: Demand for Payment of Unpaid Rent\n\nPursuant to [SRC K3F9], Civil Code Article 1654, the tenant owes the unpaid rent.\n[[DOCUMENT_END]]";
 
     $this->app->instance(ChatService::class, makeFakeChatService([
         new TextDelta(id: 'a', messageId: 'm1', delta: $draft, timestamp: 1),
@@ -384,8 +544,13 @@ it('pre-fills the intake form with the last intake submission on regeneration', 
         'content' => "[Intake Form Submission]\nsender_name: Ron Asistores\nreference_number: 198532356\nfacts: The CLOA was not released despite the award.",
     ]);
 
+    $reply = "[[NEED_INFO]]\n"
+        ."What is the sender's full name?\n"
+        ."What is the reference number?\n"
+        .'Please describe the facts of the case.';
+
     $this->app->instance(ChatService::class, makeFakeChatService([
-        new TextDelta(id: 'a', messageId: 'm1', delta: 'I can draft that for you.', timestamp: 1),
+        new TextDelta(id: 'a', messageId: 'm1', delta: $reply, timestamp: 1),
         new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
     ]));
 
@@ -807,9 +972,14 @@ it('maps document categories to the matching intake field sets', function () {
         ->toBe(DraftingIntent::defaultFields());
 });
 
-it('uses document-category fields in the synthetic intake form', function () {
+it('uses the model questions as intake fields when the reply carries the marker', function () {
+    $reply = "[[NEED_INFO]]\n"
+        ."What is the sender's full name?\n"
+        ."What is the reference number?\n"
+        .'Please state the relief sought.';
+
     $this->app->instance(ChatService::class, makeFakeChatService([
-        new TextDelta(id: 'a', messageId: 'm1', delta: 'I can draft that for you.', timestamp: 1),
+        new TextDelta(id: 'a', messageId: 'm1', delta: $reply, timestamp: 1),
         new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
     ]));
 
@@ -828,12 +998,12 @@ it('uses document-category fields in the synthetic intake form', function () {
         ->toContain('event: tool_call')
         ->toContain('"name":"request_intake_form"')
         ->toContain('"document_type":"government transaction letter"')
-        ->toContain('"agency_name"')
-        ->toContain('"sender_name"')
-        ->toContain('"reference_number"')
-        ->toContain('"relief_or_action_sought"')
+        ->toContain('"key":"sender_name"')
+        ->toContain('"key":"reference_number"')
+        ->toContain('"key":"relief_sought"')
         ->not->toContain('"defendant_name"')
         ->not->toContain('"court_preference"')
+        ->not->toContain('[[NEED_INFO]]')
         ->toContain('event: done');
 });
 
@@ -939,7 +1109,7 @@ it('derives intake fields from a template referenced by name', function () {
         ->not->toContain('"court_preference"');
 });
 
-it('drops the facts field from the intake form when the case description supplies the facts', function () {
+it('suppresses the intake form when the case description supplies the facts', function () {
     Template::factory()->system()->create([
         'legal_subtype' => 'demand_letter',
         'placeholder_fields' => [
@@ -956,8 +1126,12 @@ it('drops the facts field from the intake form when the case description supplie
 
     $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
 
+    $draft = "[[DOCUMENT_START]]\nRe: Demand for Payment\n\nDear Sir/Madam,\n\nNEXBYTE delivered inventory management software to Marisol Retail Group but the P855,000 invoice remains unpaid beyond the agreed 30-day term.\n[[DOCUMENT_END]]";
+
     $this->app->instance(ChatService::class, makeFakeChatService([
         makeToolCallEvent('request_intake_form', ['fields' => [['key' => 'anything']]]),
+        new TextDelta(id: 'a', messageId: 'm1', delta: $draft, timestamp: 2),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 3),
     ]));
 
     $response = $this->actingAs($this->user)
@@ -969,16 +1143,15 @@ it('drops the facts field from the intake form when the case description supplie
 
     $body = $response->streamedContent();
 
+    // The case description already carries the facts, so the form is never
+    // shown — the model drafts directly from the case context.
     expect($body)
-        ->toContain('event: tool_call')
-        ->toContain('"name":"request_intake_form"')
-        ->toContain('"sender_name"')
-        ->toContain('"recipient_name"')
-        ->toContain('"amount_or_obligation"')
-        ->not->toContain('"facts"');
+        ->not->toContain('"name":"request_intake_form"')
+        ->toContain('NEXBYTE delivered inventory management software to Marisol Retail Group')
+        ->toContain('event: done');
 });
 
-it('drops the facts field from the intake form when a ready uploaded document supplies the facts', function () {
+it('suppresses the intake form when a ready uploaded document supplies the facts', function () {
     Template::factory()->system()->create([
         'legal_subtype' => 'demand_letter',
         'placeholder_fields' => [
@@ -992,8 +1165,12 @@ it('drops the facts field from the intake form when a ready uploaded document su
 
     $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
 
+    $draft = "[[DOCUMENT_START]]\nRe: Demand for Payment\n\nDear Sir/Madam,\n\nThis letter concerns the contract we entered into, a copy of which you have on file.\n[[DOCUMENT_END]]";
+
     $this->app->instance(ChatService::class, makeFakeChatService([
         makeToolCallEvent('request_intake_form', ['fields' => [['key' => 'anything']]]),
+        new TextDelta(id: 'a', messageId: 'm1', delta: $draft, timestamp: 2),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 3),
     ]));
 
     $response = $this->actingAs($this->user)
@@ -1006,10 +1183,9 @@ it('drops the facts field from the intake form when a ready uploaded document su
     $body = $response->streamedContent();
 
     expect($body)
-        ->toContain('event: tool_call')
-        ->toContain('"name":"request_intake_form"')
-        ->toContain('"sender_name"')
-        ->not->toContain('"facts"');
+        ->not->toContain('"name":"request_intake_form"')
+        ->toContain('This letter concerns the contract we entered into')
+        ->toContain('event: done');
 });
 
 it('keeps the facts field in the intake form when the case has no description and no documents', function () {

@@ -12,8 +12,8 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('subscriptions', function (Blueprint $table) {
-            $table->foreignId('organization_id')->nullable()->after('id')
-                ->constrained()->cascadeOnDelete()->index();
+            $table->foreignId('organization_id')->nullable()->after('id')->index()
+                ->constrained()->cascadeOnDelete();
             $table->unsignedInteger('seats_purchased')->default(1)->after('plan_id');
             $table->unsignedBigInteger('price_per_seat')->nullable()->after('seats_purchased');
         });

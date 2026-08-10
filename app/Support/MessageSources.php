@@ -10,38 +10,40 @@ use Illuminate\Support\Str;
 final class MessageSources
 {
     /**
-     * In-memory per-request cache of resolved chunks keyed by chunk id.
-     *
-     * @var array<string, LegalChunk|DocumentChunk|null>
-     */
-    protected static array $resolved = [];
-
-    /**
      * Resolve the source cards actually cited by a message.
      *
-     * Legal pages and uploaded documents are tied to inline [Source N] /
-     * [User Doc N] markers: they only surface when the model actually cited
-     * them, so the UI never shows retrieved context it did not rely on. Web
-     * search results are always surfaced — the provider only records the web
-     * results the answer was grounded in, and the UI renders them in their
-     * own section. When the model cited nothing inline at all (e.g. a plain
-     * summary of facts), every retrieved chunk stored on the message is
-     * surfaced instead, so the UI still shows what the answer was grounded
-     * in. Every card carries the citation index it is tied to (1-based, in
-     * context order) so inline badges and sidebar cards can be linked.
+     * Legal pages and uploaded documents are tied to inline [SRC <token>] /
+     * [DOC <token>] markers: a source only surfaces when the model actually
+     * cited its token, so the UI never shows retrieved context it did not rely
+     * on. Web search results are always surfaced — the provider only records
+     * the web results the answer was grounded in, and the UI renders them in
+     * their own section. When the model cited nothing inline at all (e.g. a
+     * plain summary of facts), every retrieved chunk stored on the message is
+     * surfaced instead, so the UI still shows what the answer was grounded in.
+     *
+     * Every card carries the citation token (or, for legacy messages using
+     * [Source N] / [User Doc N] markers, the 1-based index) it is tied to so
+     * inline badges and sidebar cards can be linked.
      *
      * @return array<int, array<string, mixed>>
      */
     public static function for(Message $message): array
     {
-        $citations = self::citedIndices((string) $message->content);
+        $content = (string) $message->content;
 
-        $strict = $citations['source'] !== [] || $citations['doc'] !== [] || $citations['web'] !== [];
+        $tokenCited = self::citedTokens($content);
+        $legacyCited = self::citedIndices($content);
 
-        $sources = [];
+        $tokenMode = $tokenCited['src'] !== [] || $tokenCited['doc'] !== [];
+        $legacyMode = ! $tokenMode
+            && ($legacyCited['source'] !== [] || $legacyCited['doc'] !== [] || $legacyCited['web'] !== []);
 
-        $index = 0;
-        $seenLegalPages = [];
+        $strict = $tokenMode || $legacyMode;
+
+        // Group the resolved chunks into per-page / per-document units, the
+        // same grouping the prompt's context block uses, so citation tokens
+        // assigned here match the tokens the model was given.
+        $legalUnits = [];
 
         foreach ($message->cited_legal_chunk_ids ?? [] as $chunkId) {
             $chunk = self::resolve(LegalChunk::class, $chunkId);
@@ -50,24 +52,12 @@ final class MessageSources
                 continue;
             }
 
-            $key = $chunk->crawled_page_id ?? $chunk->id;
+            $identity = (string) ($chunk->crawled_page_id ?? $chunk->id);
 
-            if (isset($seenLegalPages[$key])) {
-                continue;
-            }
-
-            $seenLegalPages[$key] = true;
-            $index++;
-
-            if ($strict && ! in_array($index, $citations['source'], true)) {
-                continue;
-            }
-
-            $sources[] = self::legalSource($chunk, $index);
+            $legalUnits[$identity] ??= $chunk;
         }
 
-        $index = 0;
-        $seenDocuments = [];
+        $docUnits = [];
 
         foreach ($message->cited_chunk_ids ?? [] as $chunkId) {
             $chunk = self::resolve(DocumentChunk::class, $chunkId);
@@ -76,29 +66,86 @@ final class MessageSources
                 continue;
             }
 
-            $key = $chunk->document_id ?? $chunk->id;
+            $identity = (string) ($chunk->document_id ?? $chunk->id);
 
-            if (isset($seenDocuments[$key])) {
-                continue;
-            }
-
-            $seenDocuments[$key] = true;
-            $index++;
-
-            if ($strict && ! in_array($index, $citations['doc'], true)) {
-                continue;
-            }
-
-            $sources[] = self::documentSource($chunk, $index);
+            $docUnits[$identity] ??= $chunk;
         }
 
-        $sources = array_merge($sources, self::webSources($message));
+        $tokens = CitationTokens::assign(array_merge(array_keys($legalUnits), array_keys($docUnits)));
 
-        return $sources;
+        $sources = [];
+
+        $index = 0;
+
+        foreach ($legalUnits as $identity => $chunk) {
+            $index++;
+
+            if ($strict) {
+                $cited = $tokenMode
+                    ? in_array($tokens[$identity], $tokenCited['src'], true)
+                    : in_array($index, $legacyCited['source'], true);
+
+                if (! $cited) {
+                    continue;
+                }
+            }
+
+            $sources[] = self::legalSource($chunk, $index, $tokens[$identity]);
+        }
+
+        $index = 0;
+
+        foreach ($docUnits as $identity => $chunk) {
+            $index++;
+
+            if ($strict) {
+                $cited = $tokenMode
+                    ? in_array($tokens[$identity], $tokenCited['doc'], true)
+                    : in_array($index, $legacyCited['doc'], true);
+
+                if (! $cited) {
+                    continue;
+                }
+            }
+
+            $sources[] = self::documentSource($chunk, $index, $tokens[$identity]);
+        }
+
+        return array_merge($sources, self::webSources($message));
     }
 
     /**
-     * Parse the inline citation markers the model is instructed to use.
+     * Parse the inline citation tokens the model is instructed to use.
+     *
+     * @return array{src: array<int, string>, doc: array<int, string>, web: array<int, int>}
+     */
+    protected static function citedTokens(string $content): array
+    {
+        $citations = [
+            'src' => [],
+            'doc' => [],
+            'web' => [],
+        ];
+
+        if (preg_match_all('/\[SRC\s+([A-Z0-9]+)\]/i', $content, $matches)) {
+            $citations['src'] = array_map('strtoupper', $matches[1]);
+        }
+
+        if (preg_match_all('/\[DOC\s+([A-Z0-9]+)\]/i', $content, $matches)) {
+            $citations['doc'] = array_map('strtoupper', $matches[1]);
+        }
+
+        if (preg_match_all('/\[Web\s+(\d+)\]/i', $content, $matches)) {
+            $citations['web'] = array_map('intval', $matches[1]);
+        }
+
+        return $citations;
+    }
+
+    /**
+     * Parse legacy position-based markers ([Source N] / [User Doc N]) written
+     * before the token format, resolved against the order sources appear in
+     * context for older messages.
      *
      * @return array{source: array<int>, doc: array<int>, web: array<int>}
      */
@@ -175,33 +222,28 @@ final class MessageSources
      */
     protected static function resolve(string $class, string $id): LegalChunk|DocumentChunk|null
     {
-        $key = $class.':'.$id;
+        $query = $class::query();
 
-        if (! array_key_exists($key, self::$resolved)) {
-            $query = $class::query();
-
-            if ($class === LegalChunk::class) {
-                $query->with('crawledPage.legalSource');
-            } else {
-                $query->with('document');
-            }
-
-            self::$resolved[$key] = $query->find($id);
+        if ($class === LegalChunk::class) {
+            $query->with('crawledPage.legalSource');
+        } else {
+            $query->with('document');
         }
 
-        return self::$resolved[$key];
+        return $query->find($id);
     }
 
     /**
      * @return array<string, mixed>
      */
-    protected static function legalSource(LegalChunk $chunk, int $index): array
+    protected static function legalSource(LegalChunk $chunk, int $index, string $token): array
     {
         $page = $chunk->crawledPage;
 
         return [
             'type' => 'legal',
             'index' => $index,
+            'token' => $token,
             'id' => $chunk->id,
             'chunk_index' => $chunk->chunk_index,
             'label' => $page?->law_name ?: ($page?->gr_number ?: $page?->legalSource?->name ?: 'Legal source'),
@@ -219,11 +261,12 @@ final class MessageSources
     /**
      * @return array<string, mixed>
      */
-    protected static function documentSource(DocumentChunk $chunk, int $index): array
+    protected static function documentSource(DocumentChunk $chunk, int $index, string $token): array
     {
         return [
             'type' => 'document',
             'index' => $index,
+            'token' => $token,
             'id' => $chunk->id,
             'chunk_index' => $chunk->chunk_index,
             'document_id' => $chunk->document_id,
