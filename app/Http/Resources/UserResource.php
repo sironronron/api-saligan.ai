@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Models\LegalDocument;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -33,6 +34,11 @@ class UserResource extends JsonResource
             'kyc_document_types' => $this->kyc_document_types,
             'kyc_experience_level' => $this->kyc_experience_level,
             'kyc_completed_at' => $this->kyc_completed_at,
+            'terms_accepted_at' => $this->terms_accepted_at,
+            'terms_version' => $this->terms_version,
+            'terms_accepted' => $this->hasAcceptedTerms(),
+            'terms_current_version' => LegalDocument::currentVersion(),
+            'marketing_opt_in' => $this->marketing_opt_in,
             'created_at' => $this->created_at,
         ];
     }

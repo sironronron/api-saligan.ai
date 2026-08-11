@@ -84,6 +84,17 @@ class Template extends Model
     }
 
     /**
+     * Whether this template supports verbatim mode: the original uploaded
+     * file is retained AND placeholder fields have been extracted from it.
+     * In verbatim mode, the AI supplies fill values instead of drafting a
+     * new document, preserving the original letterhead, logo, and formatting.
+     */
+    public function isVerbatimTemplate(): bool
+    {
+        return $this->isDocxFileTemplate() && count($this->placeholder_fields ?? []) > 0;
+    }
+
+    /**
      * Scope to templates the given user may access: system templates, the
      * user's own templates, and templates owned by other active members of
      * the user's organization.

@@ -15,11 +15,13 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 
 #[Fillable([
     'user_id',
+    'organization_id',
     'title',
     'case_type',
     'reference',
     'priority',
     'status',
+    'retention_status',
     'description',
     'related_parties',
     'due_date',
@@ -38,6 +40,16 @@ class LegalCase extends Model
      * The table associated with the model.
      */
     protected $table = 'cases';
+
+    /**
+     * Retention status options for matter memory governance.
+     */
+    public const RETENTION_STATUSES = [
+        'active',
+        'closed',
+        'closed-pending-deletion',
+        'on-legal-hold',
+    ];
 
     /**
      * Get the attributes that should be cast.

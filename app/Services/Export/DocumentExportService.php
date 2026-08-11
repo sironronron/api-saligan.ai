@@ -129,6 +129,9 @@ HTML;
      */
     public function extractDocument(string $content): string
     {
+        // Strip code-fence wrappers the model sometimes wraps entire responses in
+        $content = $this->stripCodeFencesAndInternalReasoning($content);
+
         if (preg_match('/\[\[DOCUMENT_START\]\]\s*(.*?)\s*\[\[DOCUMENT_END\]\]/s', $content, $matches) === 1) {
             return $this->cleanBody((string) $matches[1]);
         }
@@ -152,6 +155,28 @@ HTML;
     }
 
     /**
+     * Strip code-fence wrappers the model sometimes wraps entire responses in
+     * (e.g. ```python ... ```) as well as internal reasoning the model leaks
+     * into the visible output.
+     */
+    protected function stripCodeFencesAndInternalReasoning(string $content): string
+    {
+        $cleaned = $content;
+
+        // Strip ```python ... ``` or ``` ... ``` wrappers around the entire response
+        $cleaned = preg_replace('/^```(?:python|json|text|plaintext)?\s*\n/i', '', $cleaned);
+        $cleaned = preg_replace('/\n```\s*$/i', '', $cleaned);
+
+        // Strip background/internal reasoning lines the model sometimes leaks
+        $cleaned = preg_replace('/^No tool calls required.*$/im', '', $cleaned);
+        $cleaned = preg_replace('/^Note:\s*Since.*$/im', '', $cleaned);
+        $cleaned = preg_replace('/^I have utilized.*$/im', '', $cleaned);
+        $cleaned = preg_replace('/^Note:.*$/im', '', $cleaned);
+
+        return trim($cleaned);
+    }
+
+    /**
      * Remove the hidden todo markers, the chat-only "Next Steps" checklist the
      * model wrote after the letter, and any meta commentary around it so
      * exported files only contain the letter itself. Also drops the leading
@@ -161,10 +186,15 @@ HTML;
      */
     protected function cleanBody(string $body): string
     {
+        // The legal disclaimer belongs outside the document markers but the
+        // model occasionally leaks it into the exported body. Strip it so
+        // exported files never contain the disclaimer.
+        $cleaned = $this->stripDisclaimer($body);
+
         // The next-steps checklist is chat-only and must never be exported,
         // whether it was wrapped in [[TODO_START]]/[[TODO_END]] (handled
         // below) or written bare after a "Next Steps" heading.
-        $cleaned = $this->stripNextStepsSection($body);
+        $cleaned = $this->stripNextStepsSection($cleaned);
 
         // Drop the marked checklist block along with any heading (e.g.
         // "Next Steps:") that introduces it.
@@ -198,6 +228,7 @@ HTML;
         $cleaned = $this->stripPreamble((string) $cleaned);
         $cleaned = $this->normalizeDatePlaceholders((string) $cleaned);
         $cleaned = $this->stripBracketPlaceholderLines((string) $cleaned);
+        $cleaned = $this->stripTrailingMarkdownArtifacts((string) $cleaned);
         $cleaned = preg_replace('/\n{3,}/', "\n\n", (string) $cleaned);
 
         return trim(DraftingIntent::stripExportLinks((string) $cleaned));
@@ -246,6 +277,29 @@ HTML;
         }
 
         return implode("\n", $out);
+    }
+
+    /**
+     * Remove the legal disclaimer that the model sometimes includes inside the
+     * document markers. The disclaimer belongs outside the markers but the model
+     * occasionally leaks it into the exported body.
+     */
+    protected function stripDisclaimer(string $body): string
+    {
+        // Strip the disclaimer with various formatting: plain text, bold, or
+        // wrapped in asterisks. The disclaimer text is a fixed string set in
+        // ChatService so we match it literally.
+        $patterns = [
+            '/\s*Disclaimer:\s*I\'m a legal research and drafting-support assistant,\s*not a licensed Philippine attorney\.\s*This analysis should be reviewed by your lawyer before use in negotiation or litigation\.?\s*/i',
+            '/\s*\*+\s*Disclaimer:\s*I\'m a legal research and drafting-support assistant,\s*not a licensed Philippine attorney\.\s*This analysis should be reviewed by your lawyer before use in negotiation or litigation\.?\s*\*+\s*/i',
+        ];
+
+        $cleaned = $body;
+        foreach ($patterns as $pattern) {
+            $cleaned = preg_replace($pattern, '', $cleaned);
+        }
+
+        return trim($cleaned);
     }
 
     /**
@@ -347,6 +401,9 @@ HTML;
             'in response to your request',
             'this letter serves',
             'this document serves',
+            'draft a letter',
+            'drafting a letter',
+            'draft letter',
         ];
 
         foreach ($phrases as $phrase) {
@@ -443,6 +500,21 @@ HTML;
         }
 
         return implode("\n", $out);
+    }
+
+    /**
+     * Strip trailing markdown artifacts like standalone asterisks, underscores,
+     * or other formatting remnants that the model sometimes leaves at the end
+     * of the document.
+     */
+    protected function stripTrailingMarkdownArtifacts(string $body): string
+    {
+        // Remove trailing standalone asterisks, underscores, or other markdown artifacts
+        // Matches lines that are only made up of *, _, ~, or combinations
+        $cleaned = preg_replace('/\n\s*[*_~]{1,3}\s*$/', '', $body);
+
+        // Remove trailing whitespace
+        return rtrim($cleaned);
     }
 
     /**

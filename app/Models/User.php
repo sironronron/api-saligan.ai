@@ -29,6 +29,9 @@ use Laravel\Sanctum\HasApiTokens;
     'kyc_document_types',
     'kyc_experience_level',
     'kyc_completed_at',
+    'terms_accepted_at',
+    'terms_version',
+    'marketing_opt_in',
 ])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
@@ -60,6 +63,8 @@ class User extends Authenticatable
             'password' => 'hashed',
             'is_admin' => 'boolean',
             'kyc_completed_at' => 'datetime',
+            'terms_accepted_at' => 'datetime',
+            'marketing_opt_in' => 'boolean',
         ];
     }
 
@@ -71,6 +76,15 @@ class User extends Authenticatable
     public function hasKycProfile(): bool
     {
         return $this->kyc_completed_at !== null;
+    }
+
+    /**
+     * Whether the user has accepted the current Terms of Service and Privacy Policy.
+     */
+    public function hasAcceptedTerms(): bool
+    {
+        return $this->terms_accepted_at !== null
+            && $this->terms_version === LegalDocument::currentVersion();
     }
 
     /**

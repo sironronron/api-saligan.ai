@@ -120,6 +120,7 @@ class ChatController extends Controller
         $completed = false;
         $intakeRequested = false;
         $todoRequested = false;
+        $fillTemplateRequested = false;
         $textLength = 0;
         $lastText = '';
         $buffering = $isDraftingRequest && ! $isIntakeSubmission;
@@ -292,6 +293,10 @@ class ChatController extends Controller
 
                     if ($event->toolCall->name === 'create_todo') {
                         $todoRequested = true;
+                    }
+
+                    if ($event->toolCall->name === 'fill_template_fields') {
+                        $fillTemplateRequested = true;
                     }
                 }
 

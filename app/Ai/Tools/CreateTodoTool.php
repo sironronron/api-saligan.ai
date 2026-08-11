@@ -63,7 +63,7 @@ class CreateTodoTool implements Tool
         foreach ($items as $item) {
             $todo = Todo::create([
                 'conversation_id' => $this->conversationId,
-                'title' => $item['title'],
+                'title' => $this->sanitizeTitle($item['title']),
                 'status' => $item['status'] ?? 'pending',
                 'priority' => $item['priority'] ?? null,
                 'due_hint' => $item['due_hint'] ?? null,
@@ -81,6 +81,31 @@ class CreateTodoTool implements Tool
         return json_encode([
             'items' => $created,
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    /**
+     * Strip markdown checkbox formatting and other artifacts from the title
+     * so stored tasks are clean plain text.
+     *
+     * Handles: "- [ ]", "- [x]", "[ ]", "[x]", "**[ ]**", "**_**", etc.
+     */
+    protected function sanitizeTitle(string $title): string
+    {
+        $cleaned = trim($title);
+
+        // Strip leading bullet/dash and checkbox patterns
+        // Matches: "- [ ] ", "- [x] ", "* [ ] ", "[ ] ", "[x] ", "**[ ]** ", "**_** "
+        $cleaned = preg_replace('/^[-**\s]*\[?\]?\s*\*{0,2}\s*/u', '', $cleaned);
+
+        // Strip bold/italic wrapping around checkbox placeholders
+        // Matches: **[ ]**, **[_]**, *[ ]*, *[_]*
+        $cleaned = preg_replace('/^\*{1,2}\[_?\]\*{1,2}\s*/u', '', $cleaned);
+
+        // Strip any remaining leading/trailing markdown artifacts
+        $cleaned = preg_replace('/^\*{1,2}/', '', $cleaned);
+        $cleaned = preg_replace('/\*{1,2}$/', '', $cleaned);
+
+        return trim($cleaned);
     }
 
     /**

@@ -2,6 +2,7 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
@@ -25,7 +26,16 @@ return new class extends Migration
     {
         Schema::table('conversations', function (Blueprint $table) {
             $table->dropColumn('purpose');
-            $table->unique('case_id');
         });
+
+        // Only re-add the unique constraint if there are no duplicate case_id values.
+        // Duplicates may exist from the period when the constraint was dropped.
+        $hasDuplicates = DB::select('SELECT case_id FROM conversations WHERE case_id IS NOT NULL GROUP BY case_id HAVING COUNT(*) > 1');
+
+        if ($hasDuplicates === []) {
+            Schema::table('conversations', function (Blueprint $table) {
+                $table->unique('case_id');
+            });
+        }
     }
 };

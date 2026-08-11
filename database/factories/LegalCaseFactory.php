@@ -3,6 +3,7 @@
 namespace Database\Factories;
 
 use App\Models\LegalCase;
+use App\Models\Organization;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
@@ -25,6 +26,7 @@ class LegalCaseFactory extends Factory
     {
         return [
             'user_id' => User::factory(),
+            'organization_id' => Organization::factory(),
             'title' => fake()->sentence(4),
             'case_type' => fake()->randomElement(['legal', 'hr', 'customer_support', 'administrative', 'general']),
             'reference' => 'CASE-'.date('Y').'-'.fake()->unique()->numberBetween(1, 9999),

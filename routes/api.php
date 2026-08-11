@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\OrganizationController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\TemplateController;
+use App\Http\Controllers\Api\TermsController;
 use App\Http\Controllers\Api\TodoController;
 use Illuminate\Support\Facades\Route;
 
@@ -35,6 +36,10 @@ Route::post('/demo-requests', [DemoRequestController::class, 'store'])
 Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('/user', [AuthController::class, 'user']);
     Route::post('/logout', [AuthController::class, 'logout']);
+
+    Route::get('/terms/status', [TermsController::class, 'status']);
+    Route::get('/terms/document', [TermsController::class, 'document']);
+    Route::post('/terms/accept', [TermsController::class, 'accept']);
 
     Route::get('/kyc', [KycController::class, 'show']);
     Route::put('/kyc', [KycController::class, 'store']);
@@ -59,7 +64,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::delete('/organizations/invitations/{invitation}', [OrganizationController::class, 'revokeInvitation']);
     Route::post('/invitations/{invitation}/accept', [OrganizationController::class, 'acceptInvitation']);
 
-    Route::middleware('active_subscription')->group(function (): void {
+    Route::middleware(['active_subscription', 'terms.accepted'])->group(function (): void {
         Route::apiResource('documents', DocumentController::class);
         Route::post('/documents/{document}/attach', [DocumentController::class, 'attach']);
         Route::get('/documents/{document}/file', [DocumentController::class, 'file']);
