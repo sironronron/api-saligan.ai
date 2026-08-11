@@ -216,10 +216,11 @@ test('memory write back parser rejects malformed blocks', function () {
     $cleaned2 = $parser->parseAndStore($text2, $case, $user, $service);
     expect($cleaned2)->toContain('MEMORY_WRITE_START');
 
-    // Invalid type
+    // Invalid type: the block is well-formed, so it is stripped from the
+    // reply (the user must never see raw markers) but nothing is stored.
     $text3 = "Text.\n\n[[MEMORY_WRITE_START]] matter={$case->id} type=invalid content: Bad type [[MEMORY_WRITE_END]]";
     $cleaned3 = $parser->parseAndStore($text3, $case, $user, $service);
-    expect($cleaned3)->toContain('MEMORY_WRITE_START');
+    expect($cleaned3)->not->toContain('MEMORY_WRITE_START');
 
     $memories = $service->getMemories($case);
     expect($memories)->toHaveCount(0);
@@ -238,10 +239,12 @@ test('memory write back parser rejects wrong matter id', function () {
 
     $cleaned = $parser->parseAndStore($text, $case, $user, $service);
 
-    expect($cleaned)->toContain('MEMORY_WRITE_START');
+    // Stripped from the reply, stored against neither case.
+    expect($cleaned)->not->toContain('MEMORY_WRITE_START');
 
     $memories = $service->getMemories($case);
     expect($memories)->toHaveCount(0);
+    expect($service->getMemories($otherCase))->toHaveCount(0);
 });
 
 test('memory write back parser skips duplicates', function () {

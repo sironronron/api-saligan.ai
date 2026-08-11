@@ -43,6 +43,21 @@ beforeEach(function () {
             return $this->staticInstructions();
         }
 
+        public function disclaimerShownFor(Conversation $conversation): bool
+        {
+            return $this->hasDisclaimerBeenShown($conversation);
+        }
+
+        public function instructionsWithNotices(RetrievalResult $retrieval, Lab $provider, string $notices): string
+        {
+            return $this->buildInstructions($retrieval, $provider, false, turnNotices: $notices);
+        }
+
+        public function dropWebMarkers(string $text, int $count): string
+        {
+            return $this->dropUnresolvableWebMarkers($text, $count);
+        }
+
         public function instructionsForCase(RetrievalResult $retrieval, Lab $provider, ?LegalCase $case, ?Template $template, bool $exportRequested = false): string
         {
             return $this->buildInstructions($retrieval, $provider, $exportRequested, $case, $template);
@@ -122,18 +137,20 @@ beforeEach(function () {
     };
 });
 
-it('forbids listing web sources in the reply text', function () {
+it('keeps web sources inline-only and out of the Sources section', function () {
     $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Gemini);
 
     expect($instructions)
-        ->toContain('Never cite or list web sources in your reply')
-        ->toContain('no [Web N] markers, page titles, site names, or URLs')
+        ->toContain('Cite a web result inline as "[Web N]"')
+        ->toContain('never list a web result in the "Sources" section')
         ->toContain('clickable source cards automatically')
         ->toContain('The Sources section must never list web search results')
-        ->toContain('never mention web sources in your reply text');
+        // The web-search block must not contradict the inline [Web N] rule the
+        // rest of the prompt (and MessageSources) depends on.
+        ->not->toContain('Never cite or list web sources in your reply');
 });
 
-it('forbids listing web sources even when retrieved context exists', function () {
+it('keeps the same web-citation rule when retrieved context exists', function () {
     $page = CrawledPage::factory()->for(LegalSource::factory())->create(['law_name' => 'RA No. 6657']);
     $chunk = LegalChunk::factory()->for($page)->create(['content' => 'Agrarian reform coverage.']);
 
@@ -146,8 +163,8 @@ it('forbids listing web sources even when retrieved context exists', function ()
 
     expect($instructions)
         ->toContain('The Sources section must never list web search results')
-        ->toContain('no [Web N] markers, page titles, site names, or URLs')
-        ->toContain('never mention web sources in your reply text');
+        ->toContain('Cite a web result inline as "[Web N]"')
+        ->toContain('never list a web result in the "Sources" section');
 });
 
 it('instructs web search when no context is retrieved on a web-capable provider', function () {
@@ -155,7 +172,7 @@ it('instructs web search when no context is retrieved on a web-capable provider'
 
     expect($instructions)
         ->toContain('WEB SEARCH FALLBACK')
-        ->toContain('Never cite or list web sources in your reply')
+        ->toContain('Cite a web result inline as "[Web N]"')
         ->toContain('lawphil.net');
 });
 
@@ -524,6 +541,81 @@ it('includes standing Philippine legal correspondence conventions', function () 
         ->toContain('Very truly yours');
 });
 
+it('recognizes the disclaimer wording the model was actually told to emit', function () {
+    $conversation = Conversation::factory()->create();
+
+    expect($this->chat->disclaimerShownFor($conversation))->toBeFalse();
+
+    Message::factory()->for($conversation)->create([
+        'role' => 'assistant',
+        'content' => "Disclaimer: I'm a legal research and drafting-support assistant, not a licensed Philippine attorney. "
+            .'This analysis should be reviewed by your lawyer before use in negotiation or litigation.',
+    ]);
+
+    expect($this->chat->disclaimerShownFor($conversation->fresh()))->toBeTrue();
+});
+
+it('carries the structural drafting conventions on every turn, template or not', function () {
+    $static = $this->chat->staticFor();
+
+    $plain = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama);
+
+    expect($static)
+        ->toContain('PHILIPPINE LEGAL DRAFTING CONVENTIONS (STRUCTURAL REFERENCE)')
+        ->toContain('Jurat vs. Acknowledgment');
+
+    // Present on a plain turn with no template selected at all.
+    expect($plain)->toContain('Jurat vs. Acknowledgment');
+
+    // And stated once — no longer duplicated inside the library template
+    // block, where it was also fenced as untrusted data.
+    $withLibrary = $this->chat->instructionsForLibrary(
+        new RetrievalResult(collect(), collect()),
+        Lab::Ollama,
+        LegalTemplateLibrary::resolveForMessage('Draft a demand letter for unpaid rent.'),
+    );
+
+    expect(substr_count($withLibrary, 'Jurat vs. Acknowledgment'))->toBe(1);
+});
+
+it('ends every prompt with the closing guard, after any per-turn notice', function () {
+    $withNotice = $this->chat->instructionsWithNotices(
+        new RetrievalResult(collect(), collect()),
+        Lab::Ollama,
+        "=== DISCLAIMER ===\nInclude the disclaimer once.",
+    );
+
+    expect($withNotice)
+        ->toContain('=== DISCLAIMER ===')
+        ->toEndWith('continue with the legal research or drafting task.')
+        // The notice lands before the guard, never after it.
+        ->and(strpos($withNotice, '=== DISCLAIMER ==='))
+        ->toBeLessThan(strpos($withNotice, '=== END OF INSTRUCTIONS ==='));
+});
+
+it('drops web markers that point past the captured citations', function () {
+    $text = 'Coverage is limited [Web 1]. The period is four years [Web 3]. Both apply [Web 2].';
+
+    expect($this->chat->dropWebMarkers($text, 2))
+        ->toBe('Coverage is limited [Web 1]. The period is four years. Both apply [Web 2].')
+        ->and($this->chat->dropWebMarkers($text, 0))
+        ->toBe('Coverage is limited. The period is four years. Both apply.')
+        ->and($this->chat->dropWebMarkers($text, 3))
+        ->toBe($text);
+});
+
+it('opens the static instructions with the persona text, not the serialized row', function () {
+    $static = $this->chat->staticFor();
+
+    expect($static)
+        ->toStartWith('You are Saligan, a Philippine legal research assistant.')
+        // Stringifying the SystemPrompt model instead of reading ->content
+        // would ship the whole row as JSON, with escaped newlines.
+        ->not->toContain('"content":')
+        ->not->toContain('"is_active"')
+        ->not->toContain('\\n');
+});
+
 it('emits the static instructions verbatim as the prefix of every prompt', function () {
     $static = $this->chat->staticFor();
 
@@ -851,8 +943,8 @@ it('injects the user profile block when the user completed onboarding', function
         ->toContain('=== USER PROFILE ===')
         ->toContain('Role: Lawyer / Legal Counsel')
         ->toContain('Primary use: Preparing documents/research for clients (professional use)')
-        ->toContain('The user is a lawyer.')
-        ->toContain('The user is preparing documents or research for clients');
+        ->toContain('ROLE: Lawyer. This user has legal training')
+        ->toContain('This user is preparing documents or research for clients');
 });
 
 it('omits the user profile block entirely when onboarding was skipped', function () {

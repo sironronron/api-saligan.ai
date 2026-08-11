@@ -424,7 +424,7 @@ final class UserProfile
 - Ask via the intake form: client name, matter details, specific instructions, and any constraints.
 - Assume the user will have an attorney review the final output, but flag any judgment calls that require attorney attention.',
             self::USE_CASE_LEGAL_RESEARCH => 'USE CASE: Legal Research. This user is doing legal research, not necessarily drafting a document. Adapt accordingly:
-- Favor the standard research structure (Direct answer → Legal basis → Application → Caveats → Sources) by default.
+- Favor the standard research structure (Direct answer then Legal basis then Application then Caveats then Sources) by default.
 - Do not proactively suggest drafting unless explicitly asked.
 - Ask via the intake form: specific legal question, jurisdiction, relevant facts, and what the research is for.
 - When citing authorities, distinguish between binding and persuasive authority and note the weight of each citation.',

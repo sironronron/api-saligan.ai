@@ -37,6 +37,14 @@ class MemoryWriteBackParser
             $content = trim($match[3]);
             $fullMatch = $match[0];
 
+            // A well-formed block is bookkeeping between the model and this
+            // parser, so it comes out of the reply whether or not it is
+            // accepted below. Leaving a rejected block in place would show the
+            // user raw [[MEMORY_WRITE_START]] markers — the common case being a
+            // duplicate, which the model re-emits whenever a fact stays
+            // relevant across turns.
+            $cleanedText = str_replace($fullMatch, '', $cleanedText);
+
             // Validate matter ID matches the current case
             if ($matterId !== $case->id) {
                 Log::warning('Memory write-back matter ID mismatch', [
@@ -84,9 +92,6 @@ class MemoryWriteBackParser
                 'type' => $type,
                 'content_length' => strlen($content),
             ]);
-
-            // Remove only successfully stored blocks from the text
-            $cleanedText = str_replace($fullMatch, '', $cleanedText);
         }
 
         return $cleanedText;
