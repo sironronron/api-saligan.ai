@@ -396,7 +396,10 @@ class TemplateDocumentExportService
             $value = $values[$token] ?? $normalizedValues[$this->normalizeKey($token)] ?? null;
 
             if ($value !== null && $value !== '') {
-                $fill[$token] = $value;
+                // This path also renders through DomPDF, which has no glyph
+                // for the peso sign, so a filled amount carrying "₱" would
+                // reach the PDF as "?".
+                $fill[$token] = DocumentExportService::normalizeCurrency((string) $value);
             }
         }
 

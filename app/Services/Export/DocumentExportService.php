@@ -229,9 +229,23 @@ HTML;
         $cleaned = $this->normalizeDatePlaceholders((string) $cleaned);
         $cleaned = $this->stripBracketPlaceholderLines((string) $cleaned);
         $cleaned = $this->stripTrailingMarkdownArtifacts((string) $cleaned);
+        $cleaned = self::normalizeCurrency((string) $cleaned);
         $cleaned = preg_replace('/\n{3,}/', "\n\n", (string) $cleaned);
 
         return trim(DraftingIntent::stripExportLinks((string) $cleaned));
+    }
+
+    /**
+     * Replace the peso sign with the "PHP" label. The prompts already ask for
+     * "PHP", but older drafts, user-uploaded templates, and quoted source
+     * documents still carry "₱" — and the PDF renderer's built-in font has no
+     * glyph for U+20B1, so it reaches the downloaded file as a literal "?".
+     * Spacing is normalized so "₱3,000,000.00" becomes "PHP 3,000,000.00"
+     * rather than "PHP3,000,000.00".
+     */
+    public static function normalizeCurrency(string $text): string
+    {
+        return (string) preg_replace('/\x{20B1}\s*/u', 'PHP ', $text);
     }
 
     /**

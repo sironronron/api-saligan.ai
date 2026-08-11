@@ -60,7 +60,10 @@ class MatterMemoryService
         ?array $metadata = null,
     ): MatterMemory {
         return MatterMemory::create([
-            'organization_id' => $case->organization_id,
+            // Cases created before organization_id was populated carry none,
+            // so fall back to the author's own organization rather than
+            // orphaning the memory from the firm that owns the matter.
+            'organization_id' => $case->organization_id ?? $user->organization_id,
             'case_id' => $case->id,
             'user_id' => $user->id,
             'type' => $type,

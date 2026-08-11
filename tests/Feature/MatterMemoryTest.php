@@ -2,6 +2,8 @@
 
 use App\Models\LegalCase;
 use App\Models\Organization;
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\User;
 use App\Services\MatterMemory\MatterMemoryService;
 use App\Services\MatterMemory\MemoryWriteBackParser;
@@ -310,4 +312,61 @@ test('memory write back parser detects blocks in text', function () {
 
     expect($parser->hasWriteBackBlocks($textWithBlock))->toBeTrue()
         ->and($parser->hasWriteBackBlocks($textWithoutBlock))->toBeFalse();
+});
+
+test('matter memory works for a solo user whose case has no organization', function () {
+    // cases.organization_id and users.organization_id are both nullable, so a
+    // solo user's case carries no organization. matter_memory.organization_id
+    // was NOT NULL, which made every write-back on such a case fail on insert.
+    $user = User::factory()->create(['organization_id' => null]);
+    $case = LegalCase::factory()->for($user)->create(['organization_id' => null]);
+
+    $service = new MatterMemoryService;
+    $parser = new MemoryWriteBackParser;
+
+    $text = "Analysis.\n\n[[MEMORY_WRITE_START]] matter={$case->id} type=fact content: DPWH took possession of the 1,200 sq. m. portion [[MEMORY_WRITE_END]]";
+
+    $cleaned = $parser->parseAndStore($text, $case, $user, $service);
+
+    expect($cleaned)->not->toContain('MEMORY_WRITE_START');
+
+    $memories = $service->getMemories($case);
+
+    expect($memories)->toHaveCount(1)
+        ->and($memories->first()->organization_id)->toBeNull()
+        ->and($memories->first()->content)->toBe('DPWH took possession of the 1,200 sq. m. portion');
+});
+
+test('a case adopts its owner organization and memory follows the case', function () {
+    $organization = Organization::factory()->create();
+    $user = User::factory()->for($organization)->create();
+    Subscription::factory()->for($user)->create(['plan_id' => Plan::factory()->pro()->create()->id]);
+
+    $this->actingAs($user)
+        ->postJson('/api/cases', [
+            'title' => 'Villanueva v. DPWH',
+            'case_type' => 'expropriation',
+            'status' => 'open',
+        ])
+        ->assertCreated();
+
+    $case = LegalCase::where('user_id', $user->id)->firstOrFail();
+
+    expect($case->organization_id)->toBe($organization->id);
+
+    $memory = (new MatterMemoryService)->store($case, $user, 'fact', 'DPWH took possession');
+
+    expect($memory->organization_id)->toBe($organization->id);
+});
+
+test('memory adopts the author organization when the case predates the backfill', function () {
+    $organization = Organization::factory()->create();
+    $user = User::factory()->for($organization)->create();
+
+    // A case created before organization_id was written on creation.
+    $case = LegalCase::factory()->for($user)->create(['organization_id' => null]);
+
+    $memory = (new MatterMemoryService)->store($case, $user, 'fact', 'A durable fact');
+
+    expect($memory->organization_id)->toBe($organization->id);
 });

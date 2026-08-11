@@ -1758,12 +1758,29 @@ PROMPT;
         // Parse and store memory write-back blocks before processing the
         // rest of the response. This must happen before export link handling
         // so the write-back markers are stripped from the visible text.
-        if ($conversation->case !== null) {
-            $memoryParser = app(MemoryWriteBackParser::class);
-            $memoryService = app(MatterMemoryService::class);
-            $user = $conversation->user;
-            if ($user !== null) {
-                $text = $memoryParser->parseAndStore($text, $conversation->case, $user, $memoryService);
+        //
+        // Storing a memory is a side benefit of the turn, never the point of
+        // it: if the write fails, the markers are still stripped and the
+        // assistant's reply is still persisted. Letting the exception escape
+        // would abort persistAssistantResponse before Message::create, so the
+        // user would watch a complete answer stream in and then vanish on
+        // reload.
+        if ($conversation->case !== null && $conversation->user !== null) {
+            try {
+                $text = app(MemoryWriteBackParser::class)->parseAndStore(
+                    $text,
+                    $conversation->case,
+                    $conversation->user,
+                    app(MatterMemoryService::class),
+                );
+            } catch (\Throwable $exception) {
+                Log::error('Failed to store matter memory write-back', [
+                    'conversation_id' => $conversation->id,
+                    'case_id' => $conversation->case->id,
+                    'exception' => $exception,
+                ]);
+
+                $text = MemoryWriteBackParser::stripBlocks($text);
             }
         }
 

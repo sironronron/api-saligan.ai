@@ -104,4 +104,15 @@ class MemoryWriteBackParser
     {
         return (bool) preg_match(self::WRITE_BACK_PATTERN, $text);
     }
+
+    /**
+     * Remove every well-formed write-back block without storing anything.
+     * Used when the storage path failed: the markers are bookkeeping between
+     * the model and this parser, so they must not reach the user even when
+     * the memory behind them could not be saved.
+     */
+    public static function stripBlocks(string $text): string
+    {
+        return (string) preg_replace(self::WRITE_BACK_PATTERN, '', $text);
+    }
 }

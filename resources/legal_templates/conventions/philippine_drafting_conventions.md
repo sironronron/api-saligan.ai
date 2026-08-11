@@ -1,8 +1,26 @@
 # Philippine Legal Drafting Conventions
 
-This is the structural reference every template in this library follows. If
-Saligan is drafting something not covered by an existing template, it should
-still apply these conventions rather than inventing its own structure.
+This is the structural reference every template in this library follows. When
+drafting something not covered by an existing template, apply these
+conventions rather than inventing a structure.
+
+## 0. Blanks that the notary, the clerk of court, or counsel fills in
+
+Some fields in a Philippine instrument are deliberately left empty at drafting
+time — they are filled in by hand at signing or by the court on filing. These
+are the ONLY blanks a draft may contain, and they are written as a run of
+underscores, never as a bracketed placeholder:
+
+- Correct: `Doc. No. ____;`  `Branch ____`  `Civil Case No. ____`
+- Wrong: `Doc. No. [Doc No.]`, `Branch [NUMBER]`, `Civil Case No. [NUMBER]`
+
+Bracketed placeholders are stripped from exported Word/PDF files, so a
+notarial or caption line written with brackets disappears from the finished
+document. Underscore blanks survive the export intact.
+
+Every OTHER unknown fact — a party's name, an address, an amount, a date, a
+title number — is never a blank at all. Collect it through the intake form
+before drafting, exactly as the drafting rules require.
 
 ## 1. Caption block (court pleadings only)
 
@@ -10,28 +28,30 @@ Every pleading filed in court starts with this exact structure:
 
 ```
 REPUBLIC OF THE PHILIPPINES
-[LEVEL OF COURT, e.g. REGIONAL TRIAL COURT]
-[JUDICIAL REGION, if RTC, e.g. FOURTH JUDICIAL REGION]
-Branch [NUMBER]
-[CITY/MUNICIPALITY]
+REGIONAL TRIAL COURT            <- the actual court level
+FOURTH JUDICIAL REGION          <- the actual region, if an RTC
+Branch ____
+LUCENA CITY                     <- the actual city/municipality
 
-[PLAINTIFF/PETITIONER NAME],
+JUAN DELA CRUZ,                 <- the actual plaintiff's name
                     Plaintiff,
 
-        -versus-                          Civil Case No. [NUMBER]
-                                           For: [NATURE OF ACTION]
+        -versus-                          Civil Case No. ____
+                                           For: Sum of Money
 
-[DEFENDANT/RESPONDENT NAME],
+PEDRO SANTOS,                   <- the actual defendant's name
                     Defendant.
 x-----------------------------------------x
 ```
 
 Rules:
-- Court level and branch are left blank with a clear placeholder if not yet
-  known (case is pre-filing) — never invent a branch or docket number.
+- The court level, region, and city come from the facts. The branch and docket
+  number are the clerk of court's to assign, so they stay as underscore blanks
+  until the case is filed — never invent a branch or docket number, and never
+  write them as bracketed placeholders.
 - "For:" states the nature of the action in a few words (e.g., "For: Sum of
   Money," "For: Annulment of Deed and Reconveyance").
-- The case number field stays blank/placeholder until the case is actually
+- The case number field stays an underscore blank until the case is actually
   filed and a docket number assigned by the clerk of court.
 
 ## 2. Verification and Certification Against Forum Shopping
@@ -61,20 +81,22 @@ subject to dismissal. See `templates/verification_and_certification.md`.
 Every notarized document needs, at minimum:
 - Notary's name, "Notary Public for [place], until [expiry]" or
   "Notary Public for [place]"
-- Doc. No., Page No., Book No., Series of [year] (filled in by the notary
-  at signing — leave as placeholders, never invent numbers)
+- Doc. No. ____; Page No. ____; Book No. ____; Series of [the current year,
+  written out] — the numbers are filled in by the notary at signing, so they
+  stay as underscore blanks. Never invent them.
 - Competent evidence of identity for each signatory (ID type, number, date
-  and place of issuance) — do not fabricate ID numbers; leave as a
-  placeholder field to be filled from the actual document or left blank
-  for the notary to complete.
+  and place of issuance) — use the details the user actually supplied. Never
+  fabricate an ID number; if the user did not supply one, leave an underscore
+  blank for the notary to complete.
 
 ## 5. Signature blocks
 
 - Individual party: full name, signature line, and if represented by
   counsel, counsel's name, Roll of Attorneys No., PTR No. (with date/place
   issued), IBP No. (with date/place issued), and MCLE Compliance No. below
-  the signature — these are placeholders unless actual counsel details were
-  provided; never invent them.
+  the signature. Use the counsel details the user supplied; where they were
+  not supplied, leave underscore blanks (`Roll of Attorneys No. ____`) for
+  counsel to complete. Never invent them.
 - Corporate party: signed by an authorized representative, with their
   position stated, "duly authorized under [Board Resolution / Secretary's
   Certificate, if referenced]."
@@ -90,10 +112,13 @@ Every notarized document needs, at minimum:
 
 ## 7. Money, dates, and quantities
 
-- Peso amounts: numeric figure with the amount spelled out in words on
-  first use within an operative clause, e.g. "₱855,000.00 (Eight Hundred
-  Fifty-Five Thousand Pesos)." Numeric-only is acceptable in tables,
-  invoices, or subsequent references.
+- Peso amounts are labelled "PHP", never with the peso sign (₱), which the
+  PDF export cannot render. On first use within an operative clause, the amount is
+  spelled out in words with the figure in parentheses — words first, e.g.
+  "Eight Hundred Fifty-Five Thousand Pesos (PHP 855,000.00)". Periods follow the
+  same order: "thirty (30) days from receipt". Numeric-only is acceptable in
+  tables, invoices, and subsequent references to an amount already stated in
+  full.
 - Dates: spelled out in the body of formal instruments, e.g. "this 4th day
   of March, 2025," not "03/04/2025."
 - Never compute or state a specific monetary figure (damages, interest,
@@ -106,10 +131,13 @@ Every notarized document needs, at minimum:
 
 - Never fill in a court branch, docket/case number, notarial Doc./Page/Book
   number, or an opposing counsel's name unless it was explicitly provided
-  in the source material. Leave a clearly marked placeholder instead.
+  in the source material. Leave an underscore blank instead.
 - Never invent a cause of action, statutory citation, or case citation not
   supported by retrieved context — this library provides structure, not
   legal content.
-- Always close generated pleadings, affidavits, deeds, and notarized
-  instruments with a visible note that the document requires review and
-  signature by a licensed Philippine lawyer before filing or execution.
+- Every generated pleading, affidavit, deed, and notarized instrument
+  requires review and signature by a licensed Philippine lawyer before
+  filing or execution. Say so in the chat reply, AFTER the [[DOCUMENT_END]]
+  marker — never inside the document itself. The instrument's own text is
+  what gets signed and filed, and the export pipeline strips this note from
+  the Word/PDF file, so a note placed inside the markers is lost anyway.

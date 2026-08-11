@@ -6,6 +6,7 @@ use App\Models\Message;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\User;
+use App\Services\Export\DocumentExportService;
 
 beforeEach(function () {
     $this->user = User::factory()->create();
@@ -77,4 +78,21 @@ it('forbids exporting another users message', function () {
     $this->actingAs($other)
         ->post("/api/messages/{$message->id}/export/pdf")
         ->assertStatus(403);
+});
+
+it('renders peso amounts as PHP in exported documents', function () {
+    $service = new DocumentExportService;
+
+    $body = $service->extractDocument(
+        "[[DOCUMENT_START]]\nDEMAND LETTER\n\n"
+        .'We demand payment of Three Million Pesos (₱3,000,000.00) for the 1,200 sqm portion, '
+        ."plus ₱ 25,000.00 in costs.\n\nVery truly yours,\n[[DOCUMENT_END]]"
+    );
+
+    // The PDF renderer's built-in font has no glyph for U+20B1, so any peso
+    // sign that survives to the exported file prints as "?".
+    expect($body)
+        ->toContain('Three Million Pesos (PHP 3,000,000.00)')
+        ->toContain('plus PHP 25,000.00 in costs')
+        ->not->toContain('₱');
 });

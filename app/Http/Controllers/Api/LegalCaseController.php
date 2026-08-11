@@ -98,6 +98,10 @@ class LegalCaseController extends Controller
         $case = DB::transaction(function () use ($request, $validated) {
             $case = $request->user()->cases()->create($validated + [
                 'reference' => $validated['reference'] ?? $this->nextReference(),
+                // A case belongs to the firm its owner belongs to. Null for a
+                // solo user, who has no organization — registration makes the
+                // organization optional.
+                'organization_id' => $request->user()->organization_id,
             ]);
 
             $case->conversations()->create([

@@ -83,7 +83,7 @@ a specific element.]
 WHEREFORE, plaintiff respectfully prays that judgment be rendered in favor
 of plaintiff and against defendant, ordering the latter to:
 
-1. {{RELIEF_1, e.g. "Pay plaintiff the sum of ₱___, representing ___"}};
+1. {{RELIEF_1, e.g. "Pay plaintiff the sum of PHP ___, representing ___"}};
 2. {{RELIEF_2, e.g. "Pay legal interest thereon from ___ until full payment"}};
 3. {{RELIEF_3, e.g. "Pay attorney's fees and costs of suit"}};
 4. Grant such other relief as may be just and equitable under the premises.
