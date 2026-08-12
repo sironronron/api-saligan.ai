@@ -8,6 +8,7 @@ use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Throwable;
@@ -24,6 +25,19 @@ class SupabaseJwtService
 
     /** Signing keys change only when the project rotates them. */
     private const JWKS_CACHE_TTL = 3600;
+
+    /**
+     * Tolerance for clock drift between Supabase and this server, in seconds.
+     *
+     * The library defaults to zero, which means a token whose `iat` is even one
+     * second ahead of our clock is rejected outright with a BeforeValidException
+     * — and since Supabase stamps `iat` at the moment it mints the token, any
+     * server running fractionally behind rejects *every* token it is sent. Two
+     * seconds of ordinary drift is enough to take sign-in down completely.
+     * RFC 7519 allows a small leeway for exactly this; it applies to `exp` too,
+     * so a token is honoured for a minute past expiry rather than to the second.
+     */
+    private const CLOCK_SKEW_LEEWAY_SECONDS = 60;
 
     private ?string $secret = null;
 
@@ -59,9 +73,20 @@ class SupabaseJwtService
             return null;
         }
 
+        JWT::$leeway = self::CLOCK_SKEW_LEEWAY_SECONDS;
+
         try {
             return (array) JWT::decode($token, $keys);
-        } catch (Throwable) {
+        } catch (Throwable $e) {
+            // Verification failures are a normal outcome for a bad token, so
+            // this stays quiet — but logging the reason is the difference
+            // between diagnosing a clock-skew outage in a minute and mistaking
+            // it for a misconfigured key.
+            Log::debug('Supabase token rejected.', [
+                'reason' => $e->getMessage(),
+                'algorithm' => $algorithm,
+            ]);
+
             return null;
         }
     }

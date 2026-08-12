@@ -297,3 +297,39 @@ it('rejects tokens rather than failing open when the key set cannot be fetched',
 
     expect(User::where('email', 'unreachable@example.com')->exists())->toBeFalse();
 });
+
+/*
+|--------------------------------------------------------------------------
+| Clock skew
+|--------------------------------------------------------------------------
+|
+| Supabase stamps `iat` at the instant it mints a token. With the library's
+| default zero leeway, a server running even a second behind rejects every
+| token it is handed — sign-in fails completely, and the only symptom is a
+| blanket 401 that looks identical to a key misconfiguration.
+|
+*/
+
+it('accepts a token issued a few seconds ahead of this server clock', function () {
+    $token = JWT::encode([
+        'sub' => (string) Str::uuid(),
+        'email' => 'skewed@example.com',
+        'iat' => time() + 5,
+        'exp' => time() + 3600,
+    ], config('supabase.jwt_secret'), 'HS256');
+
+    withToken($token)->getJson('/api/user')->assertSuccessful();
+});
+
+it('still rejects a token issued far beyond the skew tolerance', function () {
+    $token = JWT::encode([
+        'sub' => (string) Str::uuid(),
+        'email' => 'far-future@example.com',
+        'iat' => time() + 3600,
+        'exp' => time() + 7200,
+    ], config('supabase.jwt_secret'), 'HS256');
+
+    withToken($token)->getJson('/api/user')->assertUnauthorized();
+
+    expect(User::where('email', 'far-future@example.com')->exists())->toBeFalse();
+});
