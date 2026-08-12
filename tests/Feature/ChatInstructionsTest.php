@@ -1067,3 +1067,49 @@ it('still persists the reply when a memory write-back fails', function () {
         // when the memory behind them could not be saved.
         ->not->toContain('MEMORY_WRITE_START');
 });
+
+it('persists the reply and the memory when the case carries no organization', function () {
+    // The exact production shape: cases.organization_id was never populated,
+    // Claude follows the write-back instructions (the local Ollama model
+    // ignores them), and the insert used to abort persistence before
+    // Message::create — todos already written, reply lost.
+    $user = User::factory()->create(['organization_id' => null]);
+    $case = LegalCase::factory()->for($user)->create(['organization_id' => null]);
+    $conversation = Conversation::factory()->for($user)->create(['case_id' => $case->id]);
+
+    $this->chat->persistFor(
+        $conversation,
+        "[[DOCUMENT_START]]\nDEMAND LETTER\nVery truly yours,\n[[DOCUMENT_END]]\n\n"
+        ."[[MEMORY_WRITE_START]] matter={$case->id} type=fact content: DPWH took possession of the 1,200 sq. m. portion [[MEMORY_WRITE_END]]",
+        false,
+    );
+
+    $message = Message::where('conversation_id', $conversation->id)
+        ->where('role', 'assistant')
+        ->firstOrFail();
+
+    expect($message->content)
+        ->toContain('DEMAND LETTER')
+        ->not->toContain('MEMORY_WRITE_START');
+
+    expect(app(MatterMemoryService::class)->getMemories($case))->toHaveCount(1);
+});
+
+it('formats sources with quotes and links in the Sources section', function () {
+    $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Gemini);
+
+    expect($instructions)
+        ->toContain('> "RA No. 6657, Sec. 2 (Comprehensive Agrarian Reform Law, as amended) — Official Gazette" [Link](URL)')
+        ->toContain('> "G.R. No. 143491, promulgated [date] — Supreme Court E-Library" [Link](URL)')
+        ->toContain('> "lease_agreement_2024.pdf"')
+        ->toContain('Each source must be on its own line, prefixed with `> ` and wrapped in double quotes')
+        ->toContain('append a markdown link `[Link](URL)` after the closing quote');
+});
+
+it('includes self-verification rules for quoted sources with links', function () {
+    $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Gemini);
+
+    expect($instructions)
+        ->toContain('every Sources entry is on its own line prefixed with `> ` and wrapped in double quotes')
+        ->toContain('every legal source with a URL in the retrieved context includes a `[Link](URL)` after the closing quote');
+});

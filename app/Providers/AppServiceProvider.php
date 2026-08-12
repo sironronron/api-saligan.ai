@@ -2,9 +2,12 @@
 
 namespace App\Providers;
 
+use App\Auth\SupabaseGuard;
+use App\Services\Auth\SupabaseJwtService;
 use App\Services\Chat\ChatService;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
@@ -28,21 +31,17 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        RateLimiter::for('login', function (Request $request) {
-            return [
-                // Per-account guard against credential stuffing: a handful of
-                // wrong guesses per email+IP. Keep this low enough to slow
-                // brute force without blocking a forgetful user.
-                Limit::perMinute(5)->by('login.email.'.strtolower($request->input('email', '')).'.'.$request->ip()),
-                // Per-IP guard so one client cannot spray many accounts.
-                Limit::perMinute(20)->by('login.ip.'.$request->ip()),
-            ];
-        });
+        Auth::extend('supabase', function ($app, string $name, array $config) {
+            $guard = new SupabaseGuard(
+                $app->make(SupabaseJwtService::class),
+                $app->make('auth')->createUserProvider($config['provider']),
+                $app->make('request'),
+            );
 
-        RateLimiter::for('auth', function (Request $request) {
-            return Limit::perMinute(10)->by('auth.'.$request->ip());
-        });
+            $app->refresh('request', $guard, 'setRequest');
 
+            return $guard;
+        });
         RateLimiter::for('demo-request', function (Request $request) {
             return [
                 // Per-IP guard so a single client cannot flood the form.

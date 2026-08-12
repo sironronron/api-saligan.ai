@@ -1,165 +1,112 @@
 <?php
 
 use App\Models\User;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Password;
+use App\Services\Auth\SupabaseJwtService;
+use Illuminate\Support\Str;
 
-it('registers a new user', function () {
-    $response = $this->postJson('/api/register', [
-        'name' => 'Jane Doe',
-        'email' => 'jane@example.com',
-        'password' => 'password123',
-        'password_confirmation' => 'password123',
+it('requires a bearer token for the user endpoint', function () {
+    $this->getJson('/api/user')->assertStatus(401);
+});
+
+it('rejects an invalid or malformed bearer token', function () {
+    $this->withHeader('Authorization', 'Bearer not-a-valid-token')
+        ->getJson('/api/user')
+        ->assertStatus(401);
+});
+
+it('imports a new Supabase user on first request', function () {
+    $uid = (string) Str::uuid();
+
+    $token = app(SupabaseJwtService::class)->mintToken($uid, 'jane@example.com', [
+        'full_name' => 'Jane Doe',
     ]);
 
-    $response->assertCreated()
-        ->assertJsonPath('data.email', 'jane@example.com');
+    $this->withHeader('Authorization', 'Bearer '.$token)
+        ->getJson('/api/user')
+        ->assertSuccessful()
+        ->assertJsonPath('data.email', 'jane@example.com')
+        ->assertJsonPath('data.name', 'Jane Doe');
 
     $this->assertDatabaseHas('users', [
         'email' => 'jane@example.com',
+        'supabase_uid' => $uid,
         'is_admin' => false,
     ]);
 });
 
-it('does not allow mass-assigning the admin flag', function () {
-    $user = User::create([
-        'name' => 'Jane Doe',
-        'email' => 'jane@example.com',
-        'password' => Hash::make('password123'),
+it('does not allow importing the admin flag from token claims', function () {
+    $uid = (string) Str::uuid();
+
+    $token = app(SupabaseJwtService::class)->mintToken($uid, 'jane@example.com', [
+        'full_name' => 'Jane Doe',
         'is_admin' => true,
     ]);
 
-    expect($user->is_admin)->not->toBeTrue();
+    $this->withHeader('Authorization', 'Bearer '.$token)
+        ->getJson('/api/user')
+        ->assertSuccessful();
 
-    $this->assertDatabaseHas('users', [
-        'email' => 'jane@example.com',
-        'is_admin' => false,
-    ]);
+    expect(User::where('supabase_uid', $uid)->first()->is_admin)->toBeFalse();
 });
 
-it('rejects registration with a duplicate email', function () {
-    User::factory()->create(['email' => 'taken@example.com']);
+it('resolves an existing user by supabase uid', function () {
+    $user = User::factory()->create(['supabase_uid' => 'existing-uid']);
 
-    $this->postJson('/api/register', [
-        'name' => 'Jane Doe',
-        'email' => 'taken@example.com',
-        'password' => 'password123',
-        'password_confirmation' => 'password123',
-    ])->assertUnprocessable()
-        ->assertJsonValidationErrors('email');
-});
+    $token = app(SupabaseJwtService::class)->mintToken('existing-uid', $user->email);
 
-it('logs a user in with valid credentials', function () {
-    $user = User::factory()->create(['password' => Hash::make('secret123')]);
-
-    $this->postJson('/api/login', [
-        'email' => $user->email,
-        'password' => 'secret123',
-    ])->assertOk()
-        ->assertJsonPath('data.email', $user->email)
-        ->assertJsonPath('data.is_admin', false);
-});
-
-it('rejects login with invalid credentials', function () {
-    $user = User::factory()->create(['password' => Hash::make('secret123')]);
-
-    $this->postJson('/api/login', [
-        'email' => $user->email,
-        'password' => 'wrong-password',
-    ])->assertUnprocessable()
-        ->assertJsonPath('message', 'The provided credentials do not match our records.');
-});
-
-it('throttles repeated login attempts', function () {
-    $user = User::factory()->create(['password' => Hash::make('secret123')]);
-
-    for ($i = 0; $i < 5; $i++) {
-        $this->postJson('/api/login', [
-            'email' => $user->email,
-            'password' => 'wrong-password',
-        ])->assertUnprocessable();
-    }
-
-    $this->postJson('/api/login', [
-        'email' => $user->email,
-        'password' => 'secret123',
-    ])->assertStatus(429);
-});
-
-it('throttles registration requests per IP', function () {
-    for ($i = 0; $i < 10; $i++) {
-        $this->postJson('/api/register', [
-            'name' => 'Jane Doe',
-            'email' => "jane{$i}@example.com",
-            'password' => 'password123',
-            'password_confirmation' => 'password123',
-        ])->assertCreated();
-    }
-
-    $this->postJson('/api/register', [
-        'name' => 'Jane Doe',
-        'email' => 'overflow@example.com',
-        'password' => 'password123',
-        'password_confirmation' => 'password123',
-    ])->assertStatus(429);
-});
-
-it('requires authentication for the user endpoint', function () {
-    $this->getJson('/api/user')->assertStatus(401);
-});
-
-it('returns the authenticated user', function () {
-    $user = User::factory()->create();
-
-    $this->actingAs($user)
+    $this->withHeader('Authorization', 'Bearer '.$token)
         ->getJson('/api/user')
         ->assertOk()
-        ->assertJsonPath('data.email', $user->email);
+        ->assertJsonPath('data.id', $user->id);
+
+    expect(User::count())->toBe(1);
 });
 
-it('logs the user out and destroys the session', function () {
-    $user = User::factory()->create(['password' => Hash::make('secret123')]);
+it('links a pre-Supabase account by email', function () {
+    $user = User::factory()->create();
+    $uid = (string) Str::uuid();
 
+    $token = app(SupabaseJwtService::class)->mintToken($uid, $user->email);
+
+    $this->withHeader('Authorization', 'Bearer '.$token)
+        ->getJson('/api/user')
+        ->assertOk()
+        ->assertJsonPath('data.id', $user->id);
+
+    expect($user->fresh()->supabase_uid)->toBe($uid);
+
+    expect(User::count())->toBe(1);
+});
+
+it('requires both a uid and an email in the token', function () {
+    $uid = (string) Str::uuid();
+
+    $token = app(SupabaseJwtService::class)->mintToken($uid, '');
+
+    $this->withHeader('Authorization', 'Bearer '.$token)
+        ->getJson('/api/user')
+        ->assertStatus(401);
+});
+
+it('removes the legacy password endpoints', function () {
     $this->postJson('/api/login', [
-        'email' => $user->email,
-        'password' => 'secret123',
-    ])->assertOk();
+        'email' => 'jane@example.com',
+        'password' => 'password123',
+    ])->assertNotFound();
 
-    // Login regenerates the session, which rotates the CSRF token.
-    $this->withHeader('X-CSRF-TOKEN', csrf_token());
-
-    $this->postJson('/api/logout')->assertNoContent();
-
-    // Sanctum's RequestGuard caches the resolved user on the guard instance,
-    // so drop the cached guards before issuing the follow-up request.
-    $this->app['auth']->forgetGuards();
-
-    $this->getJson('/api/user')->assertStatus(401);
+    $this->postJson('/api/register', [
+        'name' => 'Jane Doe',
+        'email' => 'jane@example.com',
+        'password' => 'password123',
+    ])->assertNotFound();
 });
 
-it('sends a password reset link for a known email', function () {
+it('signs in an existing user via the helper', function () {
     $user = User::factory()->create();
 
-    $this->postJson('/api/forgot-password', ['email' => $user->email])
-        ->assertOk();
-});
+    $this->signInAs($user);
 
-it('does not reveal whether an email exists on forgot password', function () {
-    $this->postJson('/api/forgot-password', ['email' => 'missing@example.com'])
-        ->assertOk();
-});
-
-it('resets a password with a valid token', function () {
-    $user = User::factory()->create();
-
-    $token = Password::createToken($user);
-
-    $this->postJson('/api/reset-password', [
-        'email' => $user->email,
-        'token' => $token,
-        'password' => 'new-secret-123',
-        'password_confirmation' => 'new-secret-123',
-    ])->assertOk();
-
-    expect(Hash::check('new-secret-123', $user->fresh()->password))->toBeTrue();
+    $this->getJson('/api/user')
+        ->assertOk()
+        ->assertJsonPath('data.email', $user->email);
 });

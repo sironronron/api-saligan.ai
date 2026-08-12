@@ -59,7 +59,7 @@ it('starts a LemonSqueezy checkout and returns the hosted checkout url', functio
         ]),
     ]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson('/api/subscription', ['plan_id' => $this->pro->id])
         ->assertCreated();
 
@@ -113,7 +113,7 @@ it('falls back to PayMongo at the API level when the plan has no LemonSqueezy va
         ]),
     ]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson('/api/subscription', ['plan_id' => $this->pro->id])
         ->assertCreated();
 
@@ -138,7 +138,7 @@ it('changes plan through LemonSqueezy', function () {
 
     Http::fake(['api.lemonsqueezy.com/*' => Http::response(['data' => []])]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/subscription/change-plan', ['plan_id' => $this->pro->id])
         ->assertOk();
 
@@ -160,7 +160,7 @@ it('cancels a LemonSqueezy subscription', function () {
 
     Http::fake(['api.lemonsqueezy.com/*' => Http::response(['data' => []])]);
 
-    $this->actingAs($this->user)->postJson('/api/subscription/cancel')->assertOk();
+    $this->signInAs($this->user)->postJson('/api/subscription/cancel')->assertOk();
 
     $subscription = Subscription::firstWhere('user_id', $this->user->id);
 

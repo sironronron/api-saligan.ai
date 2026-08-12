@@ -7,6 +7,7 @@ use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\Template;
 use App\Models\User;
+use App\Services\Export\TemplateDocumentExportService;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Testing\TestResponse;
@@ -60,7 +61,7 @@ function createDocxTemplate(string $bodyText): Template
 {
     $path = docxWithHeaderAndBody($bodyText);
 
-    $response = test()->actingAs(test()->user)->postJson('/api/templates', [
+    $response = test()->signInAs(test()->user)->postJson('/api/templates', [
         'name' => 'Acme Company Letter',
         'category' => 'custom',
         'template_file' => new UploadedFile(
@@ -79,7 +80,7 @@ function createDocxTemplate(string $bodyText): Template
 
 function exportMessage(Message $message, string $type): TestResponse
 {
-    return test()->actingAs(test()->user)->post("/api/messages/{$message->id}/export/{$type}");
+    return test()->signInAs(test()->user)->post("/api/messages/{$message->id}/export/{$type}");
 }
 
 it('exports a Word file by filling the original docx template', function () {
@@ -165,4 +166,63 @@ it('falls back to the markdown export when no template is associated', function 
     ]);
 
     exportMessage($message, 'pdf')->assertOk()->assertHeader('Content-Type', 'application/pdf');
+});
+
+it('fills the template with the values the model supplied through fill_template_fields', function () {
+    // Verbatim mode tells the model to answer with the tool call and no prose,
+    // so the drafted text carries none of the facts. Before the fill values
+    // were persisted, every source the export consulted came up empty and the
+    // "generated" file was a byte-for-byte copy of the original template.
+    $path = docxWithHeaderAndBody('Dear [Client Name], please settle the [Amount Due] by [Due Date].');
+
+    Storage::put('templates/verbatim.docx', file_get_contents($path));
+    @unlink($path);
+
+    $template = Template::factory()->create([
+        'user_id' => $this->user->id,
+        'name' => 'Acme Company Letter',
+        'original_path' => 'templates/verbatim.docx',
+        'mime_type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'placeholder_fields' => ['[Client Name]', '[Amount Due]', '[Due Date]'],
+    ]);
+
+    expect($template->isVerbatimTemplate())->toBeTrue();
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $message = Message::factory()->create([
+        'conversation_id' => $conversation->id,
+        'role' => MessageRole::Assistant,
+        'content' => 'I filled in your template with the details for this matter.',
+        'metadata' => [
+            'template_id' => $template->id,
+            'template_fields' => [
+                '[Client Name]' => 'Roberto Villanueva',
+                '[Amount Due]' => 'Three Million Pesos (PHP 3,000,000.00)',
+                '[Due Date]' => 'October 26, 2026',
+            ],
+        ],
+    ]);
+
+    $filled = app(TemplateDocumentExportService::class)
+        ->fillForMessage($message, $template);
+
+    $zip = new ZipArchive;
+    $zip->open($filled);
+    $documentXml = $zip->getFromName('word/document.xml');
+    $headerXml = $zip->getFromName('word/header1.xml');
+    $zip->close();
+
+    @unlink($filled);
+
+    expect($documentXml)
+        ->toContain('Roberto Villanueva')
+        ->toContain('Three Million Pesos (PHP 3,000,000.00)')
+        ->toContain('October 26, 2026')
+        ->not->toContain('[Client Name]')
+        ->not->toContain('[Amount Due]')
+        ->not->toContain('[Due Date]');
+
+    // The letterhead the user uploaded survives the fill untouched.
+    expect($headerXml)->toContain('ACME LAW OFFICES');
 });

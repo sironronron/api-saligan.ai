@@ -4,7 +4,10 @@ use App\Ai\LegalChatAgent;
 use Laravel\Ai\Enums\Lab;
 
 beforeEach(function () {
-    config(['saligan.context_caching.enabled' => true]);
+    config([
+        'saligan.context_caching.enabled' => true,
+        'saligan.context_caching.ttl_seconds' => 3600,
+    ]);
 });
 
 it('splits the system prompt and caches the static block for Anthropic', function () {
@@ -18,7 +21,7 @@ it('splits the system prompt and caches the static block for Anthropic', functio
             [
                 'type' => 'text',
                 'text' => 'You are Saligan, a Philippine legal research assistant.',
-                'cache_control' => ['type' => 'ephemeral'],
+                'cache_control' => ['type' => 'ephemeral', 'ttl' => '1h'],
             ],
             [
                 'type' => 'text',
@@ -58,7 +61,7 @@ it('emits only the static block for Anthropic when there are no dynamic instruct
             [
                 'type' => 'text',
                 'text' => 'You are Saligan, a Philippine legal research assistant.',
-                'cache_control' => ['type' => 'ephemeral'],
+                'cache_control' => ['type' => 'ephemeral', 'ttl' => '1h'],
             ],
         ],
     ]);
@@ -79,4 +82,25 @@ it('does not split the system prompt for other providers', function () {
     expect($agent->providerOptions(Lab::Ollama))->toBe(['think' => false])
         ->and($agent->providerOptions(Lab::OpenAI))->toBe([])
         ->and($agent->providerOptions(Lab::Gemini))->toBe([]);
+});
+
+it('uses the hour-long cache when the configured TTL allows it', function () {
+    // The static block is ~22k tokens, so a write costs about twenty times a
+    // read. The hour window is what keeps ordinary gaps between a lawyer's
+    // questions on the read side of that.
+    config(['saligan.context_caching.ttl_seconds' => 3600]);
+
+    $agent = new LegalChatAgent(staticInstructions: 'static');
+
+    expect($agent->providerOptions(Lab::Anthropic)['system'][0]['cache_control'])
+        ->toBe(['type' => 'ephemeral', 'ttl' => '1h']);
+});
+
+it('falls back to the five-minute cache for a shorter configured TTL', function () {
+    config(['saligan.context_caching.ttl_seconds' => 300]);
+
+    $agent = new LegalChatAgent(staticInstructions: 'static');
+
+    expect($agent->providerOptions(Lab::Anthropic)['system'][0]['cache_control'])
+        ->toBe(['type' => 'ephemeral', 'ttl' => '5m']);
 });

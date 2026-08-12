@@ -97,7 +97,7 @@ it('stores an uploaded docx verbatim and keeps the bracketed placeholders', func
     $body = paragraphXml([['Dear [Client Name],', null], [' please settle the balance of [Amount Due].', null]]);
     $path = buildDocxWithBody($body);
 
-    $response = $this->actingAs($this->owner)->postJson('/api/templates', [
+    $response = $this->signInAs($this->owner)->postJson('/api/templates', [
         'name' => 'Demand Letter Contract',
         'category' => 'legal',
         'template_file' => docxUpload($path),
@@ -130,7 +130,7 @@ it('detects a placeholder split across runs with identical formatting', function
     ]);
     $path = buildDocxWithBody($body);
 
-    $this->actingAs($this->owner)->postJson('/api/templates', [
+    $this->signInAs($this->owner)->postJson('/api/templates', [
         'name' => 'Split Placeholder',
         'template_file' => docxUpload($path),
     ])->assertCreated()
@@ -148,7 +148,7 @@ it('rejects a docx whose placeholder spans a formatting boundary', function () {
     ]);
     $path = buildDocxWithBody($body);
 
-    $this->actingAs($this->owner)->postJson('/api/templates', [
+    $this->signInAs($this->owner)->postJson('/api/templates', [
         'name' => 'Broken Placeholder',
         'template_file' => docxUpload($path),
     ])->assertStatus(422)
@@ -164,12 +164,12 @@ it('fills a docx in place, preserving untouched document parts', function () {
     ]);
     $path = buildDocxWithBody($body);
 
-    $templateId = $this->actingAs($this->owner)->postJson('/api/templates', [
+    $templateId = $this->signInAs($this->owner)->postJson('/api/templates', [
         'name' => 'Demand Letter',
         'template_file' => docxUpload($path),
     ])->assertCreated()->json('data.id');
 
-    $response = $this->actingAs($this->owner)->postJson("/api/templates/{$templateId}/fill", [
+    $response = $this->signInAs($this->owner)->postJson("/api/templates/{$templateId}/fill", [
         'values' => ['[Client Name]' => 'Juan Dela Cruz', '[Amount Due]' => 'PHP 5,000.00'],
     ])->assertOk()
         ->assertHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
@@ -199,7 +199,7 @@ it('blocks filling a template owned by another organization', function () {
     $body = paragraphXml([['[Client Name]', null]]);
     $path = buildDocxWithBody($body);
 
-    $templateId = $this->actingAs($this->owner)->postJson('/api/templates', [
+    $templateId = $this->signInAs($this->owner)->postJson('/api/templates', [
         'name' => 'Private Template',
         'template_file' => docxUpload($path),
     ])->assertCreated()->json('data.id');
@@ -211,11 +211,11 @@ it('blocks filling a template owned by another organization', function () {
     ]);
     $outsider = User::factory()->memberOf($otherOrg)->create();
 
-    $this->actingAs($outsider)
+    $this->signInAs($outsider)
         ->postJson("/api/templates/{$templateId}/fill", ['values' => ['[Client Name]' => 'Hacker']])
         ->assertStatus(403);
 
-    $this->actingAs($outsider)->getJson('/api/templates')
+    $this->signInAs($outsider)->getJson('/api/templates')
         ->assertOk()
         ->assertJsonMissing(['id' => $templateId]);
 
@@ -226,18 +226,18 @@ it('lets an organization member access and fill an org-owned template', function
     $body = paragraphXml([['Dear [Client Name],', null]]);
     $path = buildDocxWithBody($body);
 
-    $templateId = $this->actingAs($this->owner)->postJson('/api/templates', [
+    $templateId = $this->signInAs($this->owner)->postJson('/api/templates', [
         'name' => 'Shared Template',
         'template_file' => docxUpload($path),
     ])->assertCreated()->json('data.id');
 
     $member = User::factory()->memberOf($this->organization)->create();
 
-    $this->actingAs($member)->getJson('/api/templates')
+    $this->signInAs($member)->getJson('/api/templates')
         ->assertOk()
         ->assertJsonFragment(['id' => $templateId]);
 
-    $this->actingAs($member)->postJson("/api/templates/{$templateId}/fill", [
+    $this->signInAs($member)->postJson("/api/templates/{$templateId}/fill", [
         'values' => ['[Client Name]' => 'Maria Santos'],
     ])->assertOk();
 
@@ -255,7 +255,7 @@ it('does not expose file templates as plain content for rendering', function () 
 
     Storage::put('template-files/contract.docx', 'PK fake content');
 
-    $this->actingAs($this->owner)->getJson('/api/templates')
+    $this->signInAs($this->owner)->getJson('/api/templates')
         ->assertOk()
         ->assertJsonFragment(['id' => $template->id]);
 });

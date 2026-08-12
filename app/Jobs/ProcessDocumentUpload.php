@@ -88,6 +88,13 @@ class ProcessDocumentUpload implements ShouldQueue
             $text = $this->isImage($mimeType)
                 ? $ocr->extract($path, $mimeType)
                 : $extractor->extract($path, $mimeType);
+
+            // A scanned PDF has no text layer, so the parser returns nothing.
+            // The pages are images, which is exactly what the OCR model reads,
+            // so fall through to it rather than rejecting the upload.
+            if (trim($this->sanitizeText($text)) === '' && ImageOcrExtractor::handles($mimeType) && ! $this->isImage($mimeType)) {
+                $text = $ocr->extract($path, $mimeType);
+            }
         } finally {
             if ($decryptedPath !== null) {
                 @unlink($decryptedPath);
@@ -103,7 +110,7 @@ class ProcessDocumentUpload implements ShouldQueue
         if (trim($text) === '') {
             throw new DocumentProcessingException($this->isImage($mimeType)
                 ? 'No text could be read from the image. Upload a clearer image or a PDF/DOCX version.'
-                : 'No extractable text was found in the file. Scanned PDFs may require OCR.');
+                : 'No text could be read from this file, including by scanning it. Upload a clearer copy or a text-based PDF/DOCX version.');
         }
 
         $chunks = $chunker->chunk(

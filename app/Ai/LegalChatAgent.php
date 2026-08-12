@@ -100,7 +100,7 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
         ];
 
         if (config('saligan.context_caching.enabled')) {
-            $static['cache_control'] = ['type' => 'ephemeral'];
+            $static['cache_control'] = ['type' => 'ephemeral', 'ttl' => $this->cacheTtl()];
         }
 
         return [
@@ -109,5 +109,22 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
                 ...(filled($this->instructions) ? [['type' => 'text', 'text' => $this->instructions]] : []),
             ],
         ];
+    }
+
+    /**
+     * The cache lifetime for the static prompt block.
+     *
+     * Anthropic offers exactly two: five minutes, and an hour that costs 2x the
+     * input rate to write rather than 1.25x. The hour is the better buy here
+     * because a miss is what actually hurts — the block is ~22k tokens, so a
+     * write costs roughly twenty times what a read does, and the five-minute
+     * window is short enough that ordinary gaps between questions fall outside
+     * it. The block is also identical for every user (it carries no per-user
+     * text), so one entry stays warm on aggregate traffic rather than needing
+     * each lawyer to sustain a burst of their own.
+     */
+    protected function cacheTtl(): string
+    {
+        return (int) config('saligan.context_caching.ttl_seconds') >= 3600 ? '1h' : '5m';
     }
 }

@@ -19,7 +19,7 @@ it('requires authentication', function () {
 });
 
 it('creates a case from the intake form with an auto reference and conversation', function () {
-    $response = $this->actingAs($this->user)->postJson('/api/cases', [
+    $response = $this->signInAs($this->user)->postJson('/api/cases', [
         'title' => 'Unpaid rent collection',
         'case_type' => 'legal',
         'status' => 'open',
@@ -39,14 +39,14 @@ it('creates a case from the intake form with an auto reference and conversation'
 });
 
 it('validates required intake fields', function () {
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/cases', ['title' => 'Missing type and status'])
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['case_type', 'status']);
 });
 
 it('accepts an explicit reference', function () {
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/cases', [
             'title' => 'Civil Case',
             'case_type' => 'legal',
@@ -61,7 +61,7 @@ it('lists only the authenticated users cases', function () {
     LegalCase::factory()->for($this->user)->create();
     LegalCase::factory()->for(User::factory())->create();
 
-    $response = $this->actingAs($this->user)->getJson('/api/cases')->assertOk();
+    $response = $this->signInAs($this->user)->getJson('/api/cases')->assertOk();
 
     expect($response->json('data'))->toHaveCount(1)
         ->and(array_key_exists('user_id', $response->json('data.0')))->toBeFalse();
@@ -71,12 +71,12 @@ it('excludes archived cases from the default list and includes them when request
     $active = LegalCase::factory()->for($this->user)->create();
     $archived = LegalCase::factory()->for($this->user)->archived()->create();
 
-    $this->actingAs($this->user)->getJson('/api/cases')
+    $this->signInAs($this->user)->getJson('/api/cases')
         ->assertOk()
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.id', $active->id);
 
-    $this->actingAs($this->user)->getJson('/api/cases?archived=1')
+    $this->signInAs($this->user)->getJson('/api/cases?archived=1')
         ->assertOk()
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.id', $archived->id);
@@ -87,11 +87,11 @@ it('filters cases by status and case type', function () {
     LegalCase::factory()->for($this->user)->create(['status' => 'closed', 'case_type' => 'legal']);
     LegalCase::factory()->for($this->user)->create(['status' => 'open', 'case_type' => 'hr']);
 
-    $this->actingAs($this->user)->getJson('/api/cases?status=open')
+    $this->signInAs($this->user)->getJson('/api/cases?status=open')
         ->assertOk()
         ->assertJsonCount(2, 'data');
 
-    $this->actingAs($this->user)->getJson('/api/cases?status=open&case_type=hr')
+    $this->signInAs($this->user)->getJson('/api/cases?status=open&case_type=hr')
         ->assertOk()
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.case_type', 'hr');
@@ -102,11 +102,11 @@ it('searches across title, description, reference, and tags', function () {
     $byTags = LegalCase::factory()->for($this->user)->create(['title' => 'Other', 'tags' => ['dismissal']]);
     $byReference = LegalCase::factory()->for($this->user)->create(['title' => 'Other', 'reference' => 'LAB-99-0001']);
 
-    $this->actingAs($this->user)->getJson('/api/cases?search=dismissal')
+    $this->signInAs($this->user)->getJson('/api/cases?search=dismissal')
         ->assertOk()
         ->assertJsonCount(2, 'data');
 
-    $this->actingAs($this->user)->getJson('/api/cases?search=LAB-99')
+    $this->signInAs($this->user)->getJson('/api/cases?search=LAB-99')
         ->assertOk()
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.id', $byReference->id);
@@ -120,7 +120,7 @@ it('reports task and message counts on the list', function () {
     Todo::factory()->for($conversation)->create(['status' => 'pending']);
     Todo::factory()->for($conversation)->create(['status' => 'completed']);
 
-    $this->actingAs($this->user)->getJson('/api/cases')
+    $this->signInAs($this->user)->getJson('/api/cases')
         ->assertOk()
         ->assertJsonPath('data.0.messages_count', 1)
         ->assertJsonPath('data.0.open_tasks_count', 1)
@@ -133,7 +133,7 @@ it('shows a case with its conversation threads, active messages, and tasks', fun
     Message::factory()->for($conversation)->create(['role' => 'user', 'content' => 'What are my rights?']);
     Todo::factory()->for($conversation)->create(['title' => 'File the complaint']);
 
-    $response = $this->actingAs($this->user)->getJson("/api/cases/{$case->id}")->assertOk();
+    $response = $this->signInAs($this->user)->getJson("/api/cases/{$case->id}")->assertOk();
 
     expect($response->json('data.conversation_id'))->toBe($conversation->id)
         ->and($response->json('data.active_conversation_id'))->toBe($conversation->id)
@@ -146,7 +146,7 @@ it('creates additional conversation threads for a case and scopes messages by th
     $case = LegalCase::factory()->for($this->user)->create();
     $general = $case->conversations()->create(['user_id' => $this->user->id, 'purpose' => 'General']);
 
-    $drafting = $this->actingAs($this->user)
+    $drafting = $this->signInAs($this->user)
         ->postJson("/api/cases/{$case->id}/conversations", ['purpose' => 'Draft a letter'])
         ->assertCreated()
         ->json('data');
@@ -157,7 +157,7 @@ it('creates additional conversation threads for a case and scopes messages by th
     Message::factory()->create(['conversation_id' => $general->id, 'role' => 'user', 'content' => 'general thread']);
     Message::factory()->create(['conversation_id' => $drafting['id'], 'role' => 'user', 'content' => 'drafting thread']);
 
-    $response = $this->actingAs($this->user)->getJson("/api/cases/{$case->id}?conversation={$drafting['id']}")->assertOk();
+    $response = $this->signInAs($this->user)->getJson("/api/cases/{$case->id}?conversation={$drafting['id']}")->assertOk();
 
     expect($response->json('data.active_conversation_id'))->toBe($drafting['id'])
         ->and($response->json('data.conversations'))->toHaveCount(2)
@@ -167,7 +167,7 @@ it('creates additional conversation threads for a case and scopes messages by th
 it('forbids creating a conversation thread for another users case', function () {
     $case = LegalCase::factory()->for(User::factory())->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson("/api/cases/{$case->id}/conversations", ['purpose' => 'Research'])
         ->assertForbidden();
 });
@@ -175,7 +175,7 @@ it('forbids creating a conversation thread for another users case', function () 
 it('updates case metadata', function () {
     $case = LegalCase::factory()->for($this->user)->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->patchJson("/api/cases/{$case->id}", [
             'title' => 'Renamed case',
             'status' => 'in_progress',
@@ -190,13 +190,13 @@ it('updates case metadata', function () {
 it('archives, restores, and permanently deletes a case', function () {
     $case = LegalCase::factory()->for($this->user)->create();
 
-    $this->actingAs($this->user)->deleteJson("/api/cases/{$case->id}")->assertOk();
+    $this->signInAs($this->user)->deleteJson("/api/cases/{$case->id}")->assertOk();
     expect($case->fresh()->archived_at)->not->toBeNull();
 
-    $this->actingAs($this->user)->postJson("/api/cases/{$case->id}/restore")->assertOk();
+    $this->signInAs($this->user)->postJson("/api/cases/{$case->id}/restore")->assertOk();
     expect($case->fresh()->archived_at)->toBeNull();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->deleteJson("/api/cases/{$case->id}/force", ['confirmation' => $case->title])
         ->assertNoContent();
 
@@ -206,7 +206,7 @@ it('archives, restores, and permanently deletes a case', function () {
 it('refuses to permanently delete a case without a matching confirmation', function () {
     $case = LegalCase::factory()->for($this->user)->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->deleteJson("/api/cases/{$case->id}/force", ['confirmation' => 'wrong title'])
         ->assertStatus(422);
 
@@ -216,7 +216,7 @@ it('refuses to permanently delete a case without a matching confirmation', funct
 it('duplicates a case into a fresh case', function () {
     $case = LegalCase::factory()->for($this->user)->create(['title' => 'Original case', 'tags' => ['debt']]);
 
-    $response = $this->actingAs($this->user)->postJson("/api/cases/{$case->id}/duplicate")->assertCreated();
+    $response = $this->signInAs($this->user)->postJson("/api/cases/{$case->id}/duplicate")->assertCreated();
 
     expect($response->json('data.id'))->not->toBe($case->id)
         ->and($response->json('data.title'))->toBe('Copy of Original case')
@@ -227,9 +227,9 @@ it('duplicates a case into a fresh case', function () {
 it('does not allow access to another users case', function () {
     $case = LegalCase::factory()->for(User::factory())->create();
 
-    $this->actingAs($this->user)->getJson("/api/cases/{$case->id}")->assertForbidden();
-    $this->actingAs($this->user)->patchJson("/api/cases/{$case->id}", ['title' => 'Nope'])->assertForbidden();
-    $this->actingAs($this->user)->deleteJson("/api/cases/{$case->id}")->assertForbidden();
+    $this->signInAs($this->user)->getJson("/api/cases/{$case->id}")->assertForbidden();
+    $this->signInAs($this->user)->patchJson("/api/cases/{$case->id}", ['title' => 'Nope'])->assertForbidden();
+    $this->signInAs($this->user)->deleteJson("/api/cases/{$case->id}")->assertForbidden();
 });
 
 it('does not leak tasks or messages between cases', function () {
@@ -242,7 +242,7 @@ it('does not leak tasks or messages between cases', function () {
     Message::factory()->for($firstConversation)->create(['role' => 'user', 'content' => 'only in first']);
     Todo::factory()->for($firstConversation)->create(['title' => 'only in first']);
 
-    $response = $this->actingAs($this->user)->getJson("/api/cases/{$second->id}")->assertOk();
+    $response = $this->signInAs($this->user)->getJson("/api/cases/{$second->id}")->assertOk();
 
     expect($response->json('data.messages'))->toBeEmpty()
         ->and($response->json('data.tasks'))->toBeEmpty();

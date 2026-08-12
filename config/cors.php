@@ -15,7 +15,7 @@ return [
     |
     */
 
-    'paths' => ['api/*', 'sanctum/csrf-cookie'],
+    'paths' => ['api/*'],
 
     'allowed_methods' => ['*'],
 
@@ -40,6 +40,9 @@ return [
 
     'max_age' => 0,
 
-    'supports_credentials' => true,
+    // The frontend authenticates with an Authorization header, not cookies,
+    // so credentialed requests are no longer needed. Leaving this on would
+    // also forbid the '*' origin wildcard for no benefit.
+    'supports_credentials' => false,
 
 ];

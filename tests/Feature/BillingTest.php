@@ -6,6 +6,7 @@ use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\UsageCounter;
 use App\Models\User;
+use App\Services\Auth\SupabaseJwtService;
 use App\Support\PlanLimits;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\UploadedFile;
@@ -13,6 +14,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 beforeEach(function () {
     $this->user = User::factory()->create();
@@ -29,17 +31,25 @@ it('lists the active plans for a guest', function () {
         ->and($response->json('data.1.slug'))->toBe('pro');
 });
 
-it('registers a user without any subscription', function () {
-    $this->postJson('/api/register', [
-        'name' => 'New User',
-        'email' => 'new@example.com',
-        'password' => 'password',
-        'password_confirmation' => 'password',
-    ])->assertCreated();
+it('provisions a first-time Supabase user without any subscription', function () {
+    // There is no registration endpoint any more: the account is created in
+    // Supabase and imported here the first time its token reaches the API.
+    $token = app(SupabaseJwtService::class)->mintToken(
+        (string) Str::uuid(),
+        'new@example.com',
+        ['full_name' => 'New User'],
+    );
+
+    $this->withHeader('Authorization', 'Bearer '.$token)
+        ->getJson('/api/user')
+        ->assertSuccessful()
+        ->assertJsonPath('data.email', 'new@example.com');
 
     $user = User::where('email', 'new@example.com')->firstOrFail();
 
-    expect($user->subscription)->toBeNull();
+    expect($user->name)->toBe('New User')
+        ->and($user->supabase_uid)->not->toBeNull()
+        ->and($user->subscription)->toBeNull();
 });
 
 it('starts a subscription and returns the hosted checkout url', function () {
@@ -79,7 +89,7 @@ it('starts a subscription and returns the hosted checkout url', function () {
         ]),
     ]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson('/api/subscription', ['plan_id' => $this->pro->id])
         ->assertCreated();
 
@@ -145,7 +155,7 @@ it('reuses an existing PayMongo customer by email instead of creating one', func
         ]),
     ]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/subscription', ['plan_id' => $this->pro->id])
         ->assertCreated();
 
@@ -171,7 +181,7 @@ it('reuses an existing PayMongo customer by email instead of creating one', func
 it('rejects subscribing while an active subscription exists', function () {
     Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/subscription', ['plan_id' => $this->pro->id])
         ->assertStatus(422);
 });
@@ -182,7 +192,7 @@ it('rejects starting a checkout while a payment is already pending', function ()
         'status' => Subscription::STATUS_INCOMPLETE,
     ]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/subscription', ['plan_id' => $this->pro->id])
         ->assertStatus(422)
         ->assertJsonPath('message', 'A subscription is already pending. Cancel it before starting a new checkout.');
@@ -191,7 +201,7 @@ it('rejects starting a checkout while a payment is already pending', function ()
 it('rejects a checkout while another checkout is being created', function () {
     Cache::lock("subscription.checkout.{$this->user->id}", 30)->get();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/subscription', ['plan_id' => $this->pro->id])
         ->assertStatus(409);
 
@@ -205,7 +215,7 @@ it('shows the current subscription with usage', function () {
         'documents_uploaded' => 3,
     ]);
 
-    $response = $this->actingAs($this->user)->getJson('/api/subscription')->assertOk();
+    $response = $this->signInAs($this->user)->getJson('/api/subscription')->assertOk();
 
     expect($response->json('data.plan.slug'))->toBe('pro')
         ->and($response->json('data.usage.messages.used'))->toBe(42)
@@ -215,7 +225,7 @@ it('shows the current subscription with usage', function () {
 });
 
 it('returns null subscription for users without one', function () {
-    $this->actingAs($this->user)->getJson('/api/subscription')
+    $this->signInAs($this->user)->getJson('/api/subscription')
         ->assertOk()
         ->assertJson(['data' => null]);
 });
@@ -231,7 +241,7 @@ it('changes the subscription plan', function () {
 
     Http::fake(['api.paymongo.com/*' => Http::response(['data' => []])]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson('/api/subscription/change-plan', ['plan_id' => $this->pro->id])
         ->assertOk();
 
@@ -249,7 +259,7 @@ it('cancels the subscription', function () {
 
     Http::fake(['api.paymongo.com/*' => Http::response(['data' => []])]);
 
-    $this->actingAs($this->user)->postJson('/api/subscription/cancel')->assertOk();
+    $this->signInAs($this->user)->postJson('/api/subscription/cancel')->assertOk();
 
     $subscription = Subscription::firstWhere('user_id', $this->user->id);
 
@@ -342,7 +352,7 @@ it('blocks a message when the monthly message limit is reached', function () {
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson("/api/conversations/{$conversation->id}/messages", ['message' => 'Hello'])
         ->assertStatus(402);
 
@@ -352,7 +362,7 @@ it('blocks a message when the monthly message limit is reached', function () {
 it('blocks messages for users without a subscription', function () {
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson("/api/conversations/{$conversation->id}/messages", ['message' => 'Hello'])
         ->assertStatus(402);
 
@@ -360,7 +370,7 @@ it('blocks messages for users without a subscription', function () {
 });
 
 it('blocks all product endpoints for users without a subscription', function () {
-    $response = $this->actingAs($this->user)->getJson('/api/documents')->assertStatus(402);
+    $response = $this->signInAs($this->user)->getJson('/api/documents')->assertStatus(402);
 
     expect($response->json('upgrade_required'))->toBeTrue();
 });
@@ -371,7 +381,7 @@ it('blocks document upload when the monthly upload limit is reached', function (
     Queue::fake();
     Storage::fake('local');
 
-    $response = $this->actingAs($this->user)->postJson('/api/documents', [
+    $response = $this->signInAs($this->user)->postJson('/api/documents', [
         'file' => UploadedFile::fake()->createWithContent('memo.txt', 'x'),
     ])->assertStatus(402);
 
@@ -383,7 +393,7 @@ it('increments document upload usage', function () {
     Queue::fake();
     Storage::fake('local');
 
-    $this->actingAs($this->user)->postJson('/api/documents', [
+    $this->signInAs($this->user)->postJson('/api/documents', [
         'file' => UploadedFile::fake()->createWithContent('memo.txt', 'x'),
     ])->assertCreated();
 
@@ -394,7 +404,7 @@ it('blocks creating a case over the active case limit', function () {
     Subscription::factory()->for($this->user)->create(['plan_id' => $this->starter->id]);
     LegalCase::factory()->for($this->user)->state(['status' => 'open'])->count(10)->create();
 
-    $response = $this->actingAs($this->user)->postJson('/api/cases', [
+    $response = $this->signInAs($this->user)->postJson('/api/cases', [
         'title' => 'Another case',
         'case_type' => 'legal',
         'status' => 'open',
@@ -440,7 +450,7 @@ it('exposes the overage balance in the subscription payload', function () {
         'documents_uploaded' => 0,
     ]);
 
-    $response = $this->actingAs($this->user)->getJson('/api/subscription')->assertOk();
+    $response = $this->signInAs($this->user)->getJson('/api/subscription')->assertOk();
 
     expect($response->json('data.usage.messages.overage'))->toBe(10)
         ->and($response->json('data.usage.messages.overage_rate'))->toBe(350)
@@ -481,7 +491,7 @@ it('starts an annual subscription with a yearly PayMongo plan', function () {
         ]),
     ]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/subscription', ['plan_id' => $this->pro->id, 'billing_interval' => 'annual'])
         ->assertCreated();
 

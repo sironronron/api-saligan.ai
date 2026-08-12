@@ -14,6 +14,14 @@ class PlansSeeder extends Seeder
      */
     public function run(): void
     {
+        // Message allowances are the cost driver, and the cost per message is
+        // flat — a retrieved, cited answer costs the same whoever asks it, so
+        // unlike seats or storage there is no economy of scale to pass on. The
+        // allowances below therefore price at a similar rate per message across
+        // the ladder (~₱11-12.50), with only a shallow volume discount. Sized
+        // from EarningsModel's measured token counts to hold a ~65% gross
+        // margin at a 70% prompt-cache hit rate, and to stay profitable even if
+        // the cache never warms at all.
         $plans = [
             [
                 'slug' => Plan::SLUG_STARTER,
@@ -25,35 +33,38 @@ class PlansSeeder extends Seeder
                 'limits' => [
                     'active_cases' => 10,
                     'documents_uploaded' => 10,
-                    'messages_used' => 200,
+                    'messages_used' => 120,
                 ],
                 'features' => ['templates', 'exports', 'web_search'],
             ],
             [
                 'slug' => Plan::SLUG_PRO,
                 'name' => 'Pro',
-                'price' => 200000,
-                'price_annual' => 1990000,
-                'overage_price' => 350,
+                'price' => 350000,
+                'price_annual' => 3490000,
+                // Overage clears the ~₱3.65 marginal cost with room to spare;
+                // pricing it near cost, as before, made every extra message a
+                // rounding error against the support burden it carries.
+                'overage_price' => 900,
                 'sort_order' => 2,
                 'limits' => [
                     'active_cases' => null,
                     'documents_uploaded' => 100,
-                    'messages_used' => 500,
+                    'messages_used' => 300,
                 ],
                 'features' => ['templates', 'exports', 'web_search', 'unlimited_cases'],
             ],
             [
                 'slug' => Plan::SLUG_FIRM,
                 'name' => 'Firm',
-                'price' => 890000,
-                'price_annual' => 8860000,
-                'overage_price' => 300,
+                'price' => 1100000,
+                'price_annual' => 10990000,
+                'overage_price' => 850,
                 'sort_order' => 3,
                 'limits' => [
                     'active_cases' => null,
                     'documents_uploaded' => null,
-                    'messages_used' => 3000,
+                    'messages_used' => 1000,
                 ],
                 'features' => ['templates', 'exports', 'web_search', 'unlimited_cases', 'unlimited_documents', 'priority_support'],
             ],

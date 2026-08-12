@@ -2,19 +2,46 @@
 
 use App\Services\Billing\EarningsModel;
 
-it('computes per-message cost in pesos for each provider', function (string $provider, float $expected) {
-    expect(EarningsModel::perMessageCostPesos($provider, 57.0))->toBe($expected);
+// Token counts come from the model's own constants rather than repeated
+// literals: duplicating them is how the expectations silently drifted from the
+// measured prompt size the last time it changed.
+it('computes per-message cost in pesos for each provider', function (string $provider, float $input, float $output) {
+    $expected = (EarningsModel::INPUT_TOKENS_PER_MESSAGE / 1_000_000 * $input
+        + EarningsModel::OUTPUT_TOKENS_PER_MESSAGE / 1_000_000 * $output) * 57.0;
+
+    // Delta rather than identity: the model and the expectation reach the same
+    // figure by a different order of operations, which differs in the last bit.
+    expect(EarningsModel::perMessageCostPesos($provider, 57.0))->toEqualWithDelta($expected, 1e-9);
 })->with([
-    ['gemini-flash', (11_000 / 1_000_000 * 1.50 + 1_000 / 1_000_000 * 7.50) * 57.0],
-    ['gpt-4o-mini', (11_000 / 1_000_000 * 0.15 + 1_000 / 1_000_000 * 0.60) * 57.0],
-    ['gpt-4o', (11_000 / 1_000_000 * 2.50 + 1_000 / 1_000_000 * 10.00) * 57.0],
+    ['claude-sonnet-5', 2.00, 10.00],
+    ['claude-haiku-4-5', 1.00, 5.00],
+    ['gemini-flash', 1.50, 7.50],
+    ['gpt-4o-mini', 0.15, 0.60],
+    ['gpt-4o', 2.50, 10.00],
 ]);
 
-it('cheapens the message with context caching', function () {
-    $uncached = EarningsModel::perMessageCostPesos('gemini-flash', 57.0);
-    $cached = EarningsModel::perMessageCostPesos('gemini-flash', 57.0, cached: true);
+it('cheapens the message when the cache is warm', function () {
+    $uncached = EarningsModel::perMessageCostPesos('claude-sonnet-5', 57.0);
+    $cached = EarningsModel::perMessageCostPesos('claude-sonnet-5', 57.0, cached: true);
 
     expect($cached)->toBeLessThan($uncached);
+});
+
+it('costs more than no caching at all when every request misses the cache', function () {
+    // The five-minute TTL means a quiet deployment writes the block far more
+    // often than it reads it, and a write bills at 1.25x the input rate.
+    $uncached = EarningsModel::perMessageCostPesos('claude-sonnet-5', 57.0);
+    $allMisses = EarningsModel::perMessageCostPesos('claude-sonnet-5', 57.0, cached: true, cacheHitRate: 0.0);
+
+    expect($allMisses)->toBeGreaterThan($uncached);
+});
+
+it('prices a partial cache hit rate between the hit and miss extremes', function () {
+    $hit = EarningsModel::perMessageCostPesos('claude-sonnet-5', 57.0, cached: true, cacheHitRate: 1.0);
+    $miss = EarningsModel::perMessageCostPesos('claude-sonnet-5', 57.0, cached: true, cacheHitRate: 0.0);
+    $half = EarningsModel::perMessageCostPesos('claude-sonnet-5', 57.0, cached: true, cacheHitRate: 0.5);
+
+    expect($half)->toBeGreaterThan($hit)->toBeLessThan($miss);
 });
 
 it('throws for an unknown provider', function () {
@@ -98,4 +125,45 @@ it('prints the earnings report in pesos', function () {
         ->expectsOutputToContain('Firm')
         ->expectsOutputToContain('₱/msg')
         ->assertExitCode(0);
+});
+
+it('pools the seat allowance across the organization', function () {
+    $solo = EarningsModel::seatEarnings(
+        pricePerSeatCents: 290_000, seats: 1, pooledMessagesPerSeat: 250,
+        providerMix: ['claude-sonnet-5' => 1.0], exchangeRate: 57.0,
+    );
+    $five = EarningsModel::seatEarnings(
+        pricePerSeatCents: 290_000, seats: 5, pooledMessagesPerSeat: 250,
+        providerMix: ['claude-sonnet-5' => 1.0], exchangeRate: 57.0,
+    );
+
+    expect($five['allowance'])->toBe(1_250)
+        ->and($five['seats'])->toBe(5)
+        // One subscription per org, so the PayMongo fixed fee is not charged
+        // five times over — per-seat economics improve slightly with size.
+        ->and($five['net_per_seat_pesos'])->toBeGreaterThan($solo['net_per_seat_pesos']);
+});
+
+it('improves the seat margin when the pool is under-consumed', function () {
+    $args = [
+        'pricePerSeatCents' => 290_000, 'seats' => 5, 'pooledMessagesPerSeat' => 250,
+        'providerMix' => ['claude-sonnet-5' => 1.0], 'exchangeRate' => 57.0,
+    ];
+
+    $full = EarningsModel::seatEarnings(...$args, utilisation: 1.0);
+    $half = EarningsModel::seatEarnings(...$args, utilisation: 0.5);
+
+    expect($half['messages_consumed'])->toBe(625)
+        ->and($half['margin'])->toBeGreaterThan($full['margin']);
+});
+
+it('prefers an observed per-message cost over the token model', function () {
+    $e = EarningsModel::seatEarnings(
+        pricePerSeatCents: 290_000, seats: 2, pooledMessagesPerSeat: 100,
+        providerMix: ['claude-sonnet-5' => 1.0], exchangeRate: 57.0,
+        costPerMessagePesos: 9.99,
+    );
+
+    expect($e['message_cost_pesos'])->toBe(9.99)
+        ->and($e['ai_cogs_pesos'])->toBe(round(9.99 * 200, 2));
 });

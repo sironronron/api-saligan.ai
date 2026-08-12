@@ -14,7 +14,11 @@ class CostingEarnings extends Command
      *
      * @var string
      */
-    protected $signature = 'costing:earnings {--exchange-rate=57 : PHP per USD}';
+    protected $signature = 'costing:earnings
+        {--exchange-rate=57 : PHP per USD}
+        {--provider=claude-sonnet-5 : Chat model to cost against}
+        {--cache-hit-rate=1.0 : Share of requests landing on a warm prompt cache (0-1)}
+        {--no-cache : Cost without prompt caching at all}';
 
     /**
      * The console command description.
@@ -29,20 +33,42 @@ class CostingEarnings extends Command
     public function handle(): int
     {
         $rate = (float) $this->option('exchange-rate');
+        $provider = (string) $this->option('provider');
+        $cached = ! $this->option('no-cache');
+        $hitRate = (float) $this->option('cache-hit-rate');
 
-        $rows = $this->plans()->map(function (array $plan) use ($rate): array {
+        $meta = EarningsModel::provider($provider);
+
+        $this->line(sprintf(
+            '%s at $%.2f/$%.2f per MTok · %s · ₱%.0f/USD · %s in / %s out per message',
+            $meta['label'],
+            $meta['input'],
+            $meta['output'],
+            $cached ? sprintf('cache on, %.0f%% hit rate', $hitRate * 100) : 'no caching',
+            $rate,
+            number_format(EarningsModel::INPUT_TOKENS_PER_MESSAGE),
+            number_format(EarningsModel::OUTPUT_TOKENS_PER_MESSAGE),
+        ));
+        $this->newLine();
+
+        $rows = $this->plans()->map(function (array $plan) use ($rate, $provider, $cached, $hitRate): array {
             $earnings = EarningsModel::earnings(
                 priceCents: $plan['price'],
                 messageCap: $plan['messages'],
                 documentCap: $plan['documents'],
-                providerMix: ['gemini-flash' => 1.0],
+                providerMix: [$provider => 1.0],
                 exchangeRate: $rate,
+                cached: $cached,
+                cacheHitRate: $hitRate,
             );
 
             return [
                 'plan' => $plan['name'],
                 'price' => '₱'.number_format($earnings['price_pesos'], 0),
                 'messages' => $plan['messages'],
+                'cost' => '₱'.number_format($earnings['message_cost_pesos'], 2),
+                // Shown beside the marginal cost so an overage rate priced
+                // below what the message costs to serve is visible at a glance.
                 'overage' => $plan['overage'] === null
                     ? '—'
                     : '₱'.number_format($plan['overage'] / 100, 2),
@@ -54,7 +80,7 @@ class CostingEarnings extends Command
         });
 
         $this->table(
-            ['Plan', 'Price', 'Msgs', 'Overage ₱/msg', 'AI COGS', 'PayMongo', 'Net', 'Margin'],
+            ['Plan', 'Price', 'Msgs', 'Cost ₱/msg', 'Overage ₱/msg', 'AI COGS', 'PayMongo', 'Net', 'Margin'],
             $rows->all(),
         );
 

@@ -111,7 +111,7 @@ it('stops the stream when the model calls the intake form tool', function () {
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Draft me a reklamo for illegal occupation.',
         ]);
@@ -140,7 +140,7 @@ it('reports gathering_facts when the model chooses the intake form', function ()
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Draft me a reklamo for illegal occupation.',
         ]);
@@ -166,7 +166,7 @@ it('reports drafting_document the instant the opening marker streams', function 
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => "I need to write DAR requesting a certified copy of my late father's CLOA.",
         ]);
@@ -195,7 +195,7 @@ it('triggers the intake form when the model asks for facts with the marker', fun
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Draft me a reklamo for illegal occupation.',
         ]);
@@ -231,7 +231,7 @@ it('delivers a bracketed draft as-is when the model did not use the marker', fun
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => "I need to write DAR requesting a certified copy of my late father's CLOA.",
         ]);
@@ -261,7 +261,7 @@ it('streams a complete placeholder-free draft without the intake form', function
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => "I need to write DAR requesting a certified copy of my late father's CLOA.",
         ]);
@@ -294,7 +294,7 @@ it('suppresses the intake form when the case already supplies the facts', functi
 
     $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Draft a demand letter to Maria Santos.',
         ]);
@@ -326,7 +326,7 @@ it('delivers a marker-less direct draft instead of the intake form when the case
 
     $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Draft a demand letter to Maria Santos.',
         ]);
@@ -361,7 +361,7 @@ it('re-collects facts through the intake form when the case-supplied model asks 
 
     $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Draft a demand letter using the facts in this case.',
         ]);
@@ -489,7 +489,7 @@ it('streams a complete draft missing the closing marker without the intake form'
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => "I need to write DAR requesting a certified copy of my late father's CLOA.",
         ]);
@@ -517,7 +517,7 @@ it('streams a complete cited draft without the intake form', function () {
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Draft a demand letter for unpaid rent.',
         ]);
@@ -554,7 +554,7 @@ it('pre-fills the intake form with the last intake submission on regeneration', 
         new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
     ]));
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Draft the DAR request letter again.',
         ]);
@@ -755,7 +755,7 @@ it('does not emit a synthetic intake form for non-drafting requests', function (
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Explain RA 6657, please.',
         ]);
@@ -779,7 +779,7 @@ it('creates todos from the draft when the model skips the todo tool', function (
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => "[Intake Form Submission]\nplaintiff_name: Juan Dela Cruz\nfacts: He built a house on my land.",
         ]);
@@ -806,7 +806,7 @@ it('does not create fallback todos when the model already called the todo tool',
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => "[Intake Form Submission]\nplaintiff_name: Juan Dela Cruz",
         ])
@@ -985,7 +985,7 @@ it('uses the model questions as intake fields when the reply carries the marker'
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => "I need to write DAR requesting a certified copy of my late father's CLOA.",
         ]);
@@ -1018,7 +1018,7 @@ it('uses document-category fields when the model declares the type in the tool c
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Draft me an affidavit.',
         ]);
@@ -1054,7 +1054,7 @@ it('derives intake fields from the selected template directive', function () {
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => "[Template: barangay_complaint]\nDraft a complaint for my neighbor blocking the road.",
         ]);
@@ -1090,7 +1090,7 @@ it('derives intake fields from a template referenced by name', function () {
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Please draft a letter following the "Barangay Complaint (Sumbong)" template using the facts in this case.',
         ]);
@@ -1134,7 +1134,7 @@ it('suppresses the intake form when the case description supplies the facts', fu
         new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 3),
     ]));
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => "[Template: demand_letter]\nDraft a demand letter using the facts in this case.",
         ]);
@@ -1173,7 +1173,7 @@ it('suppresses the intake form when a ready uploaded document supplies the facts
         new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 3),
     ]));
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => "[Template: demand_letter]\nDraft a demand letter using the uploaded contract.",
         ]);
@@ -1205,7 +1205,7 @@ it('keeps the facts field in the intake form when the case has no description an
         makeToolCallEvent('request_intake_form', ['fields' => [['key' => 'anything']]]),
     ]));
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => "[Template: demand_letter]\nDraft a demand letter.",
         ]);
@@ -1226,7 +1226,7 @@ it('rolls back the user message when the stream fails', function () {
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Draft a demand letter.',
         ]);

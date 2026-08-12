@@ -24,7 +24,9 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('conversations', function (Blueprint $table) {
-            $table->dropUnique(['case_id']);
+            if (Schema::hasIndex('conversations', 'conversations_case_id_unique')) {
+                $table->dropUnique(['case_id']);
+            }
             $table->dropForeign(['case_id']);
             $table->dropColumn('case_id');
         });

@@ -340,3 +340,92 @@ it('prevents two workers from processing the same document at once', function ()
     expect($middleware)->toHaveCount(1)
         ->and($middleware[0])->toBeInstanceOf(WithoutOverlapping::class);
 });
+
+it('scans a PDF with no text layer instead of rejecting it', function () {
+    // A scanned PDF is page images with no extractable text, so the parser
+    // returns nothing and the vision model is the only way to read it.
+    $user = User::factory()->create();
+
+    Storage::put('documents/scan.pdf', '%PDF-1.4 fake bytes');
+
+    $document = Document::factory()->for($user)->create([
+        'storage_path' => 'documents/scan.pdf',
+        'mime_type' => 'application/pdf',
+        'status' => DocumentStatus::Queued,
+    ]);
+
+    $extractor = Mockery::mock(TextExtractor::class);
+    $extractor->shouldReceive('extract')->once()->andReturn('   ');
+
+    $ocr = Mockery::mock(ImageOcrExtractor::class);
+    $ocr->shouldReceive('extract')
+        ->once()
+        ->with(Mockery::any(), 'application/pdf')
+        ->andReturn(str_repeat('DEED OF ABSOLUTE SALE. Lot 22-A, TCT No. T-61204. ', 60));
+
+    (new ProcessDocumentUpload($document))->handle(
+        $extractor,
+        $ocr,
+        app(DocumentChunker::class),
+        app(EmbeddingService::class),
+        app(DocumentEncryptor::class),
+    );
+
+    expect($document->fresh()->status)->toBe(DocumentStatus::Ready)
+        ->and($document->chunks()->count())->toBeGreaterThan(0)
+        ->and($document->chunks()->first()->content)->toContain('TCT No. T-61204');
+});
+
+it('fails a PDF only after scanning it has also come up empty', function () {
+    $user = User::factory()->create();
+
+    Storage::put('documents/blank.pdf', '%PDF-1.4 fake bytes');
+
+    $document = Document::factory()->for($user)->create([
+        'storage_path' => 'documents/blank.pdf',
+        'mime_type' => 'application/pdf',
+        'status' => DocumentStatus::Queued,
+    ]);
+
+    $extractor = Mockery::mock(TextExtractor::class);
+    $extractor->shouldReceive('extract')->once()->andReturn('');
+
+    $ocr = Mockery::mock(ImageOcrExtractor::class);
+    $ocr->shouldReceive('extract')->once()->andReturn('');
+
+    expect(fn () => (new ProcessDocumentUpload($document))->handle(
+        $extractor,
+        $ocr,
+        app(DocumentChunker::class),
+        app(EmbeddingService::class),
+        app(DocumentEncryptor::class),
+    ))->toThrow(DocumentProcessingException::class);
+});
+
+it('does not re-scan a DOCX that yielded no text', function () {
+    // Only images and PDFs are readable by the vision model; a DOCX with no
+    // text is genuinely empty, so calling OCR on it would just burn a request.
+    $user = User::factory()->create();
+
+    Storage::put('documents/empty.docx', 'PK fake bytes');
+
+    $document = Document::factory()->for($user)->create([
+        'storage_path' => 'documents/empty.docx',
+        'mime_type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'status' => DocumentStatus::Queued,
+    ]);
+
+    $extractor = Mockery::mock(TextExtractor::class);
+    $extractor->shouldReceive('extract')->once()->andReturn('');
+
+    $ocr = Mockery::mock(ImageOcrExtractor::class);
+    $ocr->shouldNotReceive('extract');
+
+    expect(fn () => (new ProcessDocumentUpload($document))->handle(
+        $extractor,
+        $ocr,
+        app(DocumentChunker::class),
+        app(EmbeddingService::class),
+        app(DocumentEncryptor::class),
+    ))->toThrow(DocumentProcessingException::class);
+});

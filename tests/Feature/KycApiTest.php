@@ -6,7 +6,7 @@ use App\Support\UserProfile;
 it('saves a completed onboarding profile', function () {
     $user = User::factory()->create();
 
-    $this->actingAs($user)
+    $this->signInAs($user)
         ->putJson('/api/kyc', [
             'kyc_role' => UserProfile::ROLE_LAWYER,
             'kyc_use_case' => UserProfile::USE_CASE_CLIENT_WORK,
@@ -26,7 +26,7 @@ it('saves a completed onboarding profile', function () {
 it('requires the free-text answer when the role is other', function () {
     $user = User::factory()->create();
 
-    $this->actingAs($user)
+    $this->signInAs($user)
         ->putJson('/api/kyc', [
             'kyc_role' => UserProfile::ROLE_OTHER,
             'kyc_use_case' => UserProfile::USE_CASE_LEGAL_RESEARCH,
@@ -38,7 +38,7 @@ it('requires the free-text answer when the role is other', function () {
 it('stores the free-text answer when the selection is other', function () {
     $user = User::factory()->create();
 
-    $this->actingAs($user)
+    $this->signInAs($user)
         ->putJson('/api/kyc', [
             'kyc_role' => UserProfile::ROLE_OTHER,
             'kyc_role_other' => 'Community organizer at a farmers cooperative',
@@ -58,7 +58,7 @@ it('clears the free-text answer when the selection is no longer other', function
         'kyc_completed_at' => now(),
     ]);
 
-    $this->actingAs($user)
+    $this->signInAs($user)
         ->putJson('/api/kyc', [
             'kyc_role' => UserProfile::ROLE_FARMER,
             'kyc_use_case' => UserProfile::USE_CASE_AGRARIAN_LAND,
@@ -72,7 +72,7 @@ it('clears the free-text answer when the selection is no longer other', function
 it('rejects an unknown role value', function () {
     $user = User::factory()->create();
 
-    $this->actingAs($user)
+    $this->signInAs($user)
         ->putJson('/api/kyc', [
             'kyc_role' => 'supreme-court-justice',
             'kyc_use_case' => UserProfile::USE_CASE_LEGAL_RESEARCH,
@@ -90,7 +90,7 @@ it('does not move kyc_completed_at backwards when the profile is edited', functi
         'kyc_completed_at' => $completedAt,
     ]);
 
-    $this->actingAs($user)
+    $this->signInAs($user)
         ->putJson('/api/kyc', [
             'kyc_role' => UserProfile::ROLE_LAWYER,
             'kyc_use_case' => UserProfile::USE_CASE_CLIENT_WORK,
@@ -107,7 +107,7 @@ it('clears the onboarding profile', function () {
         'kyc_completed_at' => now(),
     ]);
 
-    $this->actingAs($user)
+    $this->signInAs($user)
         ->deleteJson('/api/kyc')
         ->assertNoContent();
 
@@ -126,7 +126,7 @@ it('returns the current profile and selectable options', function () {
         'kyc_use_case' => UserProfile::USE_CASE_OWN_TRANSACTION,
     ]);
 
-    $this->actingAs($user)
+    $this->signInAs($user)
         ->getJson('/api/kyc')
         ->assertOk()
         ->assertJsonPath('data.kyc_role', UserProfile::ROLE_NOTARY_PUBLIC)
@@ -142,7 +142,7 @@ it('exposes the kyc fields on the user resource', function () {
         'kyc_completed_at' => now(),
     ]);
 
-    $this->actingAs($user)
+    $this->signInAs($user)
         ->getJson('/api/user')
         ->assertOk()
         ->assertJsonPath('data.kyc_role', UserProfile::ROLE_REAL_ESTATE_BROKER)

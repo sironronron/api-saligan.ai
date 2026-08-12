@@ -342,7 +342,7 @@ test('a case adopts its owner organization and memory follows the case', functio
     $user = User::factory()->for($organization)->create();
     Subscription::factory()->for($user)->create(['plan_id' => Plan::factory()->pro()->create()->id]);
 
-    $this->actingAs($user)
+    $this->signInAs($user)
         ->postJson('/api/cases', [
             'title' => 'Villanueva v. DPWH',
             'case_type' => 'expropriation',

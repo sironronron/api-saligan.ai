@@ -3,14 +3,10 @@
 use App\Http\Middleware\EnsureActiveSubscription;
 use App\Http\Middleware\EnsureTermsAccepted;
 use App\Http\Middleware\EnsureUserIsAdmin;
-use App\Http\Middleware\PreventCsrfCookieCaching;
-use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
-use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
-use Illuminate\Session\Middleware\StartSession;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -20,24 +16,17 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        $middleware->statefulApi();
+        // No statefulApi()/session middleware: the API authenticates a
+        // Supabase bearer token on every request and keeps no session of its
+        // own, so cookies, CSRF tokens, and the /sanctum/csrf-cookie priming
+        // round-trip are all unnecessary.
 
         // The app is served behind nginx on the same host, so requests carry
         // X-Forwarded-* headers. Trusting the local proxy gives accurate
-        // client IPs (for rate limiting) and lets HTTPS be detected so the
-        // session cookie is flagged Secure. If the box sits behind a remote
-        // load balancer or CDN, add that proxy's address here instead.
+        // client IPs (for rate limiting) and lets HTTPS be detected. If the
+        // box sits behind a remote load balancer or CDN, add that proxy's
+        // address here instead.
         $middleware->trustProxies(at: ['127.0.0.1', '::1']);
-
-        $middleware->api(append: [
-            EncryptCookies::class,
-            AddQueuedCookiesToResponse::class,
-            StartSession::class,
-        ]);
-
-        $middleware->web(append: [
-            PreventCsrfCookieCaching::class,
-        ]);
 
         $middleware->alias([
             'is_admin' => EnsureUserIsAdmin::class,

@@ -15,11 +15,39 @@ use InvalidArgumentException;
  */
 final class EarningsModel
 {
-    public const INPUT_TOKENS_PER_MESSAGE = 11_000;
+    /**
+     * Measured against `claude-sonnet-5` with Anthropic's count_tokens endpoint,
+     * on a prompt built by ChatService: 22,934 tokens of system prompt, 13,340
+     * of retrieved context (10 chunks at the configured legal/document caps),
+     * and ~1,500 of history plus the question.
+     *
+     * Retrieval is counted at its cap, so this is the upper bound of a message
+     * that retrieves well; a message that retrieves nothing costs far less.
+     */
+    public const INPUT_TOKENS_PER_MESSAGE = 37_774;
 
+    /**
+     * Unmeasured — nothing records per-message output tokens yet. Output bills
+     * at five times input, so this is the assumption most worth replacing with
+     * real data.
+     */
     public const OUTPUT_TOKENS_PER_MESSAGE = 1_000;
 
-    public const SYSTEM_PROMPT_TOKENS = 8_000;
+    /**
+     * The cacheable half of the system prompt — ChatService::staticInstructions(),
+     * which LegalChatAgent marks with a `cache_control` breakpoint. Measured at
+     * 21,886 tokens; the remaining ~1,048 tokens of system prompt vary per turn
+     * and are billed at the uncached rate.
+     */
+    public const SYSTEM_PROMPT_TOKENS = 21_886;
+
+    /**
+     * Anthropic bills a cache write at 1.25x the input rate and a read at 0.1x,
+     * against a five-minute TTL. Below roughly one message every five minutes
+     * the cache costs more than it saves, which is why the hit rate is a
+     * parameter rather than an assumption.
+     */
+    public const CACHE_WRITE_MULTIPLIER = 1.25;
 
     public const EMBEDDING_TOKENS_PER_DOCUMENT = 25_000;
 
@@ -40,6 +68,13 @@ final class EarningsModel
      * @var array<string, array{label: string, input: float, output: float, cached_input: float}>
      */
     private const PROVIDERS = [
+        // Anthropic is the configured chat provider (AI_CHAT_PROVIDER). Cached
+        // input is the 0.1x cache-read rate. Sonnet 5's $2/$10 was originally
+        // introductory pricing due to lapse on 2026-08-31; Anthropic has since
+        // made it the standing rate, so there is no step-up to plan around.
+        'claude-sonnet-5' => ['label' => 'Claude Sonnet 5', 'input' => 2.00, 'output' => 10.00, 'cached_input' => 0.20],
+        'claude-haiku-4-5' => ['label' => 'Claude Haiku 4.5', 'input' => 1.00, 'output' => 5.00, 'cached_input' => 0.10],
+        'claude-opus-5' => ['label' => 'Claude Opus 5', 'input' => 5.00, 'output' => 25.00, 'cached_input' => 0.50],
         'gemini-flash' => ['label' => 'Gemini 3.6 Flash', 'input' => 1.50, 'output' => 7.50, 'cached_input' => 0.15],
         'gpt-4o-mini' => ['label' => 'gpt-4o-mini', 'input' => 0.15, 'output' => 0.60, 'cached_input' => 0.15],
         'gpt-4o' => ['label' => 'gpt-4o', 'input' => 2.50, 'output' => 10.00, 'cached_input' => 2.50],
@@ -59,18 +94,22 @@ final class EarningsModel
     public static function defaultPlans(): array
     {
         return [
-            ['slug' => 'starter', 'name' => 'Starter', 'price' => 150_000, 'messages' => 200, 'documents' => 10, 'overage' => null],
-            ['slug' => 'pro', 'name' => 'Pro', 'price' => 200_000, 'messages' => 500, 'documents' => 100, 'overage' => 350],
-            ['slug' => 'firm', 'name' => 'Firm', 'price' => 890_000, 'messages' => 3_000, 'documents' => null, 'overage' => 300],
+            ['slug' => 'starter', 'name' => 'Starter', 'price' => 150_000, 'messages' => 120, 'documents' => 10, 'overage' => null],
+            ['slug' => 'pro', 'name' => 'Pro', 'price' => 350_000, 'messages' => 300, 'documents' => 100, 'overage' => 900],
+            ['slug' => 'firm', 'name' => 'Firm', 'price' => 1_100_000, 'messages' => 1_000, 'documents' => null, 'overage' => 850],
         ];
     }
 
     /**
      * Per-message chat cost for a provider, in pesos.
      */
-    public static function perMessageCostPesos(string $provider, float $exchangeRate, bool $cached = false): float
-    {
-        return self::perMessageCostUsd($provider, $cached) * $exchangeRate;
+    public static function perMessageCostPesos(
+        string $provider,
+        float $exchangeRate,
+        bool $cached = false,
+        float $cacheHitRate = 1.0,
+    ): float {
+        return self::perMessageCostUsd($provider, $cached, $cacheHitRate) * $exchangeRate;
     }
 
     /**
@@ -118,6 +157,7 @@ final class EarningsModel
         bool $cached = false,
         float $webSearchRate = 0.20,
         int $assumedDocuments = self::ASSUMED_UNLIMITED_DOCUMENTS,
+        float $cacheHitRate = 1.0,
     ): int {
         $revenuePesos = $priceCents / 100;
         $documentCount = $documentCap ?? $assumedDocuments;
@@ -125,7 +165,7 @@ final class EarningsModel
         $fixedCosts = self::paymongoFee($priceCents)
             + self::embeddingCostPerDocumentPesos($exchangeRate) * $documentCount;
 
-        $perMessage = self::blendedMessageCostPesos($providerMix, $exchangeRate, $cached)
+        $perMessage = self::blendedMessageCostPesos($providerMix, $exchangeRate, $cached, $cacheHitRate)
             + $webSearchRate * self::webSearchCostPerQueryPesos($exchangeRate);
 
         $total = $revenuePesos - $fixedCosts;
@@ -163,13 +203,14 @@ final class EarningsModel
         bool $cached = false,
         float $webSearchRate = 0.20,
         int $assumedDocuments = self::ASSUMED_UNLIMITED_DOCUMENTS,
+        float $cacheHitRate = 1.0,
     ): array {
         self::assertProviderMix($providerMix);
 
         $pricePesos = $priceCents / 100;
         $documentCount = $documentCap ?? $assumedDocuments;
 
-        $messageCost = self::blendedMessageCostPesos($providerMix, $exchangeRate, $cached);
+        $messageCost = self::blendedMessageCostPesos($providerMix, $exchangeRate, $cached, $cacheHitRate);
 
         $aiCogs = $messageCost * $messageCap;
         $embeddings = self::embeddingCostPerDocumentPesos($exchangeRate) * $documentCount;
@@ -189,6 +230,81 @@ final class EarningsModel
             'paymongo_pesos' => round($paymongo, 2),
             'net_pesos' => round($net, 2),
             'margin' => round($pricePesos > 0 ? $net / $pricePesos : 0, 4),
+        ];
+    }
+
+    /**
+     * Per-seat earnings for a pooled-allowance plan, in pesos.
+     *
+     * Seats are the unit firms budget in; the pooled message allowance is what
+     * actually costs money. Pooling the allowance across the org is what makes
+     * the plan work in both directions: it reads as generous to the buyer, and
+     * because most seats consume well under their share, the realised cost sits
+     * below the worst case rather than at it. `$utilisation` is that share —
+     * 1.0 prices the plan as if every seat drains its full allowance.
+     *
+     * `$costPerMessagePesos` overrides the modelled token cost with an observed
+     * one, for when real spend is known and the token assumptions are not.
+     *
+     * @param  array<string, float>  $providerMix
+     * @return array{
+     *     price_pesos: float,
+     *     seats: int,
+     *     allowance: int,
+     *     messages_consumed: int,
+     *     message_cost_pesos: float,
+     *     ai_cogs_pesos: float,
+     *     embeddings_pesos: float,
+     *     web_search_pesos: float,
+     *     paymongo_pesos: float,
+     *     net_pesos: float,
+     *     net_per_seat_pesos: float,
+     *     margin: float,
+     * }
+     */
+    public static function seatEarnings(
+        int $pricePerSeatCents,
+        int $seats,
+        int $pooledMessagesPerSeat,
+        array $providerMix,
+        float $exchangeRate,
+        float $utilisation = 1.0,
+        bool $cached = true,
+        float $cacheHitRate = 1.0,
+        float $webSearchRate = 0.20,
+        int $documentsPerSeat = 10,
+        ?float $costPerMessagePesos = null,
+    ): array {
+        self::assertProviderMix($providerMix);
+
+        $revenue = $pricePerSeatCents * $seats / 100;
+        $allowance = $pooledMessagesPerSeat * $seats;
+        $consumed = (int) round($allowance * max(0.0, $utilisation));
+
+        $messageCost = $costPerMessagePesos
+            ?? self::blendedMessageCostPesos($providerMix, $exchangeRate, $cached, $cacheHitRate);
+
+        $aiCogs = $messageCost * $consumed;
+        $embeddings = self::embeddingCostPerDocumentPesos($exchangeRate) * $documentsPerSeat * $seats;
+        $webSearch = self::webSearchCostPerQueryPesos($exchangeRate) * ($webSearchRate * $consumed);
+        // One subscription per organization, not per seat.
+        $paymongo = self::paymongoFee($pricePerSeatCents * $seats);
+
+        $net = $revenue - $aiCogs - $embeddings - $webSearch - $paymongo;
+
+        return [
+            'price_pesos' => $revenue,
+            'seats' => $seats,
+            'allowance' => $allowance,
+            'messages_consumed' => $consumed,
+            'message_cost_pesos' => round($messageCost, 2),
+            'ai_cogs_pesos' => round($aiCogs, 2),
+            'embeddings_pesos' => round($embeddings, 2),
+            'web_search_pesos' => round($webSearch, 2),
+            'paymongo_pesos' => round($paymongo, 2),
+            'net_pesos' => round($net, 2),
+            'net_per_seat_pesos' => round($seats > 0 ? $net / $seats : 0, 2),
+            'margin' => round($revenue > 0 ? $net / $revenue : 0, 4),
         ];
     }
 
@@ -215,11 +331,12 @@ final class EarningsModel
         array $providerMix,
         float $exchangeRate,
         bool $cached,
+        float $cacheHitRate = 1.0,
     ): float {
         $cost = 0.0;
 
         foreach ($providerMix as $provider => $share) {
-            $cost += $share * self::perMessageCostUsd($provider, $cached);
+            $cost += $share * self::perMessageCostUsd($provider, $cached, $cacheHitRate);
         }
 
         return $cost * $exchangeRate;
@@ -228,12 +345,15 @@ final class EarningsModel
     /**
      * Per-message chat cost for a provider, in USD.
      */
-    private static function perMessageCostUsd(string $provider, bool $cached = false): float
-    {
+    private static function perMessageCostUsd(
+        string $provider,
+        bool $cached = false,
+        float $cacheHitRate = 1.0,
+    ): float {
         $p = self::provider($provider);
 
         $inputPrice = $cached
-            ? self::cachedInputCost($provider)
+            ? self::cachedInputCost($provider, $cacheHitRate)
             : $p['input'] * self::INPUT_TOKENS_PER_MESSAGE / 1_000_000;
 
         $outputCost = $p['output'] * self::OUTPUT_TOKENS_PER_MESSAGE / 1_000_000;
@@ -242,13 +362,23 @@ final class EarningsModel
     }
 
     /**
-     * Input cost of the static system prompt per message when cached, in USD.
+     * Input cost of the system prompt per message when caching is on, in USD.
+     *
+     * A miss is not free: it writes the block at 1.25x the input rate, so a
+     * low-traffic deployment whose requests fall outside the five-minute TTL
+     * pays more than it would with caching off. The blend makes that visible
+     * rather than assuming every request lands on a warm cache.
      */
-    private static function cachedInputCost(string $provider): float
+    private static function cachedInputCost(string $provider, float $cacheHitRate): float
     {
         $p = self::provider($provider);
 
-        return $p['cached_input'] * self::SYSTEM_PROMPT_TOKENS / 1_000_000
+        $hitRate = max(0.0, min(1.0, $cacheHitRate));
+
+        $staticRate = $hitRate * $p['cached_input']
+            + (1 - $hitRate) * $p['input'] * self::CACHE_WRITE_MULTIPLIER;
+
+        return $staticRate * self::SYSTEM_PROMPT_TOKENS / 1_000_000
             + $p['input'] * (self::INPUT_TOKENS_PER_MESSAGE - self::SYSTEM_PROMPT_TOKENS) / 1_000_000;
     }
 

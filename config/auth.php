@@ -16,7 +16,12 @@ return [
     */
 
     'defaults' => [
-        'guard' => env('AUTH_GUARD', 'web'),
+        // Supabase Auth is the only identity layer: there is no session login
+        // endpoint left, and every protected route is behind `auth:supabase`.
+        // The default has to match, or anything resolving the guard implicitly
+        // (Auth::user(), actingAs() in tests) would silently target the unused
+        // session guard and see no one.
+        'guard' => env('AUTH_GUARD', 'supabase'),
         'passwords' => env('AUTH_PASSWORD_BROKER', 'users'),
     ],
 
@@ -40,6 +45,12 @@ return [
     'guards' => [
         'web' => [
             'driver' => 'session',
+            'provider' => 'users',
+        ],
+
+        // Validates Supabase bearer access tokens and maps them to local users.
+        'supabase' => [
+            'driver' => 'supabase',
             'provider' => 'users',
         ],
     ],

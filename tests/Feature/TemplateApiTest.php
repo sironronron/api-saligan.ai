@@ -27,7 +27,7 @@ it('lists system templates and the users custom templates', function () {
     $own = Template::factory()->create(['name' => 'My Custom Template', 'category' => 'custom', 'user_id' => $this->user->id]);
     Template::factory()->create(['name' => 'Someone Else', 'category' => 'custom', 'user_id' => User::factory()->create()->id]);
 
-    $this->actingAs($this->user)->getJson('/api/templates')
+    $this->signInAs($this->user)->getJson('/api/templates')
         ->assertOk()
         ->assertJsonCount(3, 'data')
         ->assertJsonFragment(['id' => $own->id])
@@ -37,7 +37,7 @@ it('lists system templates and the users custom templates', function () {
 it('exposes the legal subtype and structure', function () {
     Template::factory()->system()->legal()->create();
 
-    $this->actingAs($this->user)->getJson('/api/templates')
+    $this->signInAs($this->user)->getJson('/api/templates')
         ->assertOk()
         ->assertJsonPath('data.0.legal_subtype', 'demand_letter')
         ->assertJsonPath('data.0.structure', ['Header', 'Date', 'Recipient', 'Subject', 'Body', 'Closing', 'Signature'])
@@ -45,7 +45,7 @@ it('exposes the legal subtype and structure', function () {
 });
 
 it('saves a custom template derived from an edited letter', function () {
-    $this->actingAs($this->user)->postJson('/api/templates', [
+    $this->signInAs($this->user)->postJson('/api/templates', [
         'name' => 'My Demand Letter',
         'category' => 'custom',
         'content' => "My custom letter body with {{recipient_name}}.\n\nVery truly yours,\n{signatory}",
@@ -64,14 +64,14 @@ it('saves a custom template derived from an edited letter', function () {
 });
 
 it('validates the custom template name', function () {
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/templates', ['name' => '', 'content' => ''])
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['name']);
 });
 
 it('requires content or a template file', function () {
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/templates', ['name' => 'Empty Template'])
         ->assertUnprocessable()
         ->assertJson(['message' => 'Provide template content or upload a template file.']);
@@ -80,7 +80,7 @@ it('requires content or a template file', function () {
 it('extracts content from an uploaded txt template', function () {
     Storage::fake('local');
 
-    $this->actingAs($this->user)->postJson('/api/templates', [
+    $this->signInAs($this->user)->postJson('/api/templates', [
         'name' => 'Txt Template',
         'template_file' => UploadedFile::fake()->createWithContent('letter.txt', "Dear {{client_name}},\n\nPlease settle your balance."),
     ])->assertCreated()
@@ -112,7 +112,7 @@ it('extracts content from an uploaded docx template', function () {
         true,
     );
 
-    $this->actingAs($this->user)->postJson('/api/templates', [
+    $this->signInAs($this->user)->postJson('/api/templates', [
         'name' => 'Docx Template',
         'template_file' => $upload,
     ])->assertCreated()
@@ -125,7 +125,7 @@ it('extracts content from an uploaded docx template', function () {
 it('rejects unsupported template files', function () {
     Storage::fake('local');
 
-    $this->actingAs($this->user)->postJson('/api/templates', [
+    $this->signInAs($this->user)->postJson('/api/templates', [
         'name' => 'Image Template',
         'template_file' => UploadedFile::fake()->image('template.png'),
     ])->assertUnprocessable()
@@ -135,7 +135,7 @@ it('rejects unsupported template files', function () {
 it('deletes the users own custom template', function () {
     $template = Template::factory()->create(['name' => 'My Template', 'user_id' => $this->user->id]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->deleteJson("/api/templates/{$template->id}")
         ->assertNoContent();
 
@@ -145,7 +145,7 @@ it('deletes the users own custom template', function () {
 it('cannot delete a system template', function () {
     $template = Template::factory()->system()->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->deleteJson("/api/templates/{$template->id}")
         ->assertNotFound();
 
@@ -155,7 +155,7 @@ it('cannot delete a system template', function () {
 it('cannot delete another users template', function () {
     $template = Template::factory()->create(['user_id' => User::factory()->create()->id]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->deleteJson("/api/templates/{$template->id}")
         ->assertForbidden();
 
@@ -166,7 +166,7 @@ it('includes content only for user-owned templates', function () {
     Template::factory()->system()->create(['name' => 'System Tpl']);
     Template::factory()->create(['name' => 'My Tpl', 'user_id' => $this->user->id, 'content' => 'body']);
 
-    $data = $this->actingAs($this->user)->getJson('/api/templates')
+    $data = $this->signInAs($this->user)->getJson('/api/templates')
         ->assertOk()
         ->json('data');
 

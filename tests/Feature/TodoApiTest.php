@@ -22,7 +22,7 @@ it('lists todos scoped to the authenticated user', function () {
     $ownTodo = Todo::factory()->for($this->conversation)->create();
     Todo::factory()->for(Conversation::factory()->for(User::factory()))->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->getJson('/api/todos')
         ->assertOk();
 
@@ -35,7 +35,7 @@ it('filters todos by conversation', function () {
     $inFirst = Todo::factory()->for($this->conversation)->create();
     $inOther = Todo::factory()->for($other)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->getJson("/api/todos?conversation_id={$this->conversation->id}")
         ->assertOk();
 
@@ -47,7 +47,7 @@ it('filters todos by status', function () {
     $pending = Todo::factory()->for($this->conversation)->create(['status' => 'pending']);
     $completed = Todo::factory()->for($this->conversation)->completed()->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->getJson('/api/todos?status=completed')
         ->assertOk();
 
@@ -58,7 +58,7 @@ it('filters todos by status', function () {
 it('updates a todo status', function () {
     $todo = Todo::factory()->for($this->conversation)->create(['status' => 'pending']);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->patchJson("/api/todos/{$todo->id}", ['status' => 'on-going'])
         ->assertOk()
         ->assertJsonPath('data.status', 'on-going');
@@ -67,7 +67,7 @@ it('updates a todo status', function () {
 });
 
 it('creates a todo', function () {
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/todos', [
             'conversation_id' => $this->conversation->id,
             'title' => 'File the complaint',
@@ -87,7 +87,7 @@ it('creates a todo', function () {
 it('does not allow creating a todo for another users conversation', function () {
     $other = Conversation::factory()->for(User::factory())->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/todos', [
             'conversation_id' => $other->id,
             'title' => 'Nope',
@@ -98,7 +98,7 @@ it('does not allow creating a todo for another users conversation', function () 
 it('does not allow updating another users todo', function () {
     $other = Todo::factory()->for(Conversation::factory()->for(User::factory()))->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->patchJson("/api/todos/{$other->id}", ['status' => 'completed'])
         ->assertForbidden();
 });
@@ -106,7 +106,7 @@ it('does not allow updating another users todo', function () {
 it('rejects an invalid status', function () {
     $todo = Todo::factory()->for($this->conversation)->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->patchJson("/api/todos/{$todo->id}", ['status' => 'cancelled'])
         ->assertUnprocessable();
 });
@@ -114,7 +114,7 @@ it('rejects an invalid status', function () {
 it('deletes a todo', function () {
     $todo = Todo::factory()->for($this->conversation)->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->deleteJson("/api/todos/{$todo->id}")
         ->assertOk();
 
@@ -122,7 +122,7 @@ it('deletes a todo', function () {
 });
 
 it('creates a todo with case-style fields', function () {
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson('/api/todos', [
             'conversation_id' => $this->conversation->id,
             'title' => 'Follow up with the claimant',
@@ -142,7 +142,7 @@ it('creates a todo with case-style fields', function () {
 it('updates a todo title and description', function () {
     $todo = Todo::factory()->for($this->conversation)->create(['title' => 'Old title']);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->patchJson("/api/todos/{$todo->id}", ['title' => 'New title', 'description' => 'A note'])
         ->assertOk()
         ->assertJsonPath('data.title', 'New title')
@@ -154,7 +154,7 @@ it('persists a new manual order', function () {
     $second = Todo::factory()->for($this->conversation)->create(['order' => 2]);
     $third = Todo::factory()->for($this->conversation)->create(['order' => 3]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/todos/reorder', [
             'conversation_id' => $this->conversation->id,
             'ordered_ids' => [$third->id, $first->id, $second->id],
@@ -169,7 +169,7 @@ it('persists a new manual order', function () {
 it('does not allow reordering another users todos', function () {
     $other = Todo::factory()->for(Conversation::factory()->for(User::factory()))->create(['order' => 1]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/todos/reorder', [
             'conversation_id' => $other->conversation_id,
             'ordered_ids' => [$other->id],

@@ -174,6 +174,31 @@ class OrganizationController extends Controller
     }
 
     /**
+     * Accept an invitation from the emailed link, which carries the invite
+     * token rather than its id (see OrganizationInviteMail: the recipient is
+     * sent to `/invite/{token}`).
+     *
+     * Redeeming used to happen through registration with an `invite_token`.
+     * That endpoint is gone now that accounts are created in Supabase, so an
+     * invited user signs up there, arrives already authenticated, and posts
+     * the token here.
+     */
+    public function acceptInvitationByToken(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'token' => ['required', 'string'],
+        ]);
+
+        $invitation = Invitation::query()
+            ->where('token', $validated['token'])
+            ->first();
+
+        abort_if($invitation === null, 422, 'This invitation link is invalid.');
+
+        return $this->acceptInvitation($request, $invitation);
+    }
+
+    /**
      * The organization payload shared by the show endpoint.
      *
      * @return array<string, mixed>

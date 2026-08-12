@@ -49,6 +49,11 @@ class DocumentExportService
                 $section->addTitle(substr($line, 3), 2);
             } elseif (str_starts_with($line, '# ')) {
                 $section->addTitle(substr($line, 2), 1);
+            } elseif (preg_match('/^>\s?(.*)$/', $line, $quoteMatches)) {
+                // Blockquote: render as indented italic text
+                $text = $this->parseInlineFormatting($quoteMatches[1]);
+                $phpWord->addFontStyle('blockquoteStyle', ['name' => 'Calibri', 'size' => 11, 'italic' => true, 'color' => '666666']);
+                $section->addText($text, ['name' => 'Calibri', 'size' => 11, 'italic' => true, 'color' => '666666'], ['indentation' => ['left' => 720]]);
             } elseif ($this->isBulletLine($line)) {
                 $text = $this->parseInlineFormatting($this->bulletText($line));
                 $section->addListItem($text, 0, $style, 'bulletedList');
@@ -592,6 +597,17 @@ HTML;
                 continue;
             }
 
+            // Blockquote: "> text" → <blockquote>text</blockquote>
+            if (preg_match('/^>\s?(.*)$/', $trimmed, $quoteMatches)) {
+                if ($list !== null) {
+                    $out[] = "</{$list}>";
+                    $list = null;
+                }
+                $out[] = '<blockquote>'.$quoteMatches[1].'</blockquote>';
+
+                continue;
+            }
+
             if ($this->isBulletLine($trimmed)) {
                 if ($list !== 'ul') {
                     if ($list !== null) {
@@ -640,6 +656,10 @@ HTML;
         $html = preg_replace('/\*\*(.+?)\*\*/', '<strong>$1</strong>', $html);
         $html = preg_replace('/\*(.+?)\*/', '<em>$1</em>', $html);
         $html = preg_replace('/`(.+?)`/', '<code>$1</code>', $html);
+        // Markdown links: [text](url) → <a href="url">text</a>
+        $html = preg_replace('/\[([^\]]+)\]\(([^)]+)\)/', '<a href="$2">$1</a>', $html);
+        // Blockquote styling: add left border and indent
+        $html = preg_replace('/<blockquote>(.*?)<\/blockquote>/s', '<blockquote style="border-left: 3px solid #ccc; padding-left: 10px; margin: 8pt 0; color: #666;">$1</blockquote>', $html);
 
         $html = preg_replace('/\n{2,}/', '</p><p>', $html);
         $html = '<p>'.$html.'</p>';
@@ -649,13 +669,15 @@ HTML;
     }
 
     /**
-     * Parse inline markdown formatting (bold, italic, code).
+     * Parse inline markdown formatting (bold, italic, code, links).
      */
     protected function parseInlineFormatting(string $text): string
     {
         $text = str_replace('**', '', $text);
         $text = str_replace('*', '', $text);
         $text = str_replace('`', '', $text);
+        // Strip markdown link syntax [text](url) → text (url)
+        $text = preg_replace('/\[([^\]]+)\]\(([^)]+)\)/', '$1 ($2)', $text);
 
         return $text;
     }

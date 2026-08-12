@@ -40,7 +40,7 @@ it('lists only assistant messages that are exportable drafts', function () {
         'content' => 'Draft me a reklamo.',
     ]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->getJson('/api/generated-documents')
         ->assertOk();
 
@@ -60,7 +60,7 @@ it('does not include drafts from other users', function () {
         'content' => "COMPLAINT\n\n[Download as Word](/api/messages/abc/export/word)",
     ]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->getJson('/api/generated-documents')
         ->assertOk()
         ->assertJsonCount(0, 'data');
@@ -84,7 +84,7 @@ it('filters generated documents by case', function () {
         'content' => "SUBPOENA\n\n[Download as Word](/api/messages/def/export/word)",
     ]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->getJson('/api/generated-documents?case_id='.$case->id)
         ->assertOk()
         ->assertJsonCount(1, 'data')

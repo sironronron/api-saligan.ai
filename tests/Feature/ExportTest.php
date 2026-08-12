@@ -23,7 +23,7 @@ it('exports a marked document as a valid PDF', function () {
         'content' => "Here is your draft.\n\n[[DOCUMENT_START]]\nREPUBLIC OF THE PHILIPPINES\nDEMAND LETTER\nVery truly yours,\n[[DOCUMENT_END]]\n\n[Download as Word](/api/messages/abc/export/word)\n[Download as PDF](/api/messages/abc/export/pdf)",
     ]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/messages/{$message->id}/export/pdf")
         ->assertOk();
 
@@ -40,7 +40,7 @@ it('exports an unmarked legacy message as a valid PDF', function () {
         'content' => 'A plain reply without document markers.',
     ]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/messages/{$message->id}/export/pdf")
         ->assertOk();
 
@@ -56,7 +56,7 @@ it('exports a marked document as a Word file', function () {
         'content' => "Preamble.\n\n[[DOCUMENT_START]]\nAFFIDAVIT OF LOSS\n[[DOCUMENT_END]]\n\nTrailing chat text.",
     ]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/messages/{$message->id}/export/word")
         ->assertOk();
 
@@ -75,7 +75,7 @@ it('forbids exporting another users message', function () {
     $other = User::factory()->create();
     Subscription::factory()->for($other)->create(['plan_id' => $this->pro->id]);
 
-    $this->actingAs($other)
+    $this->signInAs($other)
         ->post("/api/messages/{$message->id}/export/pdf")
         ->assertStatus(403);
 });

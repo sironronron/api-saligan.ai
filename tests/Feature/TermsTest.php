@@ -26,7 +26,7 @@ test('the seeder publishes a terms document that the endpoint can serve', functi
     $this->seed(LegalDocumentSeeder::class);
     LegalDocument::forgetCurrent();
 
-    $response = $this->actingAs(User::factory()->create())->getJson('/api/terms/document');
+    $response = $this->signInAs(User::factory()->create())->getJson('/api/terms/document');
 
     $response->assertOk()
         ->assertJsonStructure(['title', 'content', 'hash', 'version', 'effective_at']);
@@ -45,7 +45,7 @@ test('the seeder is idempotent', function () {
 });
 
 test('the document endpoint reports unavailable when nothing is published', function () {
-    $this->actingAs(User::factory()->create())
+    $this->signInAs(User::factory()->create())
         ->getJson('/api/terms/document')
         ->assertStatus(503);
 });
@@ -54,7 +54,7 @@ test('accepting the terms records the version and hash that was shown', function
     $document = publishTerms();
     $user = User::factory()->create(['terms_accepted_at' => null, 'terms_version' => null]);
 
-    $this->actingAs($user)
+    $this->signInAs($user)
         ->postJson('/api/terms/accept', ['marketing_opt_in' => true])
         ->assertOk()
         ->assertJson(['success' => true, 'version' => $document->version]);
@@ -80,7 +80,7 @@ test('a user who accepted an older version must accept again', function () {
 
     expect($user->fresh()->hasAcceptedTerms())->toBeFalse();
 
-    $this->actingAs($user)->getJson('/api/terms/status')
+    $this->signInAs($user)->getJson('/api/terms/status')
         ->assertOk()
         ->assertJson([
             'accepted' => false,
@@ -100,7 +100,7 @@ test('a document that is not yet effective is not served', function () {
     ]);
     publishTerms('1.1');
 
-    $this->actingAs(User::factory()->create())
+    $this->signInAs(User::factory()->create())
         ->getJson('/api/terms/document')
         ->assertOk()
         ->assertJson(['version' => '1.1']);
@@ -110,7 +110,7 @@ test('the user payload exposes acceptance state for the frontend', function () {
     publishTerms('1.1');
     $user = User::factory()->create(['terms_accepted_at' => now(), 'terms_version' => '1.0']);
 
-    $this->actingAs($user)->getJson('/api/user')
+    $this->signInAs($user)->getJson('/api/user')
         ->assertOk()
         ->assertJson(['data' => [
             'terms_accepted' => false,

@@ -10,16 +10,17 @@ use Laravel\Ai\Tools\Request;
 class FillTemplateFieldsTool implements Tool
 {
     /**
-     * @param  (callable(string, ?string): void)|null  $onStatus  Fired the
-     *                                                            moment the
-     *                                                            model calls
-     *                                                            this tool, so
-     *                                                            status reflects
-     *                                                            actual tool
-     *                                                            execution.
+     * @param  (callable(string, ?string): void)|null  $onStatus  Fired the moment the model calls
+     *                                                            this tool, so status reflects
+     *                                                            actual tool execution.
+     * @param  (callable(array<int, array{key?: string, value?: string}>): void)|null  $onFields  Receives the values the
+     *                                                                                            model supplied. Without this the tool result would go
+     *                                                                                            back to the model and nowhere else, leaving the export
+     *                                                                                            with nothing to fill the template with.
      */
     public function __construct(
         private readonly mixed $onStatus = null,
+        private readonly mixed $onFields = null,
     ) {}
 
     /**
@@ -52,6 +53,8 @@ class FillTemplateFieldsTool implements Tool
         $this->onStatus?->__invoke('filling_template');
 
         $fields = $request->array('fields') ?? [];
+
+        $this->onFields?->__invoke($fields);
 
         return json_encode([
             'fields' => $fields,

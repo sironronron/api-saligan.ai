@@ -12,9 +12,14 @@ return new class extends Migration
      */
     public function up(): void
     {
+        // A case may now host multiple conversations, one per purpose.
+        if (Schema::hasIndex('conversations', 'conversations_case_id_unique')) {
+            Schema::table('conversations', function (Blueprint $table) {
+                $table->dropUnique(['case_id']);
+            });
+        }
+
         Schema::table('conversations', function (Blueprint $table) {
-            // A case may now host multiple conversations, one per purpose.
-            $table->dropUnique(['case_id']);
             $table->string('purpose', 100)->nullable()->after('case_id');
         });
     }

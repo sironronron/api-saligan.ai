@@ -239,3 +239,29 @@ it('renders asterisk bullets as list items in the Word file', function () {
     expect($texts)->toContain('Item one')
         ->and($texts)->toContain('Item two');
 });
+
+it('renders blockquotes as indented italic text in the Word file', function () {
+    $service = new DocumentExportService;
+
+    $file = $service->toWord(
+        "[[DOCUMENT_START]]\nDEMAND LETTER\n> \"RA No. 6657, Sec. 2 — Official Gazette\" [Link](https://example.com)\n[[DOCUMENT_END]]",
+        'Test',
+    );
+
+    $texts = wordTextRuns($file);
+
+    expect($texts)->toContain('"RA No. 6657, Sec. 2 — Official Gazette" Link (https://example.com)');
+});
+
+it('renders markdown links as text with URL in the Word file', function () {
+    $service = new DocumentExportService;
+
+    $file = $service->toWord(
+        "[[DOCUMENT_START]]\nDEMAND LETTER\nSee [Source](https://example.com) for details.\n[[DOCUMENT_END]]",
+        'Test',
+    );
+
+    $texts = wordTextRuns($file);
+
+    expect($texts)->toContain('See Source (https://example.com) for details.');
+});

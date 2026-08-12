@@ -21,10 +21,6 @@ use App\Http\Controllers\Api\TermsController;
 use App\Http\Controllers\Api\TodoController;
 use Illuminate\Support\Facades\Route;
 
-Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:auth');
-Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login');
-Route::post('/forgot-password', [AuthController::class, 'sendPasswordResetLink'])->middleware('throttle:auth');
-Route::post('/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:auth');
 Route::post('/subscriptions/webhook', [SubscriptionController::class, 'webhook']);
 Route::post('/subscriptions/webhook/lemonsqueezy', [SubscriptionController::class, 'lemonsqueezyWebhook']);
 
@@ -33,12 +29,15 @@ Route::get('/plans', [PlanController::class, 'index']);
 Route::post('/demo-requests', [DemoRequestController::class, 'store'])
     ->middleware('throttle:demo-request');
 
-Route::middleware('auth:sanctum')->group(function (): void {
+// The published Terms of Service / Privacy Policy is public content; the
+// /legal/terms page links it from the register form, which logged-out
+// visitors can open. Acceptance and status are per-user and stay protected.
+Route::get('/terms/document', [TermsController::class, 'document']);
+
+Route::middleware('auth:supabase')->group(function (): void {
     Route::get('/user', [AuthController::class, 'user']);
-    Route::post('/logout', [AuthController::class, 'logout']);
 
     Route::get('/terms/status', [TermsController::class, 'status']);
-    Route::get('/terms/document', [TermsController::class, 'document']);
     Route::post('/terms/accept', [TermsController::class, 'accept']);
 
     Route::get('/kyc', [KycController::class, 'show']);
@@ -61,6 +60,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
 
     Route::get('/organizations/invitations', [OrganizationController::class, 'indexInvitations']);
     Route::post('/organizations/invitations', [OrganizationController::class, 'storeInvitation']);
+    Route::post('/organizations/invitations/accept', [OrganizationController::class, 'acceptInvitationByToken']);
     Route::delete('/organizations/invitations/{invitation}', [OrganizationController::class, 'revokeInvitation']);
     Route::post('/invitations/{invitation}/accept', [OrganizationController::class, 'acceptInvitation']);
 

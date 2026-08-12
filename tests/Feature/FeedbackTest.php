@@ -24,7 +24,7 @@ it('records a thumbs-up rating on an assistant message', function () {
         'role' => MessageRole::Assistant,
     ]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson("/api/messages/{$message->id}/feedback", ['feedback' => 'up'])
         ->assertOk();
 
@@ -40,7 +40,7 @@ it('replaces an existing rating with the latest one', function () {
         'feedback_at' => now()->subDay(),
     ]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson("/api/messages/{$message->id}/feedback", ['feedback' => 'down'])
         ->assertOk();
 
@@ -53,7 +53,7 @@ it('rejects invalid feedback values', function () {
         'role' => MessageRole::Assistant,
     ]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson("/api/messages/{$message->id}/feedback", ['feedback' => 'maybe'])
         ->assertStatus(422);
 });
@@ -65,7 +65,7 @@ it('clears feedback when deleted', function () {
         'feedback_at' => now(),
     ]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->deleteJson("/api/messages/{$message->id}/feedback")
         ->assertOk();
 
@@ -81,7 +81,7 @@ it('forbids rating messages from another user\'s conversation', function () {
         'role' => MessageRole::Assistant,
     ]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson("/api/messages/{$message->id}/feedback", ['feedback' => 'up'])
         ->assertStatus(403);
 });

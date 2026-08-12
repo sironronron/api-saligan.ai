@@ -22,6 +22,7 @@ use Laravel\Ai\Streaming\Events\TextDelta;
 use Laravel\Ai\Streaming\Events\ToolCall;
 use Laravel\Ai\Streaming\Events\ToolResult;
 use Laravel\Octane\Contracts\Client as OctaneClient;
+use Spiral\RoadRunner\Http\Exception\StreamStoppedException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Throwable;
 
@@ -311,6 +312,19 @@ class ChatController extends Controller
                     }
                 }
             }
+        } catch (StreamStoppedException $exception) {
+            // The client went away mid-stream (navigated off the page, hit
+            // stop, or a proxy closed the connection). Nothing is wrong with
+            // the provider or this worker, and there is no socket left to
+            // write to — emitting another frame would only throw again and
+            // log a second, misleading "finalization failed".
+            Log::info('Chat stream cancelled by client', [
+                'conversation_id' => $conversation->id,
+            ]);
+
+            $this->chatService->discardCurrentUserMessage();
+
+            return;
         } catch (Throwable $exception) {
             Log::error('Chat streaming failed', [
                 'conversation_id' => $conversation->id,
@@ -402,6 +416,12 @@ class ChatController extends Controller
 
                 yield $emit('done', ['ok' => $completed]);
             }
+        } catch (StreamStoppedException) {
+            // Same as above: the client is gone, so there is nothing to report
+            // and nothing to report it on.
+            Log::info('Chat stream cancelled by client during finalization', [
+                'conversation_id' => $conversation->id,
+            ]);
         } catch (Throwable $exception) {
             // A failure in the finalization phase must never surface as a bare
             // 500 (which drops the SSE connection and the CORS headers), so it

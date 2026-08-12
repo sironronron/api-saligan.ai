@@ -56,9 +56,11 @@ return [
     | after it.
     |
     | Anthropic: the static system prompt is sent as its own system block with
-    | a "cache_control" breakpoint (5-minute ephemeral cache). The block is
-    | identical on every request, so it is read from cache (0.1x input rate)
-    | on every subsequent turn.
+    | a "cache_control" breakpoint, using the same ttl_seconds as Gemini —
+    | an hour when it is 3600 or more, otherwise Anthropic's five-minute
+    | default. The block is identical on every request and carries no per-user
+    | text, so one cache entry serves every tenant and is read at 0.1x the
+    | input rate on every subsequent turn.
     |
     */
 

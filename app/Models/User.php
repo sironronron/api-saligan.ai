@@ -16,6 +16,7 @@ use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
 #[Fillable([
+    'supabase_uid',
     'name',
     'email',
     'password',

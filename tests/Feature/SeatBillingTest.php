@@ -18,7 +18,7 @@ beforeEach(function () {
 });
 
 it('purchases additional seats and logs a billing event', function () {
-    $this->actingAs($this->owner)
+    $this->signInAs($this->owner)
         ->postJson('/api/subscription/seats', ['quantity' => 2])
         ->assertOk()
         ->assertJsonPath('data.seats.purchased', 4)
@@ -35,7 +35,7 @@ it('purchases additional seats and logs a billing event', function () {
 });
 
 it('removes purchased seats and logs a billing event', function () {
-    $this->actingAs($this->owner)
+    $this->signInAs($this->owner)
         ->deleteJson('/api/subscription/seats', ['quantity' => 1])
         ->assertOk()
         ->assertJsonPath('data.seats.purchased', 1)
@@ -51,7 +51,7 @@ it('blocks reducing seats below the active member count', function () {
     User::factory()->memberOf($this->organization)->create();
 
     // 2 seats purchased, 2 active members.
-    $this->actingAs($this->owner)
+    $this->signInAs($this->owner)
         ->deleteJson('/api/subscription/seats', ['quantity' => 1])
         ->assertStatus(422)
         ->assertJsonPath('message', 'You cannot reduce seats below the 2 active member(s) of your organization. Remove members first.');
@@ -76,21 +76,21 @@ it('falls back to the plan price when no per-seat price is set', function () {
 it('blocks non-admins from changing seat counts', function () {
     $member = User::factory()->memberOf($this->organization)->create();
 
-    $this->actingAs($member)
+    $this->signInAs($member)
         ->postJson('/api/subscription/seats', ['quantity' => 1])
         ->assertStatus(403);
 
-    $this->actingAs($member)
+    $this->signInAs($member)
         ->deleteJson('/api/subscription/seats', ['quantity' => 1])
         ->assertStatus(403);
 });
 
 it('rejects invalid seat quantities', function () {
-    $this->actingAs($this->owner)
+    $this->signInAs($this->owner)
         ->postJson('/api/subscription/seats', ['quantity' => 0])
         ->assertUnprocessable();
 
-    $this->actingAs($this->owner)
+    $this->signInAs($this->owner)
         ->postJson('/api/subscription/seats', ['quantity' => 101])
         ->assertUnprocessable();
 });
@@ -98,14 +98,14 @@ it('rejects invalid seat quantities', function () {
 it('requires an organization subscription before changing seats', function () {
     $this->subscription->delete();
 
-    $this->actingAs($this->owner)
+    $this->signInAs($this->owner)
         ->postJson('/api/subscription/seats', ['quantity' => 1])
         ->assertStatus(422)
         ->assertJsonPath('message', 'Your organization does not have a subscription yet.');
 });
 
 it('exposes seat fields on the subscription resource', function () {
-    $this->actingAs($this->owner)->getJson('/api/subscription')
+    $this->signInAs($this->owner)->getJson('/api/subscription')
         ->assertOk()
         ->assertJsonPath('data.seats.purchased', 2)
         ->assertJsonPath('data.seats.price_per_seat', 200000)

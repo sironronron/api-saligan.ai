@@ -22,7 +22,7 @@ it('lists only the authenticated user conversations', function () {
     $own = Conversation::factory()->for($this->user)->create();
     Conversation::factory()->for(User::factory())->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->getJson('/api/conversations')
         ->assertOk();
 
@@ -31,7 +31,7 @@ it('lists only the authenticated user conversations', function () {
 });
 
 it('creates a conversation with the default provider', function () {
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson('/api/conversations', ['title' => 'RA 6657 research'])
         ->assertCreated();
 
@@ -45,7 +45,7 @@ it('creates a conversation with the default provider', function () {
 });
 
 it('creates a conversation with a purpose', function () {
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson('/api/conversations', ['purpose' => 'Legal research'])
         ->assertCreated();
 
@@ -56,13 +56,13 @@ it('creates a conversation with a purpose', function () {
 it('forbids attaching a conversation to another users case', function () {
     $case = LegalCase::factory()->for(User::factory())->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/conversations', ['case_id' => $case->id])
         ->assertForbidden();
 });
 
 it('creates a conversation with an explicit provider', function () {
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson('/api/conversations', ['provider' => 'gemini'])
         ->assertCreated();
 
@@ -70,7 +70,7 @@ it('creates a conversation with an explicit provider', function () {
 });
 
 it('rejects an invalid provider', function () {
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/conversations', ['provider' => 'claude'])
         ->assertUnprocessable()
         ->assertJsonValidationErrors('provider');
@@ -81,7 +81,7 @@ it('shows a conversation with its messages', function () {
         ->hasMessages(2)
         ->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->getJson("/api/conversations/{$conversation->id}")
         ->assertOk();
 
@@ -91,7 +91,7 @@ it('shows a conversation with its messages', function () {
 it('forbids showing another user conversation', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->getJson("/api/conversations/{$conversation->id}")
         ->assertForbidden();
 });
@@ -99,7 +99,7 @@ it('forbids showing another user conversation', function () {
 it('updates the conversation title and provider', function () {
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->patchJson("/api/conversations/{$conversation->id}", [
             'title' => 'Renamed',
             'provider' => 'gemini',
@@ -112,7 +112,7 @@ it('updates the conversation title and provider', function () {
 it('deletes a conversation', function () {
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->deleteJson("/api/conversations/{$conversation->id}")
         ->assertNoContent();
 
@@ -122,7 +122,7 @@ it('deletes a conversation', function () {
 it('forbids deleting another user conversation', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->deleteJson("/api/conversations/{$conversation->id}")
         ->assertForbidden();
 });

@@ -366,6 +366,12 @@ class TemplateDocumentExportService
      */
     protected function intakeValuesFor(Message $message, Template $template): array
     {
+        // 0. The values the model supplied through fill_template_fields, keyed
+        // by the literal template token. These are the only source that knows
+        // what THIS template's placeholders mean, so they outrank every
+        // heuristic below.
+        $modelValues = $this->modelFieldValues($message);
+
         // 1. Try to get values from intake form submission first
         $intakeValues = $this->intakeFormValues($message);
 
@@ -375,8 +381,8 @@ class TemplateDocumentExportService
         // 3. Get values from case context as fallback
         $caseValues = $this->caseContextValues($message->conversation->case);
 
-        // Merge: intake form > document extraction > case context
-        $values = array_merge($caseValues, $documentValues, $intakeValues);
+        // Merge: model fill values > intake form > document extraction > case context
+        $values = array_merge($caseValues, $documentValues, $intakeValues, $modelValues);
 
         $normalizedValues = [];
 
@@ -404,6 +410,32 @@ class TemplateDocumentExportService
         }
 
         return $fill;
+    }
+
+    /**
+     * The placeholder values the model supplied through fill_template_fields,
+     * stored on the message when the draft was produced. Keyed by the literal
+     * token as it appears in the template, e.g. "[Client Full Name]".
+     *
+     * @return array<string, string>
+     */
+    protected function modelFieldValues(Message $message): array
+    {
+        $fields = $message->metadata['template_fields'] ?? null;
+
+        if (! is_array($fields)) {
+            return [];
+        }
+
+        $values = [];
+
+        foreach ($fields as $key => $value) {
+            if (is_string($key) && is_scalar($value) && (string) $value !== '') {
+                $values[$key] = (string) $value;
+            }
+        }
+
+        return $values;
     }
 
     /**

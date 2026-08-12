@@ -27,7 +27,7 @@ it('lists only the authenticated user documents', function () {
     $own = Document::factory()->for($this->user)->create();
     Document::factory()->for(User::factory())->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->getJson('/api/documents')
         ->assertOk();
 
@@ -39,7 +39,7 @@ it('stores an uploaded document and queues ingestion', function () {
     Queue::fake();
     Storage::fake('local');
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson('/api/documents', [
             'file' => UploadedFile::fake()->createWithContent('memo.txt', 'Plain legal notes.'),
             'title' => 'My memo',
@@ -61,7 +61,7 @@ it('stores an uploaded document encrypted at rest', function () {
     Queue::fake();
     Storage::fake('local');
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/documents', [
             'file' => UploadedFile::fake()->createWithContent('memo.txt', 'Plain legal notes.'),
             'title' => 'My memo',
@@ -88,7 +88,7 @@ it('accepts image uploads for OCR processing', function () {
     Queue::fake();
     Storage::fake('local');
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson('/api/documents', [
             'file' => UploadedFile::fake()->image('scan.png'),
         ])
@@ -108,7 +108,7 @@ it('accepts image uploads for OCR processing', function () {
 it('rejects unsupported file types', function () {
     Queue::fake();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/documents', [
             'file' => UploadedFile::fake()->createWithContent('malware.exe', 'x'),
         ])
@@ -121,7 +121,7 @@ it('rejects unsupported file types', function () {
 it('shows a single document with chunk count', function () {
     $document = Document::factory()->for($this->user)->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->getJson("/api/documents/{$document->id}")
         ->assertOk()
         ->assertJsonPath('data.id', $document->id);
@@ -130,7 +130,7 @@ it('shows a single document with chunk count', function () {
 it('forbids showing another user document', function () {
     $document = Document::factory()->for(User::factory())->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->getJson("/api/documents/{$document->id}")
         ->assertForbidden();
 });
@@ -144,7 +144,7 @@ it('deletes a document and its stored file', function () {
 
     Storage::put('documents/memo.pdf', 'pdf');
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->deleteJson("/api/documents/{$document->id}")
         ->assertNoContent();
 
@@ -155,7 +155,7 @@ it('deletes a document and its stored file', function () {
 it('forbids deleting another user document', function () {
     $document = Document::factory()->for(User::factory())->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->deleteJson("/api/documents/{$document->id}")
         ->assertForbidden();
 });
@@ -168,7 +168,7 @@ it('lists documents scoped to a case', function () {
     $inOtherCase = Document::factory()->for($this->user)->create(['case_id' => $otherCase->id]);
     Document::factory()->for($this->user)->create(['case_id' => null]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->getJson("/api/documents?case_id={$case->id}")
         ->assertOk();
 
@@ -180,7 +180,7 @@ it('lists documents scoped to a case', function () {
 it('forbids listing documents for another user case', function () {
     $case = LegalCase::factory()->for(User::factory())->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->getJson("/api/documents?case_id={$case->id}")
         ->assertForbidden();
 });
@@ -191,7 +191,7 @@ it('stores an uploaded document attached to a case', function () {
 
     $case = LegalCase::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson('/api/documents', [
             'file' => UploadedFile::fake()->createWithContent('complaint.txt', 'Complaint notes.'),
             'case_id' => $case->id,
@@ -213,7 +213,7 @@ it('forbids uploading a document into another user case', function () {
 
     $case = LegalCase::factory()->for(User::factory())->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson('/api/documents', [
             'file' => UploadedFile::fake()->createWithContent('notes.txt', 'x'),
             'case_id' => $case->id,
@@ -227,7 +227,7 @@ it('attaches an existing document to one of the users cases', function () {
     $case = LegalCase::factory()->for($this->user)->create();
     $document = Document::factory()->for($this->user)->create(['case_id' => null]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->postJson("/api/documents/{$document->id}/attach", ['case_id' => $case->id])
         ->assertOk();
 
@@ -242,7 +242,7 @@ it('attaches an existing document to one of the users cases', function () {
 it('requires a case when attaching a document', function () {
     $document = Document::factory()->for($this->user)->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson("/api/documents/{$document->id}/attach", [])
         ->assertUnprocessable()
         ->assertJsonValidationErrors('case_id');
@@ -252,7 +252,7 @@ it('forbids attaching another user document', function () {
     $case = LegalCase::factory()->for($this->user)->create();
     $document = Document::factory()->for(User::factory())->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson("/api/documents/{$document->id}/attach", ['case_id' => $case->id])
         ->assertForbidden();
 });
@@ -261,7 +261,7 @@ it('forbids attaching a document to another user case', function () {
     $document = Document::factory()->for($this->user)->create();
     $case = LegalCase::factory()->for(User::factory())->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson("/api/documents/{$document->id}/attach", ['case_id' => $case->id])
         ->assertForbidden();
 });
@@ -277,7 +277,7 @@ it('serves a viewable document inline with its content', function () {
 
     Storage::put('documents/memo.pdf', '%PDF-1.4 fake content');
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->getJson("/api/documents/{$document->id}/file")
         ->assertOk()
         ->assertHeader('Content-Type', 'application/pdf')
@@ -305,7 +305,7 @@ it('serves an encrypted document after decrypting it on the fly', function () {
         'mime_type' => 'application/pdf',
     ]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->getJson("/api/documents/{$document->id}/file")
         ->assertOk()
         ->assertHeader('Content-Type', 'application/pdf')
@@ -326,7 +326,7 @@ it('serves non-viewable documents as an attachment', function () {
 
     Storage::put('documents/contract.docx', 'PK fake content');
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->getJson("/api/documents/{$document->id}/file")
         ->assertOk()
         ->assertHeaderContains('Content-Disposition', 'attachment');
@@ -343,7 +343,7 @@ it('honours an explicit disposition override', function () {
 
     Storage::put('documents/memo.pdf', '%PDF-1.4 fake content');
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->getJson("/api/documents/{$document->id}/file?disposition=attachment")
         ->assertOk()
         ->assertHeaderContains('Content-Disposition', 'attachment');
@@ -359,7 +359,7 @@ it('forbids serving another user document', function () {
 
     Storage::put('documents/other.pdf', '%PDF-1.4 fake content');
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->getJson("/api/documents/{$document->id}/file")
         ->assertForbidden();
 });
@@ -372,7 +372,7 @@ it('returns 404 when the stored file is missing', function () {
         'mime_type' => 'application/pdf',
     ]);
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->getJson("/api/documents/{$document->id}/file")
         ->assertNotFound();
 });
@@ -388,7 +388,7 @@ it('requires an active subscription to serve a document file', function () {
 
     Storage::put('documents/memo.pdf', '%PDF-1.4 fake content');
 
-    $this->actingAs($user)
+    $this->signInAs($user)
         ->getJson("/api/documents/{$document->id}/file")
         ->assertStatus(402);
 });

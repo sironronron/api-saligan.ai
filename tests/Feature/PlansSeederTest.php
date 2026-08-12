@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Plan;
+use App\Services\Billing\EarningsModel;
 use Database\Seeders\PlansSeeder;
 use Illuminate\Support\Facades\Http;
 
@@ -37,7 +38,7 @@ it('provisions monthly and annual PayMongo plans and persists their ids', functi
     Http::assertSent(function ($request) {
         return str_contains($request->url(), '/v1/subscriptions/plans')
             && data_get($request->data(), 'data.attributes.interval') === 'yearly'
-            && data_get($request->data(), 'data.attributes.amount') === 1990000;
+            && data_get($request->data(), 'data.attributes.amount') === 3490000;
     });
 });
 
@@ -93,15 +94,40 @@ it('seeds the new pricing, caps, and overage rates', function () {
     expect($starter->price)->toBe(150000)
         ->and($starter->price_annual)->toBe(1494000)
         ->and($starter->overage_price)->toBeNull()
-        ->and($starter->limits['messages_used'])->toBe(200)
-        ->and($pro->price)->toBe(200000)
-        ->and($pro->price_annual)->toBe(1990000)
-        ->and($pro->overage_price)->toBe(350)
-        ->and($pro->limits['messages_used'])->toBe(500)
-        ->and($firm->price)->toBe(890000)
-        ->and($firm->price_annual)->toBe(8860000)
-        ->and($firm->overage_price)->toBe(300)
-        ->and($firm->limits['messages_used'])->toBe(3000);
+        ->and($starter->limits['messages_used'])->toBe(120)
+        ->and($pro->price)->toBe(350000)
+        ->and($pro->price_annual)->toBe(3490000)
+        ->and($pro->overage_price)->toBe(900)
+        ->and($pro->limits['messages_used'])->toBe(300)
+        ->and($firm->price)->toBe(1100000)
+        ->and($firm->price_annual)->toBe(10990000)
+        ->and($firm->overage_price)->toBe(850)
+        ->and($firm->limits['messages_used'])->toBe(1000);
+});
+
+it('prices every tier above what its messages cost to serve', function () {
+    // The guardrail the old ladder failed: message cost is flat, so a tier
+    // whose price divided by its cap falls under the marginal cost loses money
+    // on its own allowance no matter how the plan is sold.
+    Http::fake(['api.paymongo.com/*' => Http::response(['data' => []])]);
+    config(['paymongo.secret_key' => '']);
+
+    $this->seeder->run();
+
+    // Costed at a pessimistic cold cache, so the floor holds even before the
+    // prompt cache warms up.
+    $costPerMessage = EarningsModel::perMessageCostPesos(
+        'claude-sonnet-5',
+        exchangeRate: 57.0,
+        cached: true,
+        cacheHitRate: 0.0,
+    );
+
+    foreach (Plan::all() as $plan) {
+        $revenuePerMessage = $plan->price / 100 / $plan->limits['messages_used'];
+
+        expect($revenuePerMessage)->toBeGreaterThan($costPerMessage);
+    }
 });
 
 it('logs a warning and continues when PayMongo provisioning fails', function () {

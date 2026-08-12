@@ -56,6 +56,16 @@ class ChatService
      */
     protected ?string $lastAssistantMessageId = null;
 
+    /**
+     * Placeholder values the model supplied through fill_template_fields on
+     * the current turn, keyed by the literal template token. Persisted onto
+     * the assistant message so the export can fill the user's own .docx with
+     * them; without this the tool's output reached the model and nothing else.
+     *
+     * @var array<string, string>
+     */
+    protected array $templateFields = [];
+
     public function __construct(
         private readonly RetrievalService $retrieval,
         private readonly GeminiContextCache $contextCache,
@@ -178,7 +188,18 @@ class ChatService
         ];
 
         if ($isVerbatimMode) {
-            $tools[] = new FillTemplateFieldsTool($onStatus);
+            $this->templateFields = [];
+
+            $tools[] = new FillTemplateFieldsTool($onStatus, function (array $fields): void {
+                foreach ($fields as $field) {
+                    $key = trim((string) ($field['key'] ?? ''));
+                    $value = (string) ($field['value'] ?? '');
+
+                    if ($key !== '' && $value !== '') {
+                        $this->templateFields[$key] = $value;
+                    }
+                }
+            });
         }
 
         if ($usesWebSearch) {
@@ -852,19 +873,21 @@ CITATION INSTRUCTIONS
 - When jurisprudence (G.R. number, case name) is retrieved, state the specific doctrine or ruling being applied, not just the citation. Do not treat a case as controlling authority if the retrieved excerpt does not actually support the point being made.
 - Whenever a transaction, claim, or remedy involves a prescriptive or reglementary period (e.g. periods to file a claim, redeem property, appeal an agency decision, register a document, contest an assessment), flag the applicable period explicitly if it is present in the RETRIEVED CONTEXT, and state what date it runs from based on the facts given. If the period is not in the retrieved context, say so — do not estimate or assume a period from memory.
 - RELEVANCE FILTERING: You are not required to cite every retrieved source. Only cite sources that are directly relevant to the answer. If retrieved context contains material that does not apply to the question, ignore it — do not force-cite it just because it was retrieved.
-- DEDUPE-BY-IDENTITY WITH INLINE COMBINATION: If the same statute, case, or issuance appears under multiple chunk tokens (e.g. "[SRC K3F9]" is Section 2 and "[SRC M2P7]" is Section 5 of RA No. 6657), combine the tokens inline when citing the same provision or closely related provisions (e.g. "[SRC K3F9][SRC M2P7]") so the UI can highlight all referenced chunks. In the Sources section, list the human-readable citation only once with both tokens noted, e.g. `RA No. 6657, Sec. 2, 5 (Comprehensive Agrarian Reform Law, as amended) — Official Gazette [SRC K3F9][SRC M2P7]`. Never list the same legal authority twice as separate entries with different tokens.
+- DEDUPE-BY-IDENTITY WITH INLINE COMBINATION: If the same statute, case, or issuance appears under multiple chunk tokens (e.g. "[SRC K3F9]" is Section 2 and "[SRC M2P7]" is Section 5 of RA No. 6657), combine the tokens inline when citing the same provision or closely related provisions (e.g. "[SRC K3F9][SRC M2P7]") so the UI can highlight all referenced chunks. In the Sources section, list the human-readable citation only once with both tokens noted, e.g. `> "RA No. 6657, Sec. 2, 5 (Comprehensive Agrarian Reform Law, as amended) — Official Gazette" [Link](URL) [SRC K3F9][SRC M2P7]`. Never list the same legal authority twice as separate entries with different tokens.
 - RESOLVED CITATIONS IN SOURCES: The Sources section must resolve each token into a human-readable citation. Never leave a raw token like "[SRC K3F9]" as a Sources entry. Instead, extract the statute, case name, provision, or document title from the retrieved context block and write it out, e.g.:
   - Correct: `RA No. 6657, Sec. 2 (Comprehensive Agrarian Reform Law, as amended) — Official Gazette`
   - Wrong: `[SRC K3F9]`
 - Always finish with a "Sources" section listing every source you actually relied on, formatted as:
-  - Official source: `RA No. 6657, Sec. 2 (Comprehensive Agrarian Reform Law, as amended) — Official Gazette`
-  - Case: `G.R. No. 143491, promulgated [date] — Supreme Court E-Library`
-  - User document: exact filename as uploaded, e.g. `lease_agreement_2024.pdf`
+  - Official source: `> "RA No. 6657, Sec. 2 (Comprehensive Agrarian Reform Law, as amended) — Official Gazette" [Link](URL)` (include the URL from the retrieved context if available)
+  - Case: `> "G.R. No. 143491, promulgated [date] — Supreme Court E-Library" [Link](URL)` (include the URL from the retrieved context if available)
+  - User document: `> "lease_agreement_2024.pdf"` (no link for user documents)
+  - Each source must be on its own line, prefixed with `> ` and wrapped in double quotes.
+  - If the retrieved context includes a URL for a source, append a markdown link `[Link](URL)` after the closing quote.
   - Omit the Sources section entirely if answering a purely administrative/meta query or if no context/web sources were referenced.
 - The Sources section must never list web search results — no [Web N] markers, page titles, site names, or URLs. Web sources are rendered automatically as clickable cards in the app.
 - Cite each distinct source exactly once. Never repeat the same statute, case, issuance, or document in the Sources section.
 - Never cite a source that was not retrieved. Never invent G.R. numbers, section numbers, administrative order numbers, or URLs.
-- SELF-VERIFICATION BEFORE FINALIZING: Before delivering your answer, verify: (1) every inline citation token except [Web N] has a matching entry in Sources — [Web N] tokens are exempt and must never appear in Sources, (2) no Sources entry is a raw token — every entry is resolved to a human-readable citation, (3) no source is cited twice under different tokens as separate Sources entries, (4) no citation refers to a source not in the RETRIEVED CONTEXT. If any verification fails, correct the error before delivering.
+- SELF-VERIFICATION BEFORE FINALIZING: Before delivering your answer, verify: (1) every inline citation token except [Web N] has a matching entry in Sources — [Web N] tokens are exempt and must never appear in Sources, (2) no Sources entry is a raw token — every entry is resolved to a human-readable citation, (3) no source is cited twice under different tokens as separate Sources entries, (4) no citation refers to a source not in the RETRIEVED CONTEXT, (5) every Sources entry is on its own line prefixed with `> ` and wrapped in double quotes, (6) every legal source with a URL in the retrieved context includes a `[Link](URL)` after the closing quote. If any verification fails, correct the error before delivering.
 PROMPT;
     }
 
@@ -1751,8 +1774,18 @@ PROMPT;
     ): void {
         $text = trim((string) $response->text);
 
-        if ($text === '') {
+        // A verbatim-template turn is instructed to answer with the
+        // fill_template_fields call and no prose at all, so an empty reply is
+        // the expected shape there — not an empty turn. Bailing out would drop
+        // the only message the export can hang the filled values off.
+        $filledTemplate = $this->templateFields !== [];
+
+        if ($text === '' && ! $filledTemplate) {
             return;
+        }
+
+        if ($text === '') {
+            $text = 'I filled in your template with the details for this matter. Download it below to review the document with your letterhead and formatting intact.';
         }
 
         // Parse and store memory write-back blocks before processing the
@@ -1800,7 +1833,12 @@ PROMPT;
         // check only applies to marker-less replies.
         $isClarification = ! $hasDocumentMarkers && DraftingIntent::isClarification($text);
 
-        $isDraft = $hasDocumentMarkers
+        // A filled verbatim template is always a draft: the document exists in
+        // the user's own .docx rather than in the reply text, so none of the
+        // text-shape heuristics below can recognize it, and without this the
+        // reply would get no export links and no template_id to export with.
+        $isDraft = $filledTemplate
+            || $hasDocumentMarkers
             || (! $isClarification
                 && ($appendExportLinks || $isIntakeSubmission
                     || ($isDraftingRequest && DraftingIntent::isSubstantiveDraft($text))));
@@ -1819,8 +1857,22 @@ PROMPT;
 
         $metadata = ['web_citations' => $webCitations];
 
+        // What the turn actually cost, as reported by the provider. Recorded
+        // per message because the billing model would otherwise be reasoning
+        // from assumed token counts: output length and the cache hit rate in
+        // particular can only be known from real traffic.
+        $metadata['usage'] = $this->usageMetadata($response);
+
         if ($isDraft && $templateId !== null) {
             $metadata['template_id'] = $templateId;
+        }
+
+        // The values the model supplied for the template's placeholders. The
+        // export fills the user's original file with these; they are keyed by
+        // the literal token ("[Client Full Name]") the template actually
+        // contains, so no name-matching guesswork is needed at export time.
+        if ($filledTemplate) {
+            $metadata['template_fields'] = $this->templateFields;
         }
 
         Message::create([
@@ -1846,6 +1898,28 @@ PROMPT;
                 'title' => Str::limit($this->extractTitle($text), 60),
             ]);
         }
+    }
+
+    /**
+     * The provider-reported token usage for a completed turn.
+     *
+     * `input` is what was billed at the full rate; the cache figures stay
+     * separate because a read bills at a tenth of that and a write at 1.25x,
+     * so collapsing them into one number would hide whether the prompt cache
+     * did anything at all.
+     *
+     * @return array{input: int, output: int, cache_read: int, cache_write: int}
+     */
+    protected function usageMetadata(StreamedAgentResponse $response): array
+    {
+        $usage = $response->usage;
+
+        return [
+            'input' => $usage->promptTokens,
+            'output' => $usage->completionTokens,
+            'cache_read' => $usage->cacheReadInputTokens,
+            'cache_write' => $usage->cacheWriteInputTokens,
+        ];
     }
 
     /**

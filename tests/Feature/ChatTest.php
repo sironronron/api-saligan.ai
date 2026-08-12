@@ -68,7 +68,7 @@ beforeEach(function () {
 it('streams the assistant answer and persists both messages', function () {
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Explain RA 6657, please.',
         ]);
@@ -101,7 +101,7 @@ it('streams the assistant answer and persists both messages', function () {
 it('streams status events with labels derived from the question', function () {
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Explain RA 6657, please.',
         ])
@@ -120,7 +120,7 @@ it('auto-titles the conversation from the first answer', function () {
         'title' => null,
     ]);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Explain RA 6657.',
         ])
@@ -166,7 +166,7 @@ it('streams web citations live as they are recorded', function () {
 
     $this->app->instance(ChatService::class, $fake);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Explain RA 6657.',
         ])
@@ -204,7 +204,7 @@ it('deduplicates live web citations by url', function () {
 
     $this->app->instance(ChatService::class, $fake);
 
-    $response = $this->actingAs($this->user)
+    $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Explain RA 6657.',
         ])
@@ -221,7 +221,7 @@ it('deduplicates live web citations by url', function () {
 it('validates the message payload', function () {
     $conversation = Conversation::factory()->for($this->user)->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->postJson("/api/conversations/{$conversation->id}/messages", [])
         ->assertUnprocessable()
         ->assertJsonValidationErrors('message');
@@ -230,7 +230,7 @@ it('validates the message payload', function () {
 it('forbids messaging another user conversation', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
-    $this->actingAs($this->user)
+    $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
             'message' => 'Hello',
         ])
