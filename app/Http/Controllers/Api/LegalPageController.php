@@ -42,6 +42,8 @@ class LegalPageController extends Controller
                 'promulgation_date' => $crawledPage->promulgation_date?->toDateString(),
                 'url' => $crawledPage->url,
                 'source_name' => $crawledPage->legalSource?->name,
+                'category' => $crawledPage->category?->value,
+                'kind' => $crawledPage->kind,
                 'digest' => $crawledPage->digest,
                 'last_crawled_at' => $crawledPage->last_crawled_at,
                 // Absent when the page was crawled before digests existed, or

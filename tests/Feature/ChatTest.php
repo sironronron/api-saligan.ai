@@ -29,7 +29,7 @@ beforeEach(function () {
     {
         public function __construct() {}
 
-        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null): StreamableAgentResponse
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = []): StreamableAgentResponse
         {
             Message::create([
                 'conversation_id' => $conversation->id,
@@ -112,7 +112,10 @@ it('streams status events with labels derived from the question', function () {
     expect($body)
         ->toContain('event: status')
         ->toContain('"status":"composing"')
-        ->toContain('"label":"Composing your answer about RA 6657"');
+        // The topic travels once, on its own field, rather than being appended
+        // to every step label — see ChatStatusTest for why.
+        ->toContain('"label":"Writing your answer"')
+        ->toContain('"topic":"RA 6657"');
 });
 
 it('auto-titles the conversation from the first answer', function () {
@@ -143,7 +146,7 @@ it('streams web citations live as they are recorded', function () {
     {
         public function __construct() {}
 
-        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null): StreamableAgentResponse
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = []): StreamableAgentResponse
         {
             $response = new StreamableAgentResponse('test-invocation', function (): Generator {
                 yield new Citation('c1', 'm1', new UrlCitation('https://lawphil.net/ra-6657', 'RA 6657'), 1);
@@ -190,7 +193,7 @@ it('deduplicates live web citations by url', function () {
     {
         public function __construct() {}
 
-        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null): StreamableAgentResponse
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = []): StreamableAgentResponse
         {
             $response = new StreamableAgentResponse('test-invocation', function (): Generator {
                 yield new Citation('c1', 'm1', new UrlCitation('https://lawphil.net/ra-6657', 'RA 6657'), 1);

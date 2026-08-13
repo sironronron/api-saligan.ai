@@ -8,6 +8,7 @@ use App\Models\Document;
 use App\Models\DocumentChunk;
 use App\Services\Ai\EmbeddingService;
 use App\Services\Documents\DocumentChunker;
+use App\Services\Documents\DocumentClassifier;
 use App\Services\Documents\DocumentEncryptor;
 use App\Services\Documents\ImageOcrExtractor;
 use App\Services\Documents\TextExtractor;
@@ -61,6 +62,7 @@ class ProcessDocumentUpload implements ShouldQueue
         DocumentChunker $chunker,
         EmbeddingService $embeddings,
         DocumentEncryptor $encryptor,
+        DocumentClassifier $classifier,
     ): void {
         $document = $this->document;
 
@@ -142,6 +144,12 @@ class ProcessDocumentUpload implements ShouldQueue
                 'embedding' => $vectors[$index],
             ]);
         }
+
+        // File the document into the case file. This runs before the document
+        // is marked ready so it lands already sorted, and it never throws: a
+        // failed suggestion leaves the document unfiled, which is a state the
+        // Unfiled queue already handles.
+        $classifier->classify($document, $text);
 
         $document->update(['status' => DocumentStatus::Ready]);
     }

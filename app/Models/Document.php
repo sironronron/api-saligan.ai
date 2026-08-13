@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\DocumentStatus;
+use App\Models\Concerns\HasLabels;
 use Database\Factories\DocumentFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
@@ -26,6 +27,7 @@ class Document extends Model
     /** @use HasFactory<DocumentFactory> */
     use HasFactory;
 
+    use HasLabels;
     use HasUuids;
 
     /**

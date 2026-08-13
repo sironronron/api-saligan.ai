@@ -24,10 +24,12 @@ class GeneratedDocumentController extends Controller
         }
 
         $documents = $conversations
-            ->with(['messages' => fn ($query) => $query
-                ->where('role', MessageRole::Assistant)
-                ->where('content', 'like', '%/export/%')
-                ->latest(),
+            ->with([
+                'messages' => fn ($query) => $query
+                    ->where('role', MessageRole::Assistant)
+                    ->where('content', 'like', '%/export/%')
+                    ->latest(),
+                'messages.conversation.case',
             ])
             ->latest('updated_at')
             ->get()

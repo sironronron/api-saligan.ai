@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Models\Message;
+use App\Support\MessageAttachments;
 use App\Support\MessageSources;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -25,6 +26,7 @@ class MessageResource extends JsonResource
             'content' => $this->content,
             'provider' => $this->provider?->value,
             'sources' => MessageSources::for($this->resource),
+            'attachments' => MessageAttachments::for($this->resource),
             'feedback' => $this->feedback,
             'template_id' => $this->metadata['template_id'] ?? null,
             'created_at' => $this->created_at,

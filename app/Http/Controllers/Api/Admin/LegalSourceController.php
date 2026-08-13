@@ -2,11 +2,13 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
+use App\Enums\LegalSourceCategory;
 use App\Http\Controllers\Controller;
 use App\Jobs\CrawlLegalSourcePage;
 use App\Models\LegalSource;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class LegalSourceController extends Controller
 {
@@ -35,6 +37,7 @@ class LegalSourceController extends Controller
             'seed_urls' => ['required', 'array', 'min:1'],
             'seed_urls.*' => ['required', 'url', 'max:2048'],
             'is_active' => ['sometimes', 'boolean'],
+            'category' => ['sometimes', Rule::enum(LegalSourceCategory::class)],
         ]);
 
         $source = LegalSource::create([
@@ -42,6 +45,7 @@ class LegalSourceController extends Controller
             'base_domain' => $validated['base_domain'],
             'seed_urls' => array_values($validated['seed_urls']),
             'is_active' => $validated['is_active'] ?? true,
+            'category' => $validated['category'] ?? LegalSourceCategory::General->value,
         ]);
 
         return response()->json($source, 201);

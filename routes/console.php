@@ -21,3 +21,19 @@ Schedule::command('trials:warn')
     ->dailyAt('09:00')
     ->withoutOverlapping()
     ->onOneServer();
+
+// Closed cases get a 30-day grace period before they move to the archive; a
+// once-daily sweep keeps that promise without chasing exact timestamps.
+Schedule::command('cases:archive-closed')
+    ->dailyAt('00:30')
+    ->withoutOverlapping()
+    ->onOneServer();
+
+// Deadline reminders run just after UTC midnight so a "due today" email lands
+// on the morning it is due (01:00 UTC is 09:00 in the Philippines). The sweep
+// stamps each deadline it reminds, so daily ticks are enough — a due date
+// cannot cross the lead window more than once unless it is moved.
+Schedule::command('deadlines:remind')
+    ->dailyAt('01:00')
+    ->withoutOverlapping()
+    ->onOneServer();

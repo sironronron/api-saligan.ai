@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Enums\LegalSourceCategory;
 use App\Models\LegalSource;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
@@ -22,6 +23,7 @@ class LegalSourceFactory extends Factory
             'base_domain' => 'lawphil.net',
             'seed_urls' => ['https://lawphil.net/statutes/repacts/repacts.html'],
             'is_active' => true,
+            'category' => LegalSourceCategory::Law,
         ];
     }
 }

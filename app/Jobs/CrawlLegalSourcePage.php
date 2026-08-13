@@ -9,6 +9,7 @@ use App\Models\LegalSource;
 use App\Services\Ai\EmbeddingService;
 use App\Services\Crawler\CrawlerAdapterFactory;
 use App\Services\Crawler\LegalDigestService;
+use App\Services\Crawler\PdfAdapter;
 use App\Services\Crawler\RobotsTxt;
 use App\Services\Documents\DocumentChunker;
 use App\Support\CacheLock;
@@ -105,9 +106,11 @@ class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
                 return;
             }
 
-            $parsed = $adapters->resolve($this->source->base_domain)->parse($body, $this->url);
+            $parsed = $this->isPdf($this->url, $body, (string) $response->header('Content-Type', ''))
+                ? (new PdfAdapter)->parse($body, $this->url)
+                : $adapters->resolve($this->source->base_domain)->parse($body, $this->url);
 
-            $this->storeRawHtml($page, $body);
+            $this->storeRawArtifact($page, $body);
 
             $page->update([
                 'content_hash' => $hash,
@@ -260,13 +263,34 @@ class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
         return $host === $baseDomain || str_ends_with($host, '.'.$baseDomain);
     }
 
-    private function storeRawHtml(CrawledPage $page, string $body): void
+    private function storeRawArtifact(CrawledPage $page, string $body): void
     {
-        $path = 'crawled-pages/'.$page->id.'.html';
+        // LawPhil and the Gazette publish authorities as PDFs in addition to
+        // HTML; store whatever came back under a path that reflects it so the
+        // artifact can be inspected or re-processed later.
+        $extension = $this->isPdf($page->url ?? '', $body) ? 'pdf' : 'html';
+        $path = 'crawled-pages/'.$page->id.'.'.$extension;
 
         Storage::disk('local')->put($path, $body);
 
         $page->update(['raw_html_path' => $path]);
+    }
+
+    /**
+     * Whether a fetched body is a PDF rather than HTML, judged by the URL's
+     * file extension, the response Content-Type, or the magic bytes.
+     */
+    private function isPdf(string $url, string $body, string $contentType = ''): bool
+    {
+        if (str_contains(strtolower($contentType), 'application/pdf')) {
+            return true;
+        }
+
+        if (str_ends_with(strtolower((string) parse_url($url, PHP_URL_PATH)), '.pdf')) {
+            return true;
+        }
+
+        return str_starts_with($body, '%PDF-');
     }
 
     private function throttle(): void

@@ -78,6 +78,10 @@ class LegalCaseController extends Controller
     {
         $validated = $request->validate($this->rules(request: $request));
 
+        if (($validated['status'] ?? null) === 'closed') {
+            $validated['closed_at'] = now();
+        }
+
         PlanLimits::ensureActiveAccess($request->user());
 
         $limit = PlanLimits::limitFor($request->user(), 'active_cases');
@@ -126,7 +130,11 @@ class LegalCaseController extends Controller
     {
         abort_unless($case->user_id === $request->user()->id, 403);
 
-        $conversations = $case->conversations()->withCount('messages')->get();
+        $conversations = $case->conversations()
+            ->withCount('messages')
+            ->withMax('messages as last_message_at', 'created_at')
+            ->with('labels')
+            ->get();
 
         $activeConversation = $conversations
             ->firstWhere('id', $request->string('conversation')->toString())
@@ -150,7 +158,30 @@ class LegalCaseController extends Controller
     {
         abort_unless($case->user_id === $request->user()->id, 403);
 
-        $validated = $request->validate($this->rules(excludeRequired: true, request: $request));
+        $validated = $request->validate($this->rules(excludeRequired: true, request: $request, case: $case));
+
+        if (array_key_exists('status', $validated)) {
+            $validated['closed_at'] = $this->closedAtFor($case, $validated['status']);
+        }
+
+        $case->update($validated);
+
+        return new LegalCaseResource($case->load('defaultTemplate'));
+    }
+
+    /**
+     * Move a case between statuses without touching the rest of the record.
+     * The edit form is a heavy way to answer "this is on hold now".
+     */
+    public function updateStatus(Request $request, LegalCase $case): LegalCaseResource
+    {
+        abort_unless($case->user_id === $request->user()->id, 403);
+
+        $validated = $request->validate([
+            'status' => ['required', 'string', 'in:'.implode(',', self::STATUSES)],
+        ]);
+
+        $validated['closed_at'] = $this->closedAtFor($case, $validated['status']);
 
         $case->update($validated);
 
@@ -259,18 +290,46 @@ class LegalCaseController extends Controller
     }
 
     /**
+     * The closed_at timestamp to store when a case moves to a status.
+     *
+     * Closing starts the 30-day auto-archive countdown, so entering "closed"
+     * stamps the moment; leaving it clears the stamp so a later close restarts
+     * the countdown. Unrelated edits never touch the existing value.
+     */
+    protected function closedAtFor(LegalCase $case, string $newStatus): ?string
+    {
+        if ($newStatus === 'closed' && $case->status !== 'closed') {
+            return now();
+        }
+
+        if ($newStatus !== 'closed' && $case->status === 'closed') {
+            return null;
+        }
+
+        return $case->closed_at;
+    }
+
+    /**
      * The shared intake/update validation rules.
      *
      * @return array<string, mixed>
      */
-    protected function rules(bool $excludeRequired = false, ?Request $request = null): array
+    protected function rules(bool $excludeRequired = false, ?Request $request = null, ?LegalCase $case = null): array
     {
         $required = fn (string $rule): array => $excludeRequired ? ['sometimes', $rule] : ['required', $rule];
 
         return [
             'title' => [...$required('string'), 'max:255'],
             'case_type' => [...$required('string'), 'max:40'],
-            'reference' => ['nullable', 'string', 'max:40', 'unique:cases,reference'],
+            // The edit form resubmits the case's own reference unchanged, so
+            // the case under edit has to be exempt from its own uniqueness
+            // check — otherwise every save fails against the stored row.
+            'reference' => [
+                'nullable',
+                'string',
+                'max:40',
+                Rule::unique('cases', 'reference')->ignore($case?->id),
+            ],
             'priority' => ['nullable', 'in:'.implode(',', self::PRIORITIES)],
             'status' => [...$required('string'), 'in:'.implode(',', self::STATUSES)],
             'description' => ['nullable', 'string'],

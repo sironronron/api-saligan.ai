@@ -262,7 +262,7 @@ final class MessageSources
             // original site.
             'page_id' => $page?->id,
             'has_digest' => filled($page?->digest),
-            'label' => $page?->law_name ?: ($page?->gr_number ?: $page?->legalSource?->name ?: 'Legal source'),
+            'label' => $page?->law_name ?: ($page?->gr_number ?: ($page?->title ?: ($page?->original_filename ?: ($page?->legalSource?->name ?: 'Legal source')))),
             'title' => $page?->title,
             'law_name' => $page?->law_name,
             'gr_number' => $page?->gr_number,

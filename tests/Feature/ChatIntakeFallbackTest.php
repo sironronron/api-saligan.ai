@@ -28,7 +28,7 @@ function makeFakeChatService(array $events): ChatService
     {
         public function __construct(private array $events) {}
 
-        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null): StreamableAgentResponse
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = []): StreamableAgentResponse
         {
             $message = Message::create([
                 'conversation_id' => $conversation->id,
@@ -67,7 +67,7 @@ function makeFailingChatService(): ChatService
     {
         public function __construct() {}
 
-        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null): StreamableAgentResponse
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = []): StreamableAgentResponse
         {
             $message = Message::create([
                 'conversation_id' => $conversation->id,
@@ -151,7 +151,7 @@ it('reports gathering_facts when the model chooses the intake form', function ()
 
     expect($body)
         ->toContain('"status":"gathering_facts"')
-        ->toContain('"label":"Gathering the facts needed for your complaint"')
+        ->toContain('"label":"Gathering the facts for your complaint"')
         ->toContain('"name":"request_intake_form"')
         ->not->toContain('Here is your draft before we collect the facts');
 });

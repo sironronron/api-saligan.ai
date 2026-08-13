@@ -103,7 +103,10 @@ it('passes the cached content name as a Gemini provider option', function () {
 it('does not pass the cached content for other providers', function () {
     $agent = new LegalChatAgent(cachedContent: 'cachedContents/abc123');
 
-    expect($agent->providerOptions(Lab::Ollama))->toBe(['think' => false])
+    // Ollama carries its own options (think, num_ctx); the assertion here is
+    // only that Gemini's cachedContent is not among them.
+    expect($agent->providerOptions(Lab::Ollama))
+        ->not->toHaveKey('cachedContent')
         ->and($agent->providerOptions(Lab::OpenAI))->toBe([]);
 });
 

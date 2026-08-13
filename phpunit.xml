@@ -34,6 +34,8 @@
         <env name="AI_EMBED_PROVIDER" value="ollama"/>
         <env name="AI_EMBED_MODEL" value="qwen3-embedding:latest"/>
         <env name="AI_CHAT_PROVIDER" value="ollama"/>
+        <!-- Classification reaches a model, so it stays off unless a test turns it on. -->
+        <env name="DOCUMENT_CLASSIFICATION_ENABLED" value="false"/>
         <env name="SUPABASE_URL" value="https://test.supabase.co"/>
         <env name="SUPABASE_JWT_SECRET" value="test-supabase-jwt-secret-with-more-than-32-bytes"/>
     </php>

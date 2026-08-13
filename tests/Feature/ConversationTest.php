@@ -44,6 +44,25 @@ it('creates a conversation with the default provider', function () {
     ]);
 });
 
+it('exposes the case tags on a case conversation', function () {
+    $case = LegalCase::factory()->for($this->user)->create([
+        'tags' => ['land dispute', 'urgent'],
+    ]);
+    $conversation = Conversation::factory()->for($this->user)->for($case, 'case')->create();
+
+    $response = $this->signInAs($this->user)
+        ->getJson('/api/conversations')
+        ->assertOk();
+
+    expect($response->json('data.0.case_id'))->toBe($case->id)
+        ->and($response->json('data.0.case_tags'))->toBe(['land dispute', 'urgent']);
+
+    $this->signInAs($this->user)
+        ->getJson("/api/conversations/{$conversation->id}")
+        ->assertOk()
+        ->assertJsonPath('data.case_tags', ['land dispute', 'urgent']);
+});
+
 it('creates a conversation with a purpose', function () {
     $response = $this->signInAs($this->user)
         ->postJson('/api/conversations', ['purpose' => 'Legal research'])

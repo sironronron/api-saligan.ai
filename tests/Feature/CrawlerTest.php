@@ -104,6 +104,63 @@ it('skips re-indexing when the content hash is unchanged', function () {
         ->and($chunksAfterFirst)->toBeGreaterThan(0);
 });
 
+it('parses a scoped PDF, stores it as pdf, and indexes its chunks', function () {
+    Storage::fake('local');
+
+    $source = LegalSource::factory()->create(['base_domain' => 'lawphil.net']);
+
+    $content = 'BT /F1 12 Tf 72 720 Td (G.R. No. 143491 - People v. Juan promulgated on June 10, 2003) Tj ET';
+
+    $defs = [
+        '1 0 obj' => '<< /Type /Catalog /Pages 2 0 R >>',
+        '2 0 obj' => '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '3 0 obj' => '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+        '4 0 obj' => '<< /Length '.strlen($content)." >>\nstream\n{$content}\nendstream",
+        '5 0 obj' => '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    ];
+
+    $pdf = "%PDF-1.4\n";
+    $offsets = [];
+
+    foreach ($defs as $header => $body) {
+        $offsets[] = strlen($pdf);
+        $pdf .= $header."\n".$body."\nendobj\n";
+    }
+
+    $xrefOffset = strlen($pdf);
+    $pdf .= 'xref'.PHP_EOL.'0 '.(count($defs) + 1).PHP_EOL.'0000000000 65535 f '.PHP_EOL;
+
+    foreach ($offsets as $offset) {
+        $pdf .= sprintf('%010d 00000 n ', $offset).PHP_EOL;
+    }
+
+    $pdf .= 'trailer'.PHP_EOL.'<< /Size '.(count($defs) + 1).' /Root 1 0 R >>'.PHP_EOL.'startxref'.PHP_EOL.$xrefOffset.PHP_EOL.'%%EOF';
+
+    Http::fake([
+        '*/robots.txt' => Http::response("User-agent: *\nDisallow:\n", 200),
+        '*/api/embed' => Http::response(fakeEmbedResponse(), 200),
+        '*/well.pdf' => Http::response($pdf, 200, ['Content-Type' => 'application/pdf']),
+    ]);
+
+    (new CrawlLegalSourcePage($source, 'https://lawphil.net/statutes/well.pdf'))
+        ->handle(
+            app(EmbeddingService::class),
+            new CrawlerAdapterFactory,
+            new RobotsTxt,
+        );
+
+    $page = CrawledPage::where('url', 'https://lawphil.net/statutes/well.pdf')->first();
+
+    expect($page)->not->toBeNull()
+        ->and($page->crawl_status)->toBe(CrawlStatus::Ok)
+        ->and($page->raw_html_path)->toBe('crawled-pages/'.$page->id.'.pdf')
+        ->and($page->gr_number)->toBe('G.R. No. 143491')
+        ->and($page->promulgation_date->toDateString())->toBe('2003-06-10')
+        ->and($page->legalChunks()->count())->toBeGreaterThan(0);
+
+    expect(Storage::disk('local')->exists('crawled-pages/'.$page->id.'.pdf'))->toBeTrue();
+});
+
 it('records an http error as a failed crawl', function () {
     $source = LegalSource::factory()->create(['base_domain' => 'example.gov.ph']);
 

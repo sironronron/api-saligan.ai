@@ -5,7 +5,6 @@ namespace App\Http\Resources;
 use App\Models\Message;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
-use Illuminate\Support\Str;
 
 /**
  * @mixin Message
@@ -23,25 +22,11 @@ class GeneratedDocumentResource extends JsonResource
             'id' => $this->id,
             'conversation_id' => $this->conversation_id,
             'conversation_title' => $this->conversation?->title,
-            'title' => $this->derivedTitle(),
+            'case_id' => $this->conversation?->case_id,
+            'case_title' => $this->conversation?->case?->title,
+            'title' => $this->draftTitle(),
             'content' => $this->content,
             'created_at' => $this->created_at,
         ];
-    }
-
-    /**
-     * Derive a short title from the first non-empty line of the draft.
-     */
-    protected function derivedTitle(): string
-    {
-        foreach (preg_split('/\R/', (string) $this->content) ?: [] as $line) {
-            $line = trim($line, " \t#*-");
-
-            if ($line !== '') {
-                return Str::limit($line, 80);
-            }
-        }
-
-        return $this->conversation?->title ?? 'Generated document';
     }
 }

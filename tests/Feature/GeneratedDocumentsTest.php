@@ -20,7 +20,8 @@ it('requires authentication', function () {
 });
 
 it('lists only assistant messages that are exportable drafts', function () {
-    $conversation = Conversation::factory()->for($this->user)->create(['title' => 'Eviction case']);
+    $case = LegalCase::factory()->for($this->user)->create(['title' => 'Dela Cruz vs. Santos']);
+    $conversation = Conversation::factory()->for($this->user)->create(['title' => 'Eviction case', 'case_id' => $case->id]);
 
     $draft = Message::factory()->create([
         'conversation_id' => $conversation->id,
@@ -47,6 +48,8 @@ it('lists only assistant messages that are exportable drafts', function () {
     expect($response->json('data'))->toHaveCount(1)
         ->and($response->json('data.0.id'))->toBe($draft->id)
         ->and($response->json('data.0.conversation_title'))->toBe('Eviction case')
+        ->and($response->json('data.0.case_id'))->toBe($case->id)
+        ->and($response->json('data.0.case_title'))->toBe('Dela Cruz vs. Santos')
         ->and($response->json('data.0.title'))->toContain('REPUBLIC OF THE PHILIPPINES')
         ->and($response->json('data.0.content'))->toContain('COMPLAINT FOR UNLAWFUL DETAINER');
 });

@@ -25,6 +25,19 @@ final class ChatStatus
     ];
 
     /**
+     * Words with no topical content of their own. Only ever trimmed from the
+     * front of a candidate phrase — inside one they carry meaning ("scope of
+     * the program" needs its "of the").
+     *
+     * @var array<int, string>
+     */
+    private const LEADING_FILLER = [
+        'the', 'a', 'an', 'of', 'for', 'on', 'in', 'to', 'about', 'regarding',
+        'me', 'us', 'my', 'our', 'your', 'it', 'that', 'this', 'there',
+        'i', 'we', 'you',
+    ];
+
+    /**
      * Build the activity label shown for a streaming step given the user's
      * message, so each step reads as if it were written for that question
      * instead of a generic status. Falls back to a neutral label when no
@@ -32,27 +45,24 @@ final class ChatStatus
      */
     public static function label(string $status, string $question): string
     {
-        $topic = self::topic($question);
-
+        // Steps no longer carry the topic. It used to be appended to every
+        // one of them, which meant the same phrase was repeated on the header
+        // and on each timeline row — and any flaw in the extraction was
+        // repeated with it. The topic now travels once, on its own field, and
+        // the steps say only what is being done.
         return match ($status) {
-            'checking_sources' => $topic !== null
-                ? "Checking legal sources about {$topic}"
-                : 'Checking legal sources',
-            'searching_web' => $topic !== null
-                ? "Searching the web for more on {$topic}"
-                : 'Searching the web for more information',
+            'checking_sources' => 'Checking legal sources',
+            'searching_web' => 'Searching the web',
             'gathering_facts' => ($document = self::document($question)) !== null
-                ? "Gathering the facts needed for your {$document}"
-                : 'Gathering the facts needed for your document…',
+                ? "Gathering the facts for your {$document}"
+                : 'Gathering the facts needed',
             'drafting_document' => ($document = self::document($question)) !== null
                 ? "Drafting your {$document}"
-                : 'Drafting your document…',
-            'preparing_next_steps' => ($document = self::document($question)) !== null
-                ? "Preparing the next steps for your {$document}"
-                : 'Preparing your next-steps checklist…',
-            'composing' => $topic !== null
-                ? "Composing your answer about {$topic}"
-                : 'Composing your answer',
+                : 'Drafting your document',
+            'preparing_next_steps' => 'Preparing your next steps',
+            'collecting_facts' => 'Collecting the facts I need',
+            'filling_template' => 'Filling in your template',
+            'composing' => 'Writing your answer',
             default => Str::headline($status),
         };
     }
@@ -112,33 +122,142 @@ final class ChatStatus
             return $citation;
         }
 
-        $lower = mb_strtolower($text);
+        $text = self::stripLeadingStems($text);
 
-        foreach (self::LEADING_WORDS as $stem) {
-            if ($lower === $stem || str_starts_with($lower, $stem.' ')) {
-                $text = trim(mb_substr($text, mb_strlen($stem)));
-
-                break;
-            }
-        }
-
-        $words = preg_split('/\s+/u', $text) ?: [];
-
-        $words = array_values(array_filter($words, static function (string $word): bool {
-            $clean = trim($word, " \t\n\r\0\x0B.,;:!?\"'()");
-
-            return $clean !== '' && preg_match('/^[a-zA-Z0-9+]+(?:-[a-zA-Z0-9]+)*$/', $clean) === 1;
-        }));
-
-        $words = array_slice($words, 0, 5);
+        $words = self::words($text);
 
         if ($words === []) {
             return null;
         }
 
-        $topic = implode(' ', $words);
+        // A run of capitalised words is almost always the thing being asked
+        // about — "Comprehensive Agrarian Reform Program" out of "What is the
+        // scope of the Comprehensive Agrarian Reform Program?" — and it beats
+        // any positional guess, so it is preferred when the question has one.
+        $proper = self::properNounRun($words);
 
-        return mb_strimwidth(ucfirst(mb_strtolower($topic)), 0, 60, '…');
+        if ($proper !== null) {
+            return self::clip($proper, preserveCase: true);
+        }
+
+        // Eight rather than five: the 60-character clip already bounds the
+        // length, and a tighter word budget was cutting phrases mid-thought
+        // ("requirements for a deed of absolute" losing its "sale").
+        $words = array_slice($words, 0, 8);
+
+        // Never end on a dangling connector.
+        while ($words !== [] && in_array(mb_strtolower(end($words)), ['of', 'and', 'for', 'the', 'a', 'an', 'to', 'in', 'on'], true)) {
+            array_pop($words);
+        }
+
+        if ($words === []) {
+            return null;
+        }
+
+        return self::clip(implode(' ', $words), preserveCase: false);
+    }
+
+    /**
+     * Strip question stems and leading filler off the front of the message.
+     *
+     * Longest stem first and repeatedly, which is the part the previous
+     * shortest-first single-pass version got wrong: "what" matched before
+     * "what is" ever could, so "What is the scope of X" was left as "is the
+     * scope of X" and the first few words of that became the topic.
+     */
+    private static function stripLeadingStems(string $text): string
+    {
+        $stems = self::LEADING_WORDS;
+
+        usort($stems, static fn (string $a, string $b): int => mb_strlen($b) <=> mb_strlen($a));
+
+        $changed = true;
+
+        while ($changed) {
+            $changed = false;
+            $lower = mb_strtolower($text);
+
+            foreach ([...$stems, ...self::LEADING_FILLER] as $stem) {
+                if ($lower === $stem) {
+                    return '';
+                }
+
+                if (str_starts_with($lower, $stem.' ')) {
+                    $text = trim(mb_substr($text, mb_strlen($stem)));
+                    $changed = true;
+
+                    break;
+                }
+            }
+        }
+
+        return $text;
+    }
+
+    /**
+     * The message's words, punctuation trimmed and anything that is not a
+     * plain word dropped.
+     *
+     * @return array<int, string>
+     */
+    private static function words(string $text): array
+    {
+        $words = preg_split('/\s+/u', $text) ?: [];
+
+        $words = array_map(
+            static fn (string $word): string => trim($word, " \t\n\r\0\x0B.,;:!?\"'()"),
+            $words,
+        );
+
+        return array_values(array_filter(
+            $words,
+            static fn (string $word): bool => $word !== ''
+                && preg_match('/^[a-zA-Z0-9+]+(?:-[a-zA-Z0-9]+)*$/', $word) === 1,
+        ));
+    }
+
+    /**
+     * The longest run of two or more consecutive capitalised words, which is
+     * how a named statute, programme, or agency shows up in a question.
+     *
+     * @param  array<int, string>  $words
+     */
+    private static function properNounRun(array $words): ?string
+    {
+        $best = [];
+        $run = [];
+
+        foreach ($words as $word) {
+            // Lowercase connectors keep a name together ("Department of
+            // Agrarian Reform") without starting a run of their own.
+            $isConnector = $run !== [] && in_array(mb_strtolower($word), ['of', 'and', 'for', 'the'], true);
+
+            if (preg_match('/^\p{Lu}/u', $word) === 1 || $isConnector) {
+                $run[] = $word;
+
+                if (count($run) > count($best)) {
+                    $best = $run;
+                }
+
+                continue;
+            }
+
+            $run = [];
+        }
+
+        // Trim a trailing connector left dangling by the loop above.
+        while ($best !== [] && in_array(mb_strtolower(end($best)), ['of', 'and', 'for', 'the'], true)) {
+            array_pop($best);
+        }
+
+        return count($best) >= 2 ? implode(' ', $best) : null;
+    }
+
+    private static function clip(string $topic, bool $preserveCase): string
+    {
+        $topic = $preserveCase ? $topic : ucfirst(mb_strtolower($topic));
+
+        return mb_strimwidth($topic, 0, 60, '…');
     }
 
     /**

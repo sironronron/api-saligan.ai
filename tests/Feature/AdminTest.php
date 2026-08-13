@@ -1,6 +1,7 @@
 <?php
 
 use App\Enums\CrawlStatus;
+use App\Enums\LegalSourceCategory;
 use App\Jobs\CrawlLegalSourcePage;
 use App\Models\CrawledPage;
 use App\Models\LegalSource;
@@ -54,9 +55,31 @@ it('creates a legal source for admins', function () {
         ])->assertCreated();
 
     expect($response->json('seed_urls'))->toBeArray()
-        ->and($response->json('is_active'))->toBeTrue();
+        ->and($response->json('is_active'))->toBeTrue()
+        ->and($response->json('category'))->toBe(LegalSourceCategory::General->value);
 
     $this->assertDatabaseHas('legal_sources', ['base_domain' => 'lawphil.net']);
+});
+
+it('stores the chosen category when creating a legal source', function () {
+    $response = $this->signInAs($this->admin)
+        ->postJson('/api/admin/legal-sources', [
+            'name' => 'SC E-Library',
+            'base_domain' => 'elibrary.judiciary.gov.ph',
+            'seed_urls' => ['https://elibrary.judiciary.gov.ph/thebookshelf'],
+            'category' => LegalSourceCategory::Jurisprudence->value,
+        ])->assertCreated();
+
+    expect($response->json('category'))->toBe(LegalSourceCategory::Jurisprudence->value);
+
+    $this->signInAs($this->admin)
+        ->postJson('/api/admin/legal-sources', [
+            'name' => 'Bad Category',
+            'base_domain' => 'bad.example',
+            'seed_urls' => ['https://bad.example'],
+            'category' => 'not-a-category',
+        ])->assertUnprocessable()
+        ->assertJsonValidationErrors(['category']);
 });
 
 it('rejects duplicate base domains', function () {

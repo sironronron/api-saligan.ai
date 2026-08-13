@@ -3,24 +3,40 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\ChatProvider;
+use App\Enums\LabelKind;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConversationResource;
 use App\Models\Conversation;
+use App\Models\Label;
 use App\Models\Message;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Arr;
 use Illuminate\Validation\Rule;
 
 class ConversationController extends Controller
 {
     /**
-     * List the authenticated user's conversations.
+     * List the authenticated user's conversations, optionally narrowed to the
+     * threads carrying particular tags.
      */
     public function index(Request $request): AnonymousResourceCollection
     {
+        $validated = $request->validate([
+            'tag_id' => ['nullable', 'array'],
+            'tag_id.*' => ['uuid'],
+            'match' => ['nullable', 'in:any,all'],
+        ]);
+
+        $tagIds = $validated['tag_id'] ?? [];
+
         $conversations = $request->user()->conversations()
             ->withCount('messages')
+            ->with(['labels', 'case'])
+            ->when($tagIds !== [], fn ($query) => ($validated['match'] ?? 'any') === 'all'
+                ? $query->withAllLabels($tagIds)
+                : $query->withAnyLabels($tagIds))
             ->addSelect([
                 'last_message_at' => Message::query()
                     ->select('created_at')
@@ -44,7 +60,15 @@ class ConversationController extends Controller
             'purpose' => ['nullable', 'string', 'max:100'],
             'case_id' => ['nullable', 'uuid', 'exists:cases,id'],
             'provider' => ['nullable', Rule::enum(ChatProvider::class)],
+            'label_ids' => ['nullable', 'array'],
+            'label_ids.*' => ['uuid'],
         ]);
+
+        $tags = Label::resolveForAssignment(
+            $request->user(),
+            $validated['label_ids'] ?? [],
+            LabelKind::ThreadTag,
+        );
 
         $case = $validated['case_id'] ?? null;
 
@@ -59,7 +83,11 @@ class ConversationController extends Controller
             'provider' => $validated['provider'] ?? ChatProvider::fromConfig(),
         ]);
 
-        return (new ConversationResource($conversation))->response()->setStatusCode(201);
+        if ($tags->isNotEmpty()) {
+            $conversation->syncLabels($tags, $request->user());
+        }
+
+        return (new ConversationResource($conversation->load(['labels', 'case'])))->response()->setStatusCode(201);
     }
 
     /**
@@ -69,13 +97,13 @@ class ConversationController extends Controller
     {
         abort_unless($conversation->user_id === $request->user()->id, 403);
 
-        $conversation->load('messages');
+        $conversation->load(['messages', 'labels', 'case']);
 
         return new ConversationResource($conversation);
     }
 
     /**
-     * Update conversation title.
+     * Update conversation title and tags.
      */
     public function update(Request $request, Conversation $conversation): ConversationResource
     {
@@ -85,11 +113,20 @@ class ConversationController extends Controller
             'title' => ['nullable', 'string', 'max:255'],
             'purpose' => ['nullable', 'string', 'max:100'],
             'provider' => ['nullable', Rule::enum(ChatProvider::class)],
+            'label_ids' => ['sometimes', 'array'],
+            'label_ids.*' => ['uuid'],
         ]);
 
-        $conversation->update($validated);
+        if (array_key_exists('label_ids', $validated)) {
+            $conversation->syncLabels(
+                Label::resolveForAssignment($request->user(), $validated['label_ids'], LabelKind::ThreadTag),
+                $request->user(),
+            );
+        }
 
-        return new ConversationResource($conversation->load('messages'));
+        $conversation->update(Arr::except($validated, 'label_ids'));
+
+        return new ConversationResource($conversation->load(['messages', 'labels', 'case']));
     }
 
     /**

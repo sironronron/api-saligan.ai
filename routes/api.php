@@ -1,9 +1,11 @@
 <?php
 
 use App\Http\Controllers\Api\Admin\CrawledPageController;
+use App\Http\Controllers\Api\Admin\LegalDocumentController;
 use App\Http\Controllers\Api\Admin\LegalSourceController;
 use App\Http\Controllers\Api\Admin\SystemPromptController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\CaseProgressController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\DemoRequestController;
@@ -12,8 +14,10 @@ use App\Http\Controllers\Api\ExportController;
 use App\Http\Controllers\Api\FeedbackController;
 use App\Http\Controllers\Api\GeneratedDocumentController;
 use App\Http\Controllers\Api\KycController;
+use App\Http\Controllers\Api\LabelController;
 use App\Http\Controllers\Api\LegalCaseController;
 use App\Http\Controllers\Api\LegalPageController;
+use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\OrganizationController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\SubscriptionController;
@@ -58,6 +62,14 @@ Route::middleware(['auth:supabase', 'track_last_used'])->group(function (): void
     Route::get('/legal-pages/resolve', [LegalPageController::class, 'resolve']);
     Route::get('/legal-pages/{crawledPage}', [LegalPageController::class, 'show']);
 
+    // The in-app notification feed lives outside the active_subscription group
+    // so the navbar bell works for trial and suspended users too.
+    Route::get('/notifications', [NotificationController::class, 'index']);
+    Route::get('/notifications/unread-count', [NotificationController::class, 'unreadCount']);
+    Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead']);
+    Route::patch('/notifications/{notification}', [NotificationController::class, 'markRead']);
+    Route::delete('/notifications/{notification}', [NotificationController::class, 'destroy']);
+
     // Trial redemption sits outside the active_subscription group: the whole
     // point is to be reachable by an account that has no subscription yet.
     Route::get('/trial/code', [TrialCodeController::class, 'show']);
@@ -85,6 +97,8 @@ Route::middleware(['auth:supabase', 'track_last_used'])->group(function (): void
     Route::post('/invitations/{invitation}/accept', [OrganizationController::class, 'acceptInvitation']);
 
     Route::middleware(['active_subscription', 'terms.accepted'])->group(function (): void {
+        Route::apiResource('labels', LabelController::class)->only(['index', 'store', 'update', 'destroy']);
+
         Route::apiResource('documents', DocumentController::class);
         Route::post('/documents/{document}/attach', [DocumentController::class, 'attach']);
         Route::get('/documents/{document}/file', [DocumentController::class, 'file']);
@@ -108,6 +122,8 @@ Route::middleware(['auth:supabase', 'track_last_used'])->group(function (): void
         Route::delete('/templates/{template}', [TemplateController::class, 'destroy']);
 
         Route::apiResource('cases', LegalCaseController::class);
+        Route::get('/cases/{case}/progress', [CaseProgressController::class, 'show']);
+        Route::patch('/cases/{case}/status', [LegalCaseController::class, 'updateStatus']);
         Route::post('/cases/{case}/conversations', [LegalCaseController::class, 'storeConversation']);
         Route::post('/cases/{case}/duplicate', [LegalCaseController::class, 'duplicate']);
         Route::post('/cases/{case}/restore', [LegalCaseController::class, 'restore']);
@@ -118,6 +134,10 @@ Route::middleware(['auth:supabase', 'track_last_used'])->group(function (): void
         Route::apiResource('legal-sources', LegalSourceController::class)->only(['index', 'store', 'destroy']);
         Route::post('/legal-sources/{legalSource}/crawl-now', [LegalSourceController::class, 'crawlNow']);
         Route::get('/crawled-pages', [CrawledPageController::class, 'index']);
+        Route::get('/legal-documents', [LegalDocumentController::class, 'index']);
+        Route::post('/legal-documents', [LegalDocumentController::class, 'store']);
+        Route::get('/legal-documents/{crawledPage}/file', [LegalDocumentController::class, 'file']);
+        Route::delete('/legal-documents/{crawledPage}', [LegalDocumentController::class, 'destroy']);
         Route::get('/system-prompts', [SystemPromptController::class, 'index']);
         Route::post('/system-prompts', [SystemPromptController::class, 'store']);
         Route::post('/system-prompts/{systemPrompt}/activate', [SystemPromptController::class, 'activate']);

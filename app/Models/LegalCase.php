@@ -21,10 +21,13 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
     'reference',
     'priority',
     'status',
+    'closed_at',
     'retention_status',
     'description',
     'related_parties',
     'due_date',
+    'deadline_reminded_at',
+    'deadline_reminded_due_date',
     'tags',
     'default_template_id',
     'archived_at',
@@ -62,6 +65,9 @@ class LegalCase extends Model
             'related_parties' => 'array',
             'tags' => 'array',
             'due_date' => 'date',
+            'deadline_reminded_at' => 'datetime',
+            'deadline_reminded_due_date' => 'date',
+            'closed_at' => 'datetime',
             'archived_at' => 'datetime',
         ];
     }

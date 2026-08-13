@@ -3,10 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\DocumentStatus;
+use App\Enums\LabelKind;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\DocumentResource;
 use App\Jobs\ProcessDocumentUpload;
 use App\Models\Document;
+use App\Models\Label;
 use App\Models\LegalCase;
 use App\Services\Documents\DocumentEncryptor;
 use App\Support\PlanLimits;
@@ -27,20 +29,42 @@ class DocumentController extends Controller
     }
 
     /**
-     * List the authenticated user's uploaded documents, optionally scoped to a case.
+     * List the authenticated user's uploaded documents, optionally scoped to a
+     * case and filtered by the case-file categories they are filed under.
+     *
+     * A document may sit in several categories at once, so `match` decides how
+     * a multi-category filter reads: `any` widens the net, `all` narrows to the
+     * documents doing every one of those jobs — the bank records that are both
+     * documentary evidence and a financial record.
      */
     public function index(Request $request): AnonymousResourceCollection
     {
         $validated = $request->validate([
             'case_id' => ['nullable', 'uuid', 'exists:cases,id'],
+            'category_id' => ['nullable', 'array'],
+            'category_id.*' => ['uuid'],
+            'match' => ['nullable', 'in:any,all'],
+            'uncategorized' => ['nullable', 'boolean'],
         ]);
 
-        $query = $request->user()->documents()->withCount('chunks');
+        $query = $request->user()->documents()->withCount('chunks')->with('labels');
 
         if (isset($validated['case_id'])) {
             $case = LegalCase::findOrFail($validated['case_id']);
             abort_unless($case->user_id === $request->user()->id, 403);
             $query->where('case_id', $case->id);
+        }
+
+        $categoryIds = $validated['category_id'] ?? [];
+
+        if ($categoryIds !== []) {
+            ($validated['match'] ?? 'any') === 'all'
+                ? $query->withAllLabels($categoryIds)
+                : $query->withAnyLabels($categoryIds);
+        }
+
+        if ($request->boolean('uncategorized')) {
+            $query->whereDoesntHave('labels');
         }
 
         return DocumentResource::collection($query->latest()->get());
@@ -65,7 +89,15 @@ class DocumentController extends Controller
             ],
             'title' => ['nullable', 'string', 'max:255'],
             'case_id' => ['nullable', 'uuid', 'exists:cases,id'],
+            'label_ids' => ['nullable', 'array'],
+            'label_ids.*' => ['uuid'],
         ]);
+
+        $labels = Label::resolveForAssignment(
+            $request->user(),
+            $validated['label_ids'] ?? [],
+            LabelKind::DocumentCategory,
+        );
 
         if (isset($validated['case_id'])) {
             $case = LegalCase::findOrFail($validated['case_id']);
@@ -96,12 +128,16 @@ class DocumentController extends Controller
             'status' => DocumentStatus::Queued,
         ]);
 
+        if ($labels->isNotEmpty()) {
+            $document->syncLabels($labels, $request->user());
+        }
+
         PlanLimits::increment($request->user(), 'documents_uploaded');
 
         ProcessDocumentUpload::dispatch($document)
             ->onQueue(config('saligan.documents.queue'));
 
-        return (new DocumentResource($document))->response()->setStatusCode(201);
+        return (new DocumentResource($document->load('labels')))->response()->setStatusCode(201);
     }
 
     /**
@@ -111,7 +147,38 @@ class DocumentController extends Controller
     {
         abort_unless($document->user_id === $request->user()->id, 403);
 
-        return new DocumentResource($document->loadCount('chunks'));
+        return new DocumentResource($document->load('labels')->loadCount('chunks'));
+    }
+
+    /**
+     * Rename a document and file it under case-file categories.
+     *
+     * Categories are replaced wholesale rather than merged: the picker sends
+     * the full set it is showing, so a category the user cleared has to come
+     * back off the document.
+     */
+    public function update(Request $request, Document $document): DocumentResource
+    {
+        abort_unless($document->user_id === $request->user()->id, 403);
+
+        $validated = $request->validate([
+            'title' => ['sometimes', 'string', 'max:255'],
+            'label_ids' => ['sometimes', 'array'],
+            'label_ids.*' => ['uuid'],
+        ]);
+
+        if (array_key_exists('title', $validated)) {
+            $document->update(['title' => $validated['title']]);
+        }
+
+        if (array_key_exists('label_ids', $validated)) {
+            $document->syncLabels(
+                Label::resolveForAssignment($request->user(), $validated['label_ids'], LabelKind::DocumentCategory),
+                $request->user(),
+            );
+        }
+
+        return new DocumentResource($document->load('labels')->loadCount('chunks'));
     }
 
     /**

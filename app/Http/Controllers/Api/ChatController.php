@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Conversation;
+use App\Models\Document;
 use App\Models\Todo;
 use App\Services\Chat\ChatService;
 use App\Support\ChatStatus;
@@ -43,16 +44,20 @@ class ChatController extends Controller
 
         $validated = $request->validate([
             'message' => ['required', 'string', 'max:8000'],
+            'attachment_ids' => ['array', 'max:10'],
+            'attachment_ids.*' => ['uuid'],
         ]);
 
         PlanLimits::consumeMessage($request->user());
 
         $message = $validated['message'];
 
+        $attachmentIds = $this->ownedAttachmentIds($request, $validated['attachment_ids'] ?? []);
+
         $isDraftingRequest = DraftingIntent::matches($message);
         $isIntakeSubmission = DraftingIntent::isIntakeSubmission($message);
 
-        $frames = $this->chatFrames($conversation, $message, $isDraftingRequest, $isIntakeSubmission);
+        $frames = $this->chatFrames($conversation, $message, $isDraftingRequest, $isIntakeSubmission, $attachmentIds);
 
         return response()->stream($this->streamEmitter($frames), 200, [
             'Content-Type' => 'text/event-stream',
@@ -60,6 +65,29 @@ class ChatController extends Controller
             'X-Accel-Buffering' => 'no',
             'Connection' => 'keep-alive',
         ]);
+    }
+
+    /**
+     * Keep only the attachment ids that belong to the requesting user, in the
+     * order they were sent. Anything else is dropped rather than rejected: a
+     * document deleted between upload and send should not fail the message.
+     *
+     * @param  array<int, string>  $ids
+     * @return array<int, string>
+     */
+    protected function ownedAttachmentIds(Request $request, array $ids): array
+    {
+        if ($ids === []) {
+            return [];
+        }
+
+        $owned = Document::query()
+            ->whereIn('id', $ids)
+            ->where('user_id', $request->user()->id)
+            ->pluck('id')
+            ->all();
+
+        return array_values(array_intersect($ids, $owned));
     }
 
     /**
@@ -101,9 +129,10 @@ class ChatController extends Controller
     /**
      * Generate the SSE frames for a chat message.
      *
+     * @param  array<int, string>  $attachmentIds
      * @return Generator<int, string>
      */
-    protected function chatFrames(Conversation $conversation, string $message, bool $isDraftingRequest, bool $isIntakeSubmission): Generator
+    protected function chatFrames(Conversation $conversation, string $message, bool $isDraftingRequest, bool $isIntakeSubmission, array $attachmentIds = []): Generator
     {
         // Status frames raised by the chat service (e.g. "checking sources")
         // cannot be yielded from inside its callback, so they are queued and
@@ -129,20 +158,25 @@ class ChatController extends Controller
         $draftStarted = false;
         $webSeen = [];
         $webIndex = 0;
+        // Derived once: it is the same for every frame of this turn.
+        $topic = ChatStatus::topic($message);
 
         try {
             $stream = $this->chatService->stream(
                 $conversation,
                 $message,
-                function (string $status, ?string $label = null) use (&$pending, $message): void {
+                function (string $status, ?string $label = null) use (&$pending, $message, $topic): void {
                     $pending[] = $this->sseFrame('status', [
                         'status' => $status,
                         // Statuses fired by the tools carry only the status
-                        // key, so the label is derived from the user's message
-                        // here — that keeps every status personalized.
+                        // key, so the label is derived here.
                         'label' => $label ?? ChatStatus::label($status, $message),
+                        // Sent on every frame so a client that joins late, or
+                        // drops one, still knows what is being worked on.
+                        'topic' => $topic,
                     ]);
                 },
+                $attachmentIds,
             );
 
             Log::info('Chat streaming started', [
@@ -150,16 +184,23 @@ class ChatController extends Controller
                 'message_length' => strlen($message),
             ]);
 
-            yield $emit('status', [
-                'status' => 'composing',
-                'label' => ChatStatus::label('composing', $message),
-            ]);
+            // "Composing" is deliberately NOT announced here. Retrieval runs
+            // first and reports itself, so claiming to compose before a single
+            // token exists put the steps in the wrong order — the user saw
+            // "Composing your answer", then "Checking legal sources", then
+            // "Composing" again. It is emitted on the first real delta below,
+            // which is the moment it becomes true.
+            $composingAnnounced = false;
 
             if ($buffering) {
                 // The document must wait for the intake form, so the
                 // client shows a "collecting facts" animation instead of
                 // any premature text the model may produce.
-                yield $emit('status', ['status' => 'collecting_facts']);
+                yield $emit('status', [
+                    'status' => 'collecting_facts',
+                    'label' => ChatStatus::label('collecting_facts', $message),
+                    'topic' => $topic,
+                ]);
             }
 
             foreach ($stream as $event) {
@@ -195,6 +236,19 @@ class ChatController extends Controller
                 }
 
                 if ($event instanceof TextDelta) {
+                    // The first token is the earliest honest moment to say the
+                    // answer is being written; before it, retrieval was still
+                    // the truthful current step.
+                    if (! $composingAnnounced) {
+                        $composingAnnounced = true;
+
+                        yield $emit('status', [
+                            'status' => 'composing',
+                            'label' => ChatStatus::label('composing', $message),
+                            'topic' => $topic,
+                        ]);
+                    }
+
                     $textLength += strlen($event->delta);
                     $lastText .= $event->delta;
 

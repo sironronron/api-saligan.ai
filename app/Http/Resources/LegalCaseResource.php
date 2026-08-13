@@ -25,6 +25,7 @@ class LegalCaseResource extends JsonResource
             'reference' => $this->reference,
             'priority' => $this->priority,
             'status' => $this->status,
+            'closed_at' => $this->closed_at,
             'description' => $this->description,
             'related_parties' => $this->related_parties ?? [],
             'due_date' => $this->due_date?->toDateString(),

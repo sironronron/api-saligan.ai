@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\LegalSourceCategory;
 use Database\Factories\LegalSourceFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
@@ -15,6 +16,7 @@ use Illuminate\Database\Eloquent\Relations\HasManyThrough;
     'base_domain',
     'seed_urls',
     'is_active',
+    'category',
 ])]
 class LegalSource extends Model
 {
@@ -33,6 +35,7 @@ class LegalSource extends Model
         return [
             'seed_urls' => 'array',
             'is_active' => 'boolean',
+            'category' => LegalSourceCategory::class,
         ];
     }
 

@@ -73,7 +73,7 @@ class RetrievalResult
                 $page = $chunk->crawledPage;
                 $source = $page?->legalSource;
 
-                $label = self::sanitizeLabel($page?->law_name ?: ($page?->gr_number ?: $source?->name ?: 'Legal source'));
+                $label = self::sanitizeLabel($page?->law_name ?: ($page?->gr_number ?: ($page?->title ?: ($page?->original_filename ?: ($source?->name ?: 'Legal source')))));
 
                 $meta = [];
                 if ($page?->gr_number) {

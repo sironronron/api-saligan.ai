@@ -38,6 +38,20 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
         return $this->instructions;
     }
 
+    /**
+     * Seconds a single generation step may take.
+     *
+     * Promptable::getTimeout() falls back to 60 when the agent declares none,
+     * and Guzzle enforces it as an idle timeout on the streamed body. A local
+     * model chewing through a full drafting prompt sends nothing for minutes,
+     * so the default killed the request before the first token — reported, via
+     * Guzzle's stream handler, as "Connection refused".
+     */
+    public function timeout(): int
+    {
+        return (int) config('saligan.chat.timeout', 300);
+    }
+
     public function messages(): iterable
     {
         return $this->messages;
@@ -67,7 +81,16 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
     public function providerOptions(Lab|string $provider): array
     {
         if ($provider === Lab::Ollama || $provider === 'ollama') {
-            return ['think' => false];
+            // num_ctx must be sent explicitly: Ollama's own default is 4096 and
+            // it truncates a longer prompt to the tail without reporting it, so
+            // the system prompt and the drafting template were being dropped
+            // from every request. `think` is hoisted to the request body by the
+            // gateway; num_ctx is passed through in `options`, where Ollama
+            // expects it.
+            return [
+                'think' => false,
+                'num_ctx' => (int) config('saligan.chat.ollama_num_ctx', 32768),
+            ];
         }
 
         if (($provider === Lab::Gemini || $provider === 'gemini') && $this->cachedContent !== null) {
@@ -103,12 +126,23 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
             $static['cache_control'] = ['type' => 'ephemeral', 'ttl' => $this->cacheTtl()];
         }
 
-        return [
+        $options = [
             'system' => [
                 $static,
                 ...(filled($this->instructions) ? [['type' => 'text', 'text' => $this->instructions]] : []),
             ],
         ];
+
+        // Effort is the largest latency lever on the request and was never set,
+        // so every answer ran at Sonnet 5's `high` default. Retrieval has
+        // already found the authorities by this point, so the model's job is to
+        // read and write rather than to search — a lower setting reaches the
+        // first token sooner without changing what it is working from.
+        if ($effort = config('saligan.chat.effort')) {
+            $options['output_config'] = ['effort' => $effort];
+        }
+
+        return $options;
     }
 
     /**

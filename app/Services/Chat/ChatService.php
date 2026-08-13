@@ -80,8 +80,9 @@ class ChatService
      * stream completes.
      *
      * @param  callable(string, ?string): void  $onStatus
+     * @param  array<int, string>  $attachmentIds  Documents the user attached to this message.
      */
-    public function stream(Conversation $conversation, string $question, ?callable $onStatus = null): StreamableAgentResponse
+    public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = []): StreamableAgentResponse
     {
         if ($onStatus !== null) {
             $onStatus('checking_sources', ChatStatus::label('checking_sources', $question));
@@ -93,6 +94,10 @@ class ChatService
             'conversation_id' => $conversation->id,
             'role' => MessageRole::User,
             'content' => $prompt,
+            // Recorded on the message so the files stay shown with the message
+            // that carried them. Retrieval is unaffected: the documents were
+            // already ingested and are found the ordinary way.
+            'metadata' => $attachmentIds === [] ? null : ['attachment_ids' => array_values($attachmentIds)],
         ]);
 
         $this->createdUserMessageId = $userMessage->id;

@@ -19,6 +19,8 @@ class Todo extends Model
         'priority',
         'due_hint',
         'due_date',
+        'deadline_reminded_at',
+        'deadline_reminded_due_date',
         'assignee',
         'order',
     ];
@@ -41,6 +43,8 @@ class Todo extends Model
     {
         return [
             'due_date' => 'date',
+            'deadline_reminded_at' => 'datetime',
+            'deadline_reminded_due_date' => 'date',
         ];
     }
 

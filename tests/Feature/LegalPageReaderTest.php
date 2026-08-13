@@ -1,6 +1,7 @@
 <?php
 
 use App\Enums\CrawlStatus;
+use App\Enums\LegalSourceCategory;
 use App\Jobs\CaptureCitedLegalPage;
 use App\Models\CrawledPage;
 use App\Models\LegalChunk;
@@ -14,6 +15,7 @@ beforeEach(function () {
 it('serves a crawled authority with its chunks in reading order', function () {
     $page = CrawledPage::factory()->for(LegalSource::factory())->create([
         'law_name' => 'RA No. 6657',
+        'category' => LegalSourceCategory::Law,
         'digest' => 'Nature: A statute establishing agrarian reform.',
         'crawl_status' => CrawlStatus::Ok,
     ]);
@@ -29,6 +31,8 @@ it('serves a crawled authority with its chunks in reading order', function () {
         ->assertOk();
 
     expect($response->json('data.law_name'))->toBe('RA No. 6657')
+        ->and($response->json('data.category'))->toBe('law')
+        ->and($response->json('data.kind'))->toBe('crawled')
         ->and($response->json('data.has_digest'))->toBeTrue()
         ->and($response->json('data.chunks.*.index'))->toBe([0, 1, 2])
         ->and($response->json('data.chunks.0.content'))->toBe('Section 2. Declaration of policy.');

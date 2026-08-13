@@ -32,6 +32,7 @@ class DatabaseSeeder extends Seeder
             SystemPromptSeeder::class,
             LegalSourceSeeder::class,
             TemplateSeeder::class,
+            LabelSeeder::class,
             PlansSeeder::class,
         ]);
 

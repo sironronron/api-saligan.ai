@@ -36,9 +36,56 @@ return [
         'provider' => env('AI_CHAT_PROVIDER', 'anthropic'),
         'ollama_model' => env('OLLAMA_CHAT_MODEL', 'qwen3.6:latest'),
         'ollama_model_alt' => env('OLLAMA_CHAT_MODEL_ALT', 'qwen3.5:latest'),
+
+        /*
+         * Context window requested from Ollama, in tokens.
+         *
+         * Ollama defaults num_ctx to 4096 and silently truncates anything
+         * longer, keeping only the TAIL of the prompt. A drafting turn sends
+         * roughly 23k tokens — persona and drafting rules, the uploaded
+         * template body and its placeholders, matter memory, then retrieved
+         * context — so at the default the model read about 2k tokens and every
+         * instruction that makes template drafting work was discarded before
+         * it ever saw them. It answered from the leftover tail and never
+         * called fill_template_fields, so no document was produced.
+         *
+         * Raise this and the whole prompt survives. The cost is KV-cache
+         * memory on the Ollama host and prompt-eval time, so it is tunable:
+         * lower it if the host runs out of VRAM, but never below the size of a
+         * drafting prompt or the truncation returns silently.
+         */
+        'ollama_num_ctx' => (int) env('OLLAMA_NUM_CTX', 32768),
+
+        /*
+         * Per-request timeout for a chat step, in seconds.
+         *
+         * laravel/ai falls back to 60s when the agent names no timeout, and
+         * Guzzle applies that as an IDLE timeout on the response stream. A
+         * local model reading a ~23k-token drafting prompt emits nothing at
+         * all while it works — measured at ~163s on the dev box — so the read
+         * expired long before the first token and surfaced as Guzzle's
+         * misleading "Connection refused for URI", with no reply persisted.
+         *
+         * Hosted providers answer in a few seconds and never approach this;
+         * it exists for slow local inference.
+         */
+        'timeout' => (int) env('AI_CHAT_TIMEOUT', 300),
         'gemini_model' => env('GEMINI_CHAT_MODEL', 'gemini-3.6-flash'),
         'openai_model' => env('OPENAI_CHAT_MODEL', 'gpt-4o'),
         'anthropic_model' => env('ANTHROPIC_CHAT_MODEL', 'claude-sonnet-5'),
+
+        /*
+         * How hard the model works before answering: low | medium | high |
+         * xhigh | max.
+         *
+         * Claude Sonnet 5 defaults to `high`, which was never set here and so
+         * was never chosen — every answer was paying for the most deliberate
+         * setting. Retrieval has already done the source-finding by the time
+         * the model runs, so `medium` returns the first token noticeably
+         * sooner while holding answer quality. Raise it if citation accuracy
+         * suffers; drop to `low` for a faster, chattier feel.
+         */
+        'effort' => env('ANTHROPIC_CHAT_EFFORT', 'medium'),
     ],
 
     /*
@@ -93,6 +140,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Deadline reminders
+    |--------------------------------------------------------------------------
+    |
+    | A nightly sweep emails the owner of each case or task whose due date has
+    | arrived or is about to. `lead_days` is how far ahead of the deadline a
+    | reminder starts going out; set it to 0 to disable reminders entirely.
+    |
+    */
+
+    'reminders' => [
+        'lead_days' => (int) env('DEADLINE_REMINDER_LEAD_DAYS', 3),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Document ingestion
     |--------------------------------------------------------------------------
     */
@@ -133,6 +195,33 @@ return [
         'ocr' => [
             'provider' => env('DOCUMENT_OCR_PROVIDER', 'gemini'),
             'model' => env('DOCUMENT_OCR_MODEL', env('GEMINI_CHAT_MODEL', 'gemini-3.6-flash')),
+        ],
+
+        /*
+        |--------------------------------------------------------------------------
+        | Case-file classification
+        |--------------------------------------------------------------------------
+        |
+        | After a document is ingested, a model reads the opening of it and
+        | files it under the case-file categories it belongs to. Classification
+        | is a suggestion, never a verdict: anything the model is not at least
+        | `min_confidence` sure of is left off, so the document surfaces in the
+        | Unfiled queue for a person to decide instead of being filed wrongly.
+        |
+        | A category a person chose is never overwritten. `model` is optional —
+        | left empty, each provider falls back to its own cheap default, since
+        | this is a short classification call and not a drafting one.
+        |
+        */
+
+        'classification' => [
+            'enabled' => (bool) env('DOCUMENT_CLASSIFICATION_ENABLED', true),
+            'provider' => env('DOCUMENT_CLASSIFICATION_PROVIDER', env('AI_CHAT_PROVIDER', 'anthropic')),
+            'model' => env('DOCUMENT_CLASSIFICATION_MODEL'),
+            'min_confidence' => (float) env('DOCUMENT_CLASSIFICATION_MIN_CONFIDENCE', 0.6),
+            'max_categories' => (int) env('DOCUMENT_CLASSIFICATION_MAX_CATEGORIES', 3),
+            'excerpt_characters' => (int) env('DOCUMENT_CLASSIFICATION_EXCERPT_CHARS', 6000),
+            'timeout' => (int) env('DOCUMENT_CLASSIFICATION_TIMEOUT', 90),
         ],
     ],
 

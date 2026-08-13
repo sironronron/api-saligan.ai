@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\ChatProvider;
+use App\Models\Concerns\HasLabels;
 use Database\Factories\ConversationFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
@@ -23,6 +24,7 @@ class Conversation extends Model
     /** @use HasFactory<ConversationFactory> */
     use HasFactory;
 
+    use HasLabels;
     use HasUuids;
 
     /**

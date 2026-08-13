@@ -187,6 +187,62 @@ it('updates case metadata', function () {
         ->assertJsonPath('data.status', 'in_progress');
 });
 
+it('updates a case that resubmits its own reference', function () {
+    $case = LegalCase::factory()->for($this->user)->create(['reference' => 'CASE-2026-0007']);
+
+    $this->signInAs($this->user)
+        ->patchJson("/api/cases/{$case->id}", [
+            'title' => 'Renamed case',
+            'status' => 'in_progress',
+            'reference' => 'CASE-2026-0007',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.reference', 'CASE-2026-0007')
+        ->assertJsonPath('data.title', 'Renamed case');
+});
+
+it('still rejects a reference already taken by another case', function () {
+    LegalCase::factory()->for($this->user)->create(['reference' => 'CASE-2026-0008']);
+    $case = LegalCase::factory()->for($this->user)->create(['reference' => 'CASE-2026-0009']);
+
+    $this->signInAs($this->user)
+        ->patchJson("/api/cases/{$case->id}", ['reference' => 'CASE-2026-0008'])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['reference']);
+});
+
+it('updates only the status through the status endpoint', function () {
+    $case = LegalCase::factory()->for($this->user)->create([
+        'status' => 'open',
+        'title' => 'Untouched title',
+    ]);
+
+    $this->signInAs($this->user)
+        ->patchJson("/api/cases/{$case->id}/status", ['status' => 'on_hold'])
+        ->assertOk()
+        ->assertJsonPath('data.status', 'on_hold')
+        ->assertJsonPath('data.title', 'Untouched title');
+
+    expect($case->fresh()->status)->toBe('on_hold');
+});
+
+it('rejects an unknown status', function () {
+    $case = LegalCase::factory()->for($this->user)->create();
+
+    $this->signInAs($this->user)
+        ->patchJson("/api/cases/{$case->id}/status", ['status' => 'archived'])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['status']);
+});
+
+it('refuses a status change on another users case', function () {
+    $case = LegalCase::factory()->for(User::factory())->create();
+
+    $this->signInAs($this->user)
+        ->patchJson("/api/cases/{$case->id}/status", ['status' => 'closed'])
+        ->assertForbidden();
+});
+
 it('archives, restores, and permanently deletes a case', function () {
     $case = LegalCase::factory()->for($this->user)->create();
 

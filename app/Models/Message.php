@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Str;
 
 #[Fillable([
     'id',
@@ -53,5 +54,21 @@ class Message extends Model
     public function conversation(): BelongsTo
     {
         return $this->belongsTo(Conversation::class);
+    }
+
+    /**
+     * A short title for a drafted document, taken from its first non-empty line.
+     */
+    public function draftTitle(): string
+    {
+        foreach (preg_split('/\R/', (string) $this->content) ?: [] as $line) {
+            $line = trim($line, " \t#*-");
+
+            if ($line !== '') {
+                return Str::limit($line, 80);
+            }
+        }
+
+        return $this->conversation?->title ?? 'Generated document';
     }
 }
