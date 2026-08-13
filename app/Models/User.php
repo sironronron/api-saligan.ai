@@ -34,6 +34,7 @@ use Laravel\Sanctum\HasApiTokens;
     'terms_accepted_at',
     'terms_version',
     'marketing_opt_in',
+    'last_used_at',
 ])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
@@ -68,6 +69,7 @@ class User extends Authenticatable
             'tour_completed_at' => 'datetime',
             'terms_accepted_at' => 'datetime',
             'marketing_opt_in' => 'boolean',
+            'last_used_at' => 'datetime',
         ];
     }
 
@@ -79,6 +81,16 @@ class User extends Authenticatable
     public function hasKycProfile(): bool
     {
         return $this->kyc_completed_at !== null;
+    }
+
+    /**
+     * Record that the user just used the app. The login screen shows the
+     * previous value ("last used 3 days ago"), so this must never be cleared
+     * by anything other than an actual visit.
+     */
+    public function markUsed(): void
+    {
+        $this->forceFill(['last_used_at' => now()])->save();
     }
 
     /**

@@ -32,13 +32,19 @@ Route::get('/plans', [PlanController::class, 'index']);
 Route::post('/demo-requests', [DemoRequestController::class, 'store'])
     ->middleware('throttle:demo-request');
 
+// Looked up by the login screen (pre-auth) to greet a returning user with
+// their last-used time. Throttled because it reveals whether an email ever
+// used the app, which an attacker could otherwise enumerate.
+Route::get('/auth/last-used', [AuthController::class, 'lastUsed'])
+    ->middleware('throttle:last-used-lookup');
+
 // The published Terms of Service / Privacy Policy is public content; the
 // /legal/terms page links it from the register form, which logged-out
 // visitors can open. Acceptance and status are per-user and stay protected.
 Route::get('/terms/document', [TermsController::class, 'document']);
 
-Route::middleware('auth:supabase')->group(function (): void {
-    Route::get('/user', [AuthController::class, 'user']);
+Route::middleware(['auth:supabase', 'track_last_used'])->group(function (): void {
+    Route::get('/user', [AuthController::class, 'user'])->name('user');
 
     Route::get('/terms/status', [TermsController::class, 'status']);
     Route::post('/terms/accept', [TermsController::class, 'accept']);

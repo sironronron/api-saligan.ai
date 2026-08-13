@@ -50,5 +50,11 @@ class AppServiceProvider extends ServiceProvider
                 Limit::perDay(3)->by('demo-request.email.'.strtolower($request->input('email', ''))),
             ];
         });
+
+        // The login screen's last-used lookup. Tight per-IP limit so the
+        // endpoint cannot be walked as an account-enumeration oracle.
+        RateLimiter::for('last-used-lookup', function (Request $request) {
+            return Limit::perMinute(10)->by('last-used.ip.'.$request->ip());
+        });
     }
 }
