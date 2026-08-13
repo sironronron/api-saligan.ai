@@ -34,6 +34,7 @@ class UserResource extends JsonResource
             'kyc_document_types' => $this->kyc_document_types,
             'kyc_experience_level' => $this->kyc_experience_level,
             'kyc_completed_at' => $this->kyc_completed_at,
+            'tour_completed_at' => $this->tour_completed_at,
             'terms_accepted_at' => $this->terms_accepted_at,
             'terms_version' => $this->terms_version,
             'terms_accepted' => $this->hasAcceptedTerms(),

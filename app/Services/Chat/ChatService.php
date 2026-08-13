@@ -9,6 +9,7 @@ use App\Ai\Tools\RequestIntakeFormTool;
 use App\Enums\ChatProvider;
 use App\Enums\DocumentStatus;
 use App\Enums\MessageRole;
+use App\Jobs\CaptureCitedLegalPage;
 use App\Models\Conversation;
 use App\Models\LegalCase;
 use App\Models\Message;
@@ -1739,6 +1740,24 @@ PROMPT;
     }
 
     /**
+     * Queue a capture for each newly cited official page.
+     *
+     * @param  array<int, array<string, mixed>>  $webCitations
+     */
+    protected function captureCitedPages(array $webCitations): void
+    {
+        foreach ($webCitations as $citation) {
+            $url = $citation['url'] ?? null;
+
+            if (! is_string($url) || $url === '' || ! CaptureCitedLegalPage::shouldCapture($url)) {
+                continue;
+            }
+
+            CaptureCitedLegalPage::dispatch($url)->onQueue(config('saligan.crawler.queue'));
+        }
+    }
+
+    /**
      * Remove [Web N] markers that point past the web citations the provider
      * actually recorded. The model numbers web results in the order its search
      * tool returned them, while the UI numbers the cards it was given, so a
@@ -1852,6 +1871,11 @@ PROMPT;
         }
 
         $webCitations = $this->webCitations($response);
+
+        // Pull the authorities this answer cited from the web into the shared
+        // knowledge base, so the next person to cite the same decision reads
+        // it in-app with a digest instead of being sent to the source site.
+        $this->captureCitedPages($webCitations);
 
         $text = $this->dropUnresolvableWebMarkers($text, count($webCitations));
 

@@ -30,6 +30,7 @@ use Laravel\Sanctum\HasApiTokens;
     'kyc_document_types',
     'kyc_experience_level',
     'kyc_completed_at',
+    'tour_completed_at',
     'terms_accepted_at',
     'terms_version',
     'marketing_opt_in',
@@ -64,6 +65,7 @@ class User extends Authenticatable
             'password' => 'hashed',
             'is_admin' => 'boolean',
             'kyc_completed_at' => 'datetime',
+            'tour_completed_at' => 'datetime',
             'terms_accepted_at' => 'datetime',
             'marketing_opt_in' => 'boolean',
         ];

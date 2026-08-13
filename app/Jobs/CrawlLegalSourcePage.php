@@ -8,6 +8,7 @@ use App\Models\LegalChunk;
 use App\Models\LegalSource;
 use App\Services\Ai\EmbeddingService;
 use App\Services\Crawler\CrawlerAdapterFactory;
+use App\Services\Crawler\LegalDigestService;
 use App\Services\Crawler\RobotsTxt;
 use App\Services\Documents\DocumentChunker;
 use App\Support\CacheLock;
@@ -121,6 +122,11 @@ class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
 
             $this->reindexChunks($page, $parsed->text, $embeddings);
 
+            // Written after the text is safely stored: a digest is a
+            // convenience on top of the authority, never a precondition for
+            // having it.
+            $this->writeDigest($page, $parsed->text);
+
             $this->discoverLinks($parsed->links);
 
             $this->throttle();
@@ -136,6 +142,24 @@ class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
                 $this->fail($exception);
             }
         }
+    }
+
+    /**
+     * Generate and store the reader digest for a freshly crawled page.
+     * Failures are swallowed by the service, so this never costs the crawl.
+     */
+    private function writeDigest(CrawledPage $page, string $text): void
+    {
+        $digest = app(LegalDigestService::class)->generate($text, $page->title);
+
+        if ($digest === null) {
+            return;
+        }
+
+        $page->update([
+            'digest' => $digest,
+            'digest_generated_at' => now(),
+        ]);
     }
 
     private function reindexChunks(CrawledPage $page, string $text, EmbeddingService $embeddings): void

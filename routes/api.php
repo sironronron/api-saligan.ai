@@ -13,12 +13,15 @@ use App\Http\Controllers\Api\FeedbackController;
 use App\Http\Controllers\Api\GeneratedDocumentController;
 use App\Http\Controllers\Api\KycController;
 use App\Http\Controllers\Api\LegalCaseController;
+use App\Http\Controllers\Api\LegalPageController;
 use App\Http\Controllers\Api\OrganizationController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\TemplateController;
 use App\Http\Controllers\Api\TermsController;
 use App\Http\Controllers\Api\TodoController;
+use App\Http\Controllers\Api\TourController;
+use App\Http\Controllers\Api\TrialCodeController;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/subscriptions/webhook', [SubscriptionController::class, 'webhook']);
@@ -43,6 +46,17 @@ Route::middleware('auth:supabase')->group(function (): void {
     Route::get('/kyc', [KycController::class, 'show']);
     Route::put('/kyc', [KycController::class, 'store']);
     Route::delete('/kyc', [KycController::class, 'destroy']);
+
+    Route::post('/tour/complete', [TourController::class, 'complete']);
+
+    Route::get('/legal-pages/resolve', [LegalPageController::class, 'resolve']);
+    Route::get('/legal-pages/{crawledPage}', [LegalPageController::class, 'show']);
+
+    // Trial redemption sits outside the active_subscription group: the whole
+    // point is to be reachable by an account that has no subscription yet.
+    Route::get('/trial/code', [TrialCodeController::class, 'show']);
+    Route::post('/trial/redeem', [TrialCodeController::class, 'store'])
+        ->middleware('throttle:6,1');
 
     Route::get('/subscription', [SubscriptionController::class, 'show']);
     Route::post('/subscription', [SubscriptionController::class, 'store']);

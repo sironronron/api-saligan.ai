@@ -13,3 +13,11 @@ Schedule::command('crawl:legal-sources')
     ->when(fn () => config('saligan.crawler.enabled'))
     ->withoutOverlapping()
     ->onOneServer();
+
+// Trials also end on message allowance, which is caught inline as the messages
+// are spent. This sweep only covers the calendar side, so a daily tick is
+// enough — a trial cannot cross a day boundary more than once a day.
+Schedule::command('trials:warn')
+    ->dailyAt('09:00')
+    ->withoutOverlapping()
+    ->onOneServer();

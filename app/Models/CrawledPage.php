@@ -20,6 +20,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'law_name',
     'gr_number',
     'promulgation_date',
+    'digest',
+    'digest_generated_at',
     'crawl_status',
     'last_error',
     'last_crawled_at',
@@ -42,6 +44,7 @@ class CrawledPage extends Model
             'promulgation_date' => 'date',
             'crawl_status' => CrawlStatus::class,
             'last_crawled_at' => 'datetime',
+            'digest_generated_at' => 'datetime',
         ];
     }
 

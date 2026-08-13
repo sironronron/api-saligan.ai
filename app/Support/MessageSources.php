@@ -44,6 +44,10 @@ final class MessageSources
         // same grouping the prompt's context block uses, so citation tokens
         // assigned here match the tokens the model was given.
         $legalUnits = [];
+        // Every retrieved chunk index per page, not just the first. The reader
+        // highlights exactly the passages the answer drew on, and a page is
+        // routinely cited through several of them.
+        $legalChunkIndexes = [];
 
         foreach ($message->cited_legal_chunk_ids ?? [] as $chunkId) {
             $chunk = self::resolve(LegalChunk::class, $chunkId);
@@ -55,6 +59,7 @@ final class MessageSources
             $identity = (string) ($chunk->crawled_page_id ?? $chunk->id);
 
             $legalUnits[$identity] ??= $chunk;
+            $legalChunkIndexes[$identity][] = (int) $chunk->chunk_index;
         }
 
         $docUnits = [];
@@ -90,7 +95,7 @@ final class MessageSources
                 }
             }
 
-            $sources[] = self::legalSource($chunk, $index, $tokens[$identity]);
+            $sources[] = self::legalSource($chunk, $index, $tokens[$identity], $legalChunkIndexes[$identity] ?? []);
         }
 
         $index = 0;
@@ -236,9 +241,14 @@ final class MessageSources
     /**
      * @return array<string, mixed>
      */
-    protected static function legalSource(LegalChunk $chunk, int $index, string $token): array
+    /**
+     * @param  array<int, int>  $citedChunkIndexes  Chunks of this page the answer drew on.
+     */
+    protected static function legalSource(LegalChunk $chunk, int $index, string $token, array $citedChunkIndexes = []): array
     {
         $page = $chunk->crawledPage;
+
+        sort($citedChunkIndexes);
 
         return [
             'type' => 'legal',
@@ -246,6 +256,12 @@ final class MessageSources
             'token' => $token,
             'id' => $chunk->id,
             'chunk_index' => $chunk->chunk_index,
+            'cited_chunk_indexes' => array_values(array_unique($citedChunkIndexes)),
+            // Present when the authority is in the knowledge base, which is
+            // what lets the citation open in the reader instead of the
+            // original site.
+            'page_id' => $page?->id,
+            'has_digest' => filled($page?->digest),
             'label' => $page?->law_name ?: ($page?->gr_number ?: $page?->legalSource?->name ?: 'Legal source'),
             'title' => $page?->title,
             'law_name' => $page?->law_name,

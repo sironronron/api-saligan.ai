@@ -77,6 +77,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Trials
+    |--------------------------------------------------------------------------
+    |
+    | A code-granted trial ends on whichever runs out first: the days on the
+    | code, or the plan's message allowance counted across the organization.
+    | The thresholds below decide when the single warning email goes out.
+    |
+    */
+
+    'trials' => [
+        'warn_days_remaining' => (int) env('TRIAL_WARN_DAYS', 3),
+        'warn_messages_remaining' => (int) env('TRIAL_WARN_MESSAGES', 10),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Document ingestion
     |--------------------------------------------------------------------------
     */
@@ -135,6 +151,16 @@ return [
         'max_depth' => (int) env('LEGAL_CRAWLER_MAX_DEPTH', 2),
         'max_links_per_page' => (int) env('LEGAL_CRAWLER_MAX_LINKS_PER_PAGE', 25),
         'max_pages_per_run' => (int) env('LEGAL_CRAWLER_MAX_PAGES_PER_RUN', 500),
+
+        /*
+         * The plain-language digest written for each crawled authority. Set
+         * the provider to "none" to skip digesting entirely — the reader falls
+         * back to full text, so this only costs the summary at the top.
+         */
+        'digest' => [
+            'provider' => env('LEGAL_DIGEST_PROVIDER', 'gemini'),
+            'model' => env('LEGAL_DIGEST_MODEL', env('GEMINI_CHAT_MODEL', 'gemini-3.6-flash')),
+        ],
     ],
 
     /*

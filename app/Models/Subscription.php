@@ -24,6 +24,9 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'price_per_seat',
     'current_period_start',
     'current_period_end',
+    'trial_ends_at',
+    'trial_code_id',
+    'trial_warned_at',
     'cancelled_at',
 ])]
 class Subscription extends Model
@@ -40,6 +43,9 @@ class Subscription extends Model
     public const STATUS_INCOMPLETE_CANCELLED = 'incomplete_cancelled';
 
     public const STATUS_ACTIVE = 'active';
+
+    /** A code-granted free trial. Grants access until `trial_ends_at`. */
+    public const STATUS_TRIALING = 'trialing';
 
     public const STATUS_PAST_DUE = 'past_due';
 
@@ -59,6 +65,8 @@ class Subscription extends Model
         return [
             'current_period_start' => 'date',
             'current_period_end' => 'date',
+            'trial_ends_at' => 'datetime',
+            'trial_warned_at' => 'datetime',
             'cancelled_at' => 'datetime',
             'seats_purchased' => 'integer',
             'price_per_seat' => 'integer',
@@ -91,10 +99,48 @@ class Subscription extends Model
 
     /**
      * Whether the subscription currently grants full access.
+     *
+     * A trial counts, but only until it lapses — the row is left in place once
+     * it does, so the user keeps their organization and history and simply
+     * loses access until they subscribe.
      */
     public function isActive(): bool
     {
-        return $this->status === self::STATUS_ACTIVE;
+        if ($this->status === self::STATUS_ACTIVE) {
+            return true;
+        }
+
+        return $this->onTrial();
+    }
+
+    /**
+     * Whether this is a trial that has not yet lapsed.
+     */
+    public function onTrial(): bool
+    {
+        return $this->status === self::STATUS_TRIALING
+            && $this->trial_ends_at !== null
+            && $this->trial_ends_at->isFuture();
+    }
+
+    /**
+     * Whole days left on the trial, floored at zero. Null when not a trial.
+     */
+    public function trialDaysRemaining(): ?int
+    {
+        if ($this->status !== self::STATUS_TRIALING || $this->trial_ends_at === null) {
+            return null;
+        }
+
+        return max(0, (int) ceil(now()->diffInDays($this->trial_ends_at, false)));
+    }
+
+    /**
+     * The code-granted trial this subscription came from, if any.
+     */
+    public function trialCode(): BelongsTo
+    {
+        return $this->belongsTo(TrialCode::class);
     }
 
     /**
