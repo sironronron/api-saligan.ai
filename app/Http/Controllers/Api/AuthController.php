@@ -36,7 +36,13 @@ class AuthController extends Controller
 
         $user = User::query()->where('email', $email)->first();
 
+        // `exists` lets the sign-in screen refuse to continue for an email it
+        // does not recognize, which necessarily reveals whether an account is
+        // registered. The route is throttled (see routes/api.php) so probing
+        // is slow, which keeps that disclosure usable without making
+        // enumeration trivial.
         return response()->json([
+            'exists' => $user !== null,
             'last_used_at' => $user?->last_used_at,
         ]);
     }

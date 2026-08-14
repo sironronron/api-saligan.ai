@@ -349,6 +349,47 @@ it('honours an explicit disposition override', function () {
         ->assertHeaderContains('Content-Disposition', 'attachment');
 });
 
+it('never serves a document under the Content-Type its uploader claimed', function () {
+    Storage::fake('local');
+
+    // `mime_type` holds whatever the browser announced at upload time. If that
+    // reached the response, an uploader could pick text/html for a file on an
+    // allowed extension and have the API render script in its own origin.
+    $document = Document::factory()->for($this->user)->create([
+        'storage_path' => 'documents/notes.txt',
+        'original_filename' => 'notes.txt',
+        'mime_type' => 'text/html',
+    ]);
+
+    Storage::put('documents/notes.txt', '<script>alert(document.domain)</script>');
+
+    $this->signInAs($this->user)
+        ->getJson("/api/documents/{$document->id}/file")
+        ->assertOk()
+        ->assertHeader('Content-Type', 'text/plain; charset=UTF-8')
+        ->assertHeader('X-Content-Type-Options', 'nosniff');
+});
+
+it('refuses to serve an unrecognised file type inline on request', function () {
+    Storage::fake('local');
+
+    $document = Document::factory()->for($this->user)->create([
+        'storage_path' => 'documents/payload.bin',
+        'original_filename' => 'payload.bin',
+        'mime_type' => 'text/html',
+    ]);
+
+    Storage::put('documents/payload.bin', '<script>alert(1)</script>');
+
+    // `disposition=inline` may pick between valid renderings; it may not talk
+    // the API into rendering something it would otherwise hand over as a file.
+    $this->signInAs($this->user)
+        ->getJson("/api/documents/{$document->id}/file?disposition=inline")
+        ->assertOk()
+        ->assertHeader('Content-Type', 'application/octet-stream')
+        ->assertHeaderContains('Content-Disposition', 'attachment');
+});
+
 it('forbids serving another user document', function () {
     Storage::fake('local');
 

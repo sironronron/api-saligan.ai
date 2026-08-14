@@ -84,15 +84,27 @@ class LegalDocumentController extends Controller
         abort_unless($crawledPage->isUploaded(), 404);
         abort_unless($crawledPage->storage_path !== null && Storage::disk('local')->exists($crawledPage->storage_path), 404, 'The file is no longer available.');
 
+        // Mapped from the stored extension rather than taken from `mime_type`,
+        // which is whatever the uploading client claimed. Serving that back
+        // verbatim and inline lets an upload choose the Content-Type it renders
+        // under in the admin's own origin.
+        $mimeType = match (strtolower(pathinfo((string) $crawledPage->storage_path, PATHINFO_EXTENSION))) {
+            'pdf' => 'application/pdf',
+            'txt' => 'text/plain',
+            'md' => 'text/markdown',
+            'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            default => 'application/octet-stream',
+        };
+
         return Storage::disk('local')->response(
             $crawledPage->storage_path,
             $crawledPage->original_filename,
             [
-                'Content-Type' => $crawledPage->mime_type ?: 'application/octet-stream',
+                'Content-Type' => $mimeType,
                 'Cache-Control' => 'private, no-store',
                 'X-Content-Type-Options' => 'nosniff',
             ],
-            'inline',
+            $mimeType === 'application/octet-stream' ? 'attachment' : 'inline',
         );
     }
 

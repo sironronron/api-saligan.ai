@@ -15,6 +15,15 @@ final class DraftingIntent
     public const NEED_INFO_MARKER = '[[NEED_INFO]]';
 
     /**
+     * Matches a standalone TODO block marker line. The canonical form is
+     * [[TODO_START]] / [[TODO_END]], but the model occasionally bolds it
+     * ("**[TODO_START]**"), drops to single brackets ("[TODO_START]"), or
+     * prefixes it with a list dash ("-[TODO_END]"), so all of those are
+     * recognized rather than silently ignored.
+     */
+    public const TODO_MARKER_PATTERN = '/^[\s*_\-–—~]*\[{1,2}TODO_(START|END)\]{1,2}[\s*_\-–—~]*$/i';
+
+    /**
      * Canonical intake field definitions. Each key is the single source of
      * truth for a fact's human-readable label, input type, and optional
      * grouping or conditional visibility. Bracket placeholders that match a
@@ -374,6 +383,40 @@ final class DraftingIntent
     }
 
     /**
+     * Recognize a TODO block marker on its own line. The canonical form is
+     * [[TODO_START]] / [[TODO_END]], but the model occasionally wraps the
+     * marker in markdown bold ("**[TODO_START]**"), drops to single brackets
+     * ("[TODO_START]"), or prefixes it with a list dash ("-[TODO_END]"), so
+     * all of those forms are matched. Returns 'start', 'end', or null.
+     */
+    private static function todoMarker(string $line): ?string
+    {
+        if (preg_match(self::TODO_MARKER_PATTERN, trim($line), $matches) !== 1) {
+            return null;
+        }
+
+        return strtolower($matches[1]);
+    }
+
+    /**
+     * Whether the reply opens a TODO block, in any of the forms the model
+     * drifts into. Used to decide whether to fall back to server-side todo
+     * creation when the model wrote the checklist but skipped create_todo.
+     * Only the markers count here — a bare "Next Steps" heading appears in
+     * ordinary chat replies too and must not spawn tasks on its own.
+     */
+    public static function hasTodoBlock(string $text): bool
+    {
+        foreach (preg_split('/\R/', $text) ?: [] as $line) {
+            if (self::todoMarker($line) !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Extract the items under a next-steps heading. Handles numbered,
      * bulleted, bold-led ("**Label**: detail"), and plain label-detail
      * ("Label: detail") items, across common heading wordings ("Next Steps",
@@ -390,13 +433,13 @@ final class DraftingIntent
         foreach ($lines as $line) {
             $trimmed = trim($line);
 
-            if ($trimmed === '[[TODO_START]]') {
+            if (self::todoMarker($trimmed) === 'start') {
                 $inSection = true;
 
                 continue;
             }
 
-            if ($trimmed === '[[TODO_END]]') {
+            if (self::todoMarker($trimmed) === 'end') {
                 break;
             }
 

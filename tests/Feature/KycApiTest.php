@@ -157,3 +157,82 @@ it('requires authentication for the kyc endpoints', function () {
     ])->assertStatus(401);
     $this->deleteJson('/api/kyc')->assertStatus(401);
 });
+
+it('saves several roles and primary uses as a comma-separated list', function () {
+    $user = User::factory()->create();
+
+    $this->signInAs($user)
+        ->putJson('/api/kyc', [
+            'kyc_role' => [UserProfile::ROLE_LAWYER, UserProfile::ROLE_NOTARY_PUBLIC],
+            'kyc_use_case' => [UserProfile::USE_CASE_CLIENT_WORK, UserProfile::USE_CASE_LEGAL_RESEARCH],
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.kyc_role', UserProfile::ROLE_LAWYER.','.UserProfile::ROLE_NOTARY_PUBLIC)
+        ->assertJsonPath('data.kyc_use_case', UserProfile::USE_CASE_CLIENT_WORK.','.UserProfile::USE_CASE_LEGAL_RESEARCH);
+});
+
+it('keeps the free-text answer when other is one of several roles', function () {
+    $user = User::factory()->create();
+
+    $this->signInAs($user)
+        ->putJson('/api/kyc', [
+            'kyc_role' => [UserProfile::ROLE_FARMER, UserProfile::ROLE_OTHER],
+            'kyc_role_other' => 'Cooperative officer',
+            'kyc_use_case' => [UserProfile::USE_CASE_AGRARIAN_LAND],
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.kyc_role_other', 'Cooperative officer');
+});
+
+it('rejects more selections than the cap allows', function () {
+    $user = User::factory()->create();
+
+    $this->signInAs($user)
+        ->putJson('/api/kyc', [
+            'kyc_role' => [
+                UserProfile::ROLE_LAWYER,
+                UserProfile::ROLE_NOTARY_PUBLIC,
+                UserProfile::ROLE_PARALEGAL,
+                UserProfile::ROLE_BUSINESS_OWNER,
+            ],
+            'kyc_use_case' => [UserProfile::USE_CASE_CLIENT_WORK],
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('kyc_role');
+});
+
+it('does not let a repeated key eat into the selection cap', function () {
+    $user = User::factory()->create();
+
+    $this->signInAs($user)
+        ->putJson('/api/kyc', [
+            'kyc_role' => [UserProfile::ROLE_LAWYER, UserProfile::ROLE_LAWYER, UserProfile::ROLE_LAWYER, UserProfile::ROLE_LAWYER],
+            'kyc_use_case' => [UserProfile::USE_CASE_CLIENT_WORK],
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.kyc_role', UserProfile::ROLE_LAWYER);
+});
+
+it('rejects an empty selection', function () {
+    $user = User::factory()->create();
+
+    $this->signInAs($user)
+        ->putJson('/api/kyc', [
+            'kyc_role' => [],
+            'kyc_use_case' => [UserProfile::USE_CASE_CLIENT_WORK],
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('kyc_role');
+});
+
+it('rejects an unknown key among valid ones', function () {
+    $user = User::factory()->create();
+
+    $this->signInAs($user)
+        ->putJson('/api/kyc', [
+            'kyc_role' => [UserProfile::ROLE_LAWYER, 'supreme-court-justice'],
+            'kyc_use_case' => [UserProfile::USE_CASE_CLIENT_WORK],
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('kyc_role');
+});

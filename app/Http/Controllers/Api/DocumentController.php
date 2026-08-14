@@ -6,15 +6,19 @@ use App\Enums\DocumentStatus;
 use App\Enums\LabelKind;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\DocumentResource;
+use App\Http\Resources\LabelResource;
 use App\Jobs\ProcessDocumentUpload;
 use App\Models\Document;
+use App\Models\DocumentChunk;
 use App\Models\Label;
 use App\Models\LegalCase;
+use App\Services\Crawler\LegalDigestService;
 use App\Services\Documents\DocumentEncryptor;
 use App\Support\PlanLimits;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -202,6 +206,84 @@ class DocumentController extends Controller
     }
 
     /**
+     * The extracted text of an uploaded document, for reading a citation in
+     * place.
+     *
+     * The chunks double as paragraphs here for the same reason they do on
+     * crawled authorities: they are the units retrieval cites, so returning
+     * them with their indices lets the citation reader highlight exactly the
+     * passage an answer relied on instead of approximating it with a search.
+     */
+    public function content(Request $request, Document $document): JsonResponse
+    {
+        abort_unless($document->user_id === $request->user()->id, 403);
+
+        $chunks = $document->chunks()
+            ->orderBy('chunk_index')
+            ->get(['id', 'chunk_index', 'content']);
+
+        $this->ensureDigest($document, $chunks->pluck('content')->implode("\n\n"));
+
+        $document->loadMissing('labels');
+
+        return response()->json([
+            'data' => [
+                'id' => $document->id,
+                'title' => $document->title,
+                'original_filename' => $document->original_filename,
+                'mime_type' => $document->mime_type,
+                'status' => $document->status->value,
+                'digest' => $document->digest,
+                // Absent when the document was uploaded before digests existed,
+                // or when the extracted text was too fragmentary to digest. The
+                // reader shows the full text either way.
+                'has_digest' => filled($document->digest),
+                'categories' => LabelResource::collection($document->labels),
+                'uploaded_at' => $document->created_at,
+                'chunks' => $chunks->map(fn (DocumentChunk $chunk) => [
+                    'id' => $chunk->id,
+                    'index' => $chunk->chunk_index,
+                    'content' => $chunk->content,
+                ]),
+            ],
+        ]);
+    }
+
+    /**
+     * Digest a document the first time someone reads a citation to it.
+     *
+     * Digesting at ingestion would put a model call behind every upload,
+     * including the many that are never cited; doing it on first read spends
+     * that only on documents the answer actually leaned on. The lock stops two
+     * readers opening the same citation at once from both paying for it.
+     */
+    protected function ensureDigest(Document $document, string $text): void
+    {
+        if (filled($document->digest) || trim($text) === '') {
+            return;
+        }
+
+        $lock = Cache::lock('document-digest:'.$document->id, 60);
+
+        if (! $lock->get()) {
+            return;
+        }
+
+        try {
+            $digest = app(LegalDigestService::class)->generate($text, $document->title);
+
+            if ($digest !== null) {
+                $document->forceFill([
+                    'digest' => $digest,
+                    'digest_generated_at' => now(),
+                ])->save();
+            }
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
      * Serve the stored file to its owner. PDFs, images, and plain-text files
      * are served inline so they can be previewed in the browser; everything
      * else is served as an attachment. Clients may force either disposition
@@ -219,9 +301,21 @@ class DocumentController extends Controller
             abort(404, 'The file is no longer available.');
         }
 
-        $mimeType = $document->mime_type ?: 'application/octet-stream';
+        // Derived from the stored extension, never from `mime_type`: that column
+        // holds the browser-supplied type from upload time, so honouring it here
+        // would let an uploader pick the Content-Type their file is served
+        // under — `text/html` on an allowed extension, rendered in the app's own
+        // origin. The extension is trustworthy because upload validation checks
+        // it against the file's real contents.
+        $mimeType = $this->safeMimeType($document->storage_path);
 
         $disposition = $validated['disposition'] ?? $this->defaultDisposition($mimeType);
+
+        // A caller may force a download, but never force something viewable
+        // that the type does not support.
+        if ($disposition === 'inline' && ! $this->isViewable($mimeType)) {
+            $disposition = 'attachment';
+        }
 
         if ($this->encryptor->isEncrypted($document->storage_path)) {
             return $this->streamDecryptedFile(
@@ -250,9 +344,15 @@ class DocumentController extends Controller
      */
     protected function streamDecryptedFile(string $storagePath, string $filename, string $mimeType, string $disposition): StreamedResponse
     {
+        // Opened and integrity-checked here rather than inside the callback:
+        // once the callback runs the 200 is already on the wire, so a file that
+        // fails its check would reach the user as a truncated download instead
+        // of an error.
+        $chunks = $this->encryptor->decryptStream($storagePath);
+
         return response()->streamDownload(
-            function () use ($storagePath): void {
-                foreach ($this->encryptor->decryptStream($storagePath) as $chunk) {
+            function () use ($chunks): void {
+                foreach ($chunks as $chunk) {
                     echo $chunk;
                 }
             },
@@ -278,6 +378,28 @@ class DocumentController extends Controller
         $document->delete();
 
         return response()->json(null, 204);
+    }
+
+    /**
+     * The Content-Type a stored file may be served under, mapped from its
+     * extension. Anything not on the list — including the extensions uploads
+     * accept but browsers should never render — downloads as a binary blob.
+     */
+    private function safeMimeType(string $storagePath): string
+    {
+        return match (strtolower(pathinfo($storagePath, PATHINFO_EXTENSION))) {
+            'pdf' => 'application/pdf',
+            'txt' => 'text/plain',
+            'md' => 'text/markdown',
+            'png' => 'image/png',
+            'jpg', 'jpeg' => 'image/jpeg',
+            'gif' => 'image/gif',
+            'webp' => 'image/webp',
+            'tiff' => 'image/tiff',
+            'heic' => 'image/heic',
+            'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            default => 'application/octet-stream',
+        };
     }
 
     /**

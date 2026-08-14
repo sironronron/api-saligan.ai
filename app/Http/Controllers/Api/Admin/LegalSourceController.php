@@ -6,6 +6,8 @@ use App\Enums\LegalSourceCategory;
 use App\Http\Controllers\Controller;
 use App\Jobs\CrawlLegalSourcePage;
 use App\Models\LegalSource;
+use App\Support\OutboundUrl;
+use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -35,7 +37,20 @@ class LegalSourceController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'base_domain' => ['required', 'string', 'max:255', 'unique:legal_sources,base_domain'],
             'seed_urls' => ['required', 'array', 'min:1'],
-            'seed_urls.*' => ['required', 'url', 'max:2048'],
+            'seed_urls.*' => [
+                'required',
+                'url:http,https',
+                'max:2048',
+                // `url` alone accepts http://127.0.0.1:6379 and
+                // http://169.254.169.254 quite happily. The crawl job refuses
+                // these too, but rejecting them here tells the admin why
+                // instead of leaving a source that silently never crawls.
+                function (string $attribute, mixed $value, Closure $fail): void {
+                    if (! OutboundUrl::isFetchable((string) $value)) {
+                        $fail('The :attribute must resolve to a public address.');
+                    }
+                },
+            ],
             'is_active' => ['sometimes', 'boolean'],
             'category' => ['sometimes', Rule::enum(LegalSourceCategory::class)],
         ]);

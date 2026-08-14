@@ -182,6 +182,22 @@ return [
 
         /*
         |--------------------------------------------------------------------------
+        | Refuse the unauthenticated legacy format
+        |--------------------------------------------------------------------------
+        |
+        | Documents written before the integrity tag existed use format v1,
+        | which encrypts but does not authenticate: an attacker with write
+        | access to the disk can flip bits of the plaintext undetectably.
+        | Those files stay readable so a deployment can migrate without
+        | downtime. Run `saligan:reencrypt-documents` to rewrite them as v2,
+        | then turn this on so the old format is rejected outright.
+        |
+        */
+
+        'require_authenticated_encryption' => (bool) env('DOCUMENT_REQUIRE_AUTHENTICATED_ENCRYPTION', false),
+
+        /*
+        |--------------------------------------------------------------------------
         | Image OCR
         |--------------------------------------------------------------------------
         |
@@ -242,6 +258,15 @@ return [
         'max_pages_per_run' => (int) env('LEGAL_CRAWLER_MAX_PAGES_PER_RUN', 500),
 
         /*
+         * Refuse to fetch URLs that resolve to loopback, private, or
+         * link-local addresses — the SSRF guard that keeps a seed URL or a
+         * redirect from reaching the cloud metadata service, Redis, or
+         * anything else bound inside the network. Leave this on in production;
+         * it is disabled under test so faked HTTP does not need live DNS.
+         */
+        'block_private_addresses' => (bool) env('LEGAL_CRAWLER_BLOCK_PRIVATE_ADDRESSES', true),
+
+        /*
          * The plain-language digest written for each crawled authority. Set
          * the provider to "none" to skip digesting entirely — the reader falls
          * back to full text, so this only costs the summary at the top.
@@ -250,6 +275,41 @@ return [
             'provider' => env('LEGAL_DIGEST_PROVIDER', 'gemini'),
             'model' => env('LEGAL_DIGEST_MODEL', env('GEMINI_CHAT_MODEL', 'gemini-3.6-flash')),
         ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Intake form
+    |--------------------------------------------------------------------------
+    |
+    | When the case already carries the narrative facts, the intake form stops
+    | asking for them — the model drafts the "who, what, when, where" straight
+    | from the case context instead of making the user retype it. The
+    | thresholds below decide when a case counts as actually supplying those
+    | facts.
+    |
+    | Both are deliberately about SUBSTANCE, not presence. The check used to be
+    | `filled($case->description)`, so a three-word description ("land
+    | dispute") or a single uploaded scan of an ID suppressed the entire form —
+    | the model then had no channel left for the party names, addresses, and
+    | amounts a case description never contains, and either invented them or
+    | wrote bracketed placeholders that the export strips out.
+    |
+    | `min_description_characters` is the length at which a description reads
+    | as a narrative rather than a label. `min_document_chunks` is how much
+    | extracted text an uploaded document must yield to count as a source of
+    | facts; at the default 500-character chunk size, two chunks is roughly a
+    | page, which a photo of an ID or a receipt never reaches.
+    |
+    | Note that clearing these thresholds only drops the NARRATIVE fields from
+    | the form (see ChatService::dropCaseCoveredFields). The form itself is
+    | suppressed only when nothing whatsoever is left to ask.
+    |
+    */
+
+    'intake' => [
+        'min_description_characters' => (int) env('INTAKE_MIN_DESCRIPTION_CHARS', 60),
+        'min_document_chunks' => (int) env('INTAKE_MIN_DOCUMENT_CHUNKS', 2),
     ],
 
     /*

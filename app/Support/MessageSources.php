@@ -63,6 +63,10 @@ final class MessageSources
         }
 
         $docUnits = [];
+        // As with legal pages, every retrieved chunk index per document — the
+        // citation reader highlights each passage the answer drew on, and a
+        // long upload is routinely cited through several of them.
+        $docChunkIndexes = [];
 
         foreach ($message->cited_chunk_ids ?? [] as $chunkId) {
             $chunk = self::resolve(DocumentChunk::class, $chunkId);
@@ -74,6 +78,7 @@ final class MessageSources
             $identity = (string) ($chunk->document_id ?? $chunk->id);
 
             $docUnits[$identity] ??= $chunk;
+            $docChunkIndexes[$identity][] = (int) $chunk->chunk_index;
         }
 
         $tokens = CitationTokens::assign(array_merge(array_keys($legalUnits), array_keys($docUnits)));
@@ -113,7 +118,7 @@ final class MessageSources
                 }
             }
 
-            $sources[] = self::documentSource($chunk, $index, $tokens[$identity]);
+            $sources[] = self::documentSource($chunk, $index, $tokens[$identity], $docChunkIndexes[$identity] ?? []);
         }
 
         return array_merge($sources, self::webSources($message));
@@ -232,7 +237,7 @@ final class MessageSources
         if ($class === LegalChunk::class) {
             $query->with('crawledPage.legalSource');
         } else {
-            $query->with('document');
+            $query->with('document.labels');
         }
 
         return $query->find($id);
@@ -275,19 +280,38 @@ final class MessageSources
     }
 
     /**
+     * @param  array<int, int>  $citedChunkIndexes  Chunks of this document the answer drew on.
      * @return array<string, mixed>
      */
-    protected static function documentSource(DocumentChunk $chunk, int $index, string $token): array
+    protected static function documentSource(DocumentChunk $chunk, int $index, string $token, array $citedChunkIndexes = []): array
     {
+        $document = $chunk->document;
+
+        sort($citedChunkIndexes);
+
         return [
             'type' => 'document',
             'index' => $index,
             'token' => $token,
             'id' => $chunk->id,
             'chunk_index' => $chunk->chunk_index,
+            'cited_chunk_indexes' => array_values(array_unique($citedChunkIndexes)),
             'document_id' => $chunk->document_id,
-            'label' => $chunk->document?->original_filename ?? 'Uploaded document',
-            'title' => $chunk->document?->title,
+            'label' => $document?->original_filename ?? 'Uploaded document',
+            'title' => $document?->title,
+            'mime_type' => $document?->mime_type,
+            'has_digest' => filled($document?->digest),
+            'uploaded_at' => $document?->created_at?->toIso8601String(),
+            // The case-file categories the upload is filed under, so a citation
+            // says what kind of exhibit it came from without opening it.
+            'tags' => $document === null ? [] : $document->labels
+                ->map(fn ($label) => [
+                    'id' => $label->id,
+                    'name' => $label->name,
+                    'color' => $label->color,
+                ])
+                ->values()
+                ->all(),
             'url' => null,
             'domain' => null,
             'excerpt' => Str::limit($chunk->content, 300),

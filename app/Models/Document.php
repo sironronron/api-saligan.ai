@@ -39,6 +39,7 @@ class Document extends Model
     {
         return [
             'status' => DocumentStatus::class,
+            'digest_generated_at' => 'datetime',
         ];
     }
 

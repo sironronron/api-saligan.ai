@@ -37,8 +37,9 @@ Route::post('/demo-requests', [DemoRequestController::class, 'store'])
     ->middleware('throttle:demo-request');
 
 // Looked up by the login screen (pre-auth) to greet a returning user with
-// their last-used time. Throttled because it reveals whether an email ever
-// used the app, which an attacker could otherwise enumerate.
+// their last-used time and to refuse an unregistered email before the
+// password step. Both answers leak whether an email has an account, so the
+// route is throttled to keep enumeration slow.
 Route::get('/auth/last-used', [AuthController::class, 'lastUsed'])
     ->middleware('throttle:last-used-lookup');
 
@@ -102,6 +103,7 @@ Route::middleware(['auth:supabase', 'track_last_used'])->group(function (): void
         Route::apiResource('documents', DocumentController::class);
         Route::post('/documents/{document}/attach', [DocumentController::class, 'attach']);
         Route::get('/documents/{document}/file', [DocumentController::class, 'file']);
+        Route::get('/documents/{document}/content', [DocumentController::class, 'content']);
 
         Route::get('/generated-documents', [GeneratedDocumentController::class, 'index']);
 

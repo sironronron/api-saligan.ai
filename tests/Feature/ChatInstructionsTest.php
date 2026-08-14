@@ -1113,3 +1113,62 @@ it('includes self-verification rules for quoted sources with links', function ()
         ->toContain('every Sources entry is on its own line prefixed with `> ` and wrapped in double quotes')
         ->toContain('every legal source with a URL in the retrieved context includes a `[Link](URL)` after the closing quote');
 });
+
+it('lists every selected role and use case and carries all their calibrations', function () {
+    $user = User::factory()->create([
+        'kyc_role' => UserProfile::ROLE_LAWYER.','.UserProfile::ROLE_NOTARY_PUBLIC,
+        'kyc_use_case' => UserProfile::USE_CASE_CLIENT_WORK.','.UserProfile::USE_CASE_LEGAL_RESEARCH,
+        'kyc_completed_at' => now(),
+    ]);
+
+    $instructions = $this->chat->instructionsForUser(
+        new RetrievalResult(collect(), collect()),
+        Lab::Ollama,
+        $user,
+    );
+
+    expect($instructions)
+        ->toContain('Role: Lawyer / Legal Counsel, Notary Public')
+        ->toContain('Primary use: Preparing documents/research for clients (professional use), Legal research')
+        ->toContain('ROLE: Lawyer. This user has legal training')
+        ->toContain('ROLE: Notary Public.')
+        ->toContain('USE CASE: Client Work.')
+        ->toContain('USE CASE: Legal Research.')
+        ->toContain('The user selected more than one answer');
+});
+
+it('does not claim multiple answers when each question got one', function () {
+    $user = User::factory()->create([
+        'kyc_role' => UserProfile::ROLE_LAWYER,
+        'kyc_use_case' => UserProfile::USE_CASE_CLIENT_WORK,
+        'kyc_completed_at' => now(),
+    ]);
+
+    $instructions = $this->chat->instructionsForUser(
+        new RetrievalResult(collect(), collect()),
+        Lab::Ollama,
+        $user,
+    );
+
+    expect($instructions)->not->toContain('The user selected more than one answer');
+});
+
+it('wraps the free-text answer when other is one of several roles', function () {
+    $user = User::factory()->create([
+        'kyc_role' => UserProfile::ROLE_FARMER.','.UserProfile::ROLE_OTHER,
+        'kyc_role_other' => 'Cooperative officer',
+        'kyc_use_case' => UserProfile::USE_CASE_AGRARIAN_LAND,
+        'kyc_completed_at' => now(),
+    ]);
+
+    $instructions = $this->chat->instructionsForUser(
+        new RetrievalResult(collect(), collect()),
+        Lab::Ollama,
+        $user,
+    );
+
+    expect($instructions)
+        ->toContain('Their own description of their role:')
+        ->toContain('Cooperative officer')
+        ->toContain('[[UNTRUSTED DATA START]]');
+});

@@ -40,19 +40,22 @@ it('reports the last-used time for a known account', function () {
 
     $response = $this->getJson('/api/auth/last-used?email='.$user->email)->assertOk();
 
-    expect(Carbon::parse($response->json('last_used_at'))->toDateTimeString())->toBe($stamp->toDateTimeString());
+    expect($response->json('exists'))->toBeTrue()
+        ->and(Carbon::parse($response->json('last_used_at'))->toDateTimeString())->toBe($stamp->toDateTimeString());
 });
 
-it('reports null for an account that exists but has never used the app', function () {
+it('reports an account that exists but has never used the app', function () {
     $user = User::factory()->create(['last_used_at' => null]);
 
     $this->getJson('/api/auth/last-used?email='.$user->email)
         ->assertOk()
+        ->assertJsonPath('exists', true)
         ->assertJsonPath('last_used_at', null);
 });
 
-it('does not reveal whether an unknown email belongs to an account', function () {
+it('reports that an unknown email has no account so sign-in can refuse it', function () {
     $this->getJson('/api/auth/last-used?email=unknown@example.com')
         ->assertOk()
+        ->assertJsonPath('exists', false)
         ->assertJsonPath('last_used_at', null);
 });

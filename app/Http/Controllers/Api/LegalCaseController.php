@@ -8,7 +8,9 @@ use App\Http\Resources\ConversationResource;
 use App\Http\Resources\LegalCaseResource;
 use App\Models\LegalCase;
 use App\Models\Message;
+use App\Models\Template;
 use App\Support\PlanLimits;
+use Closure;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -342,12 +344,19 @@ class LegalCaseController extends Controller
             // owned by other members of the user's organization may be set as
             // the case default, so a case can never reference another user's
             // private template.
+            // Checked through the model rather than Rule::exists(), whose
+            // closure receives a plain query builder that cannot run the
+            // Eloquent visibleTo scope.
             'default_template_id' => [
                 'nullable',
                 'uuid',
-                Rule::exists('templates', 'id')->where(function ($query) use ($request): void {
-                    $query->visibleTo($request->user());
-                }),
+                function (string $attribute, mixed $value, Closure $fail) use ($request): void {
+                    $template = Template::query()->whereKey($value)->first();
+
+                    if ($template === null || ! $template->visibleTo($request->user())) {
+                        $fail('The selected default template is unavailable.');
+                    }
+                },
             ],
         ];
     }

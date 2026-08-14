@@ -13,6 +13,7 @@ use App\Services\Crawler\PdfAdapter;
 use App\Services\Crawler\RobotsTxt;
 use App\Services\Documents\DocumentChunker;
 use App\Support\CacheLock;
+use App\Support\OutboundUrl;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -23,6 +24,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Throwable;
 
 class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
@@ -66,6 +68,18 @@ class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
             return;
         }
 
+        // Checked before robots.txt, because consulting robots.txt is itself a
+        // fetch of this host: an internal address must be refused before the
+        // crawler makes any request to it at all.
+        if (! OutboundUrl::isFetchable($this->url)) {
+            Log::warning('Refused to crawl a URL that does not resolve to a public address.', [
+                'legal_source_id' => $this->source->id,
+                'url' => $this->url,
+            ]);
+
+            return;
+        }
+
         if (! $robots->allows($this->url)) {
             $page = CrawledPage::firstOrCreate(
                 ['legal_source_id' => $this->source->id, 'url' => $this->url],
@@ -89,6 +103,22 @@ class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
         try {
             $response = Http::timeout(60)
                 ->withHeaders(['User-Agent' => config('saligan.crawler.user_agent')])
+                // Checking only the URL we asked for would leave the door open:
+                // a public page is free to redirect to 169.254.169.254, and the
+                // client would follow it without the caller ever naming an
+                // internal address. Every hop is vetted, and an unsafe one
+                // aborts the request rather than being followed.
+                ->withOptions(['allow_redirects' => [
+                    'max' => 5,
+                    'strict' => true,
+                    'referer' => false,
+                    'protocols' => ['http', 'https'],
+                    'on_redirect' => function ($request, $response, $uri): void {
+                        if (! OutboundUrl::isFetchable((string) $uri)) {
+                            throw new RuntimeException("Refused to follow a redirect to a non-public address: {$uri}");
+                        }
+                    },
+                ]])
                 ->get($this->url);
 
             if (! $response->ok()) {

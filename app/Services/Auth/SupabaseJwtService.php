@@ -76,7 +76,9 @@ class SupabaseJwtService
         JWT::$leeway = self::CLOCK_SKEW_LEEWAY_SECONDS;
 
         try {
-            return (array) JWT::decode($token, $keys);
+            $claims = (array) JWT::decode($token, $keys);
+
+            return $this->passesClaimChecks($claims) ? $claims : null;
         } catch (Throwable $e) {
             // Verification failures are a normal outcome for a bad token, so
             // this stays quiet — but logging the reason is the difference
@@ -89,6 +91,41 @@ class SupabaseJwtService
 
             return null;
         }
+    }
+
+    /**
+     * Checks a verified token must still pass before it authenticates anyone.
+     *
+     * A valid signature only proves the token came from a key we trust — not
+     * that it is the right *kind* of token. Supabase signs several things with
+     * the same project key, so `aud` and `iss` are what separate a real user
+     * access token from an `anon`/`service_role` API key or a token minted by
+     * some other project whose JWKS we were pointed at.
+     *
+     * Anonymous sessions are refused outright: they carry a `sub` but stand for
+     * nobody, and this API has no anonymous surface behind `auth:supabase`.
+     *
+     * @param  array<string, mixed>  $claims
+     */
+    protected function passesClaimChecks(array $claims): bool
+    {
+        $audience = $claims['aud'] ?? null;
+        $audiences = is_array($audience) ? $audience : [$audience];
+
+        if (! in_array('authenticated', $audiences, true)) {
+            return false;
+        }
+
+        // Only enforced when the project URL is configured. Without a host
+        // there is no issuer to compare against, and refusing every token would
+        // take the API down rather than secure it.
+        $host = parse_url((string) config('supabase.url'), PHP_URL_HOST);
+
+        if (is_string($host) && $host !== '' && ($claims['iss'] ?? null) !== $this->issuer()) {
+            return false;
+        }
+
+        return ($claims['is_anonymous'] ?? false) !== true;
     }
 
     /**
@@ -242,6 +279,21 @@ class SupabaseJwtService
         $user = User::query()->where('email', strtolower($email))->first();
 
         if ($user !== null) {
+            // Claiming an existing account by email is an account takeover
+            // unless Supabase has actually proven the address belongs to whoever
+            // is holding this token. Signing up as someone else's email is free;
+            // confirming it is not. Without that proof the login is refused
+            // rather than silently handed the account's cases, documents,
+            // organization, subscription — and `is_admin`.
+            if (! $this->emailIsVerified($claims)) {
+                Log::warning('Refused to link a Supabase identity to an existing account: email not verified.', [
+                    'supabase_uid' => $uid,
+                    'user_id' => $user->id,
+                ]);
+
+                return null;
+            }
+
             if ($user->supabase_uid === null) {
                 $user->forceFill(['supabase_uid' => $uid])->save();
             }
@@ -254,6 +306,24 @@ class SupabaseJwtService
             'name' => $this->nameFromClaims($claims),
             'email' => strtolower($email),
         ]);
+    }
+
+    /**
+     * Whether Supabase says this token's email address has been confirmed.
+     *
+     * Supabase stamps the flag on `user_metadata` (and, on newer projects, at
+     * the top level as well), so both are consulted. An absent flag counts as
+     * unverified: this only gates taking over an *existing* account, where
+     * guessing wrong in the permissive direction is the whole vulnerability.
+     *
+     * @param  array<string, mixed>  $claims
+     */
+    protected function emailIsVerified(array $claims): bool
+    {
+        $metadata = (array) ($claims['user_metadata'] ?? []);
+
+        return ($claims['email_verified'] ?? null) === true
+            || ($metadata['email_verified'] ?? null) === true;
     }
 
     /**
@@ -300,7 +370,10 @@ class SupabaseJwtService
             'sub' => $uid,
             'email' => $email,
             'role' => 'authenticated',
-            'user_metadata' => $metadata,
+            // A real token for a confirmed account carries this, so the minted
+            // one does too. Pass `email_verified => false` explicitly to
+            // simulate a sign-up whose address was never confirmed.
+            'user_metadata' => $metadata + ['email_verified' => true],
         ];
 
         return JWT::encode($claims, $secret, self::ALGORITHM);

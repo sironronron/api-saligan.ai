@@ -116,6 +116,33 @@ class Template extends Model
     }
 
     /**
+     * Scope to a stable "closest to this user first" ordering: the user's own
+     * templates, then their organization's, then the system library.
+     *
+     * Several templates routinely share a legal sub-type — a firm that saved
+     * its own demand letter has one alongside the system library's. Picking
+     * between them with `first()` and no ORDER BY leaves the choice to whatever
+     * order the database happens to return rows in, so the same user asking for
+     * the same sub-type can be drafted from a different template run to run,
+     * including a colleague's instead of their own. Ordering makes the answer
+     * both deterministic and the one they would expect.
+     *
+     * @param  Builder<Template>  $query
+     */
+    public function scopeClosestTo(Builder $query, User $user): Builder
+    {
+        return $query
+            ->orderByRaw(
+                'case when templates.user_id = ? then 0 when templates.user_id is null then 2 else 1 end',
+                [$user->id],
+            )
+            ->orderByDesc('templates.created_at')
+            // Final tie-break: templates created in the same second would
+            // otherwise still be ordered arbitrarily.
+            ->orderBy('templates.id');
+    }
+
+    /**
      * Whether the given user may access this template.
      */
     public function visibleTo(User $user): bool

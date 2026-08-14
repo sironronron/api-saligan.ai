@@ -230,7 +230,16 @@ class PaymongoClient
             return false;
         }
 
-        $secret = config('paymongo.webhook_secret', '');
+        $secret = (string) config('paymongo.webhook_secret', '');
+
+        // Without this the check fails *open* on a misconfigured deployment:
+        // `hash_hmac` with an empty key is a value anyone can compute from the
+        // body alone, so an unset PAYMONGO_WEBHOOK_SECRET would let a stranger
+        // forge `subscription.invoice.paid` and hand themselves a paid plan.
+        if ($secret === '') {
+            return false;
+        }
+
         $prefix = config('paymongo.webhook_signature_prefix', 'paymongo');
 
         $digest = hash_hmac('sha256', $rawBody, $secret);

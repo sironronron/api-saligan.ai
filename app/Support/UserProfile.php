@@ -6,8 +6,14 @@ use App\Models\User;
 use Illuminate\Validation\Rule;
 
 /**
- * The optional onboarding profile (role + primary use case) and the prompt
+ * The optional onboarding profile (roles + primary use cases) and the prompt
  * calibration it drives.
+ *
+ * Role and primary use are multi-select: people wear more than one hat (a
+ * broker who is also a business owner, research that is also client work), and
+ * forcing one answer lost calibration the user had already told us about. Both
+ * are stored as a comma-separated list of keys, matching kyc_document_types,
+ * so a pre-existing single value reads back as a one-item list.
  *
  * The profile is a self-reported claim, never a credential. It calibrates the
  * AI's tone, depth, and drafting defaults only — it must never grant access,
@@ -17,6 +23,20 @@ use Illuminate\Validation\Rule;
  */
 final class UserProfile
 {
+    /**
+     * The cap on multi-select answers. Every selection injects a full
+     * calibration fragment into every prompt, and past three those fragments
+     * start pulling against each other — the profile stops narrowing anything
+     * and becomes noise the model has to reconcile. Three still covers the real
+     * combinations people have (lawyer + notary + business owner, research that
+     * is also client work), which is the point of allowing more than one.
+     *
+     * Must stay in sync with KYC_MAX_ROLES / KYC_MAX_USE_CASES on the frontend.
+     */
+    public const MAX_ROLES = 3;
+
+    public const MAX_USE_CASES = 3;
+
     public const ROLE_PRIVATE_INDIVIDUAL = 'private_individual';
 
     public const ROLE_LAWYER = 'lawyer';
@@ -183,22 +203,66 @@ final class UserProfile
     }
 
     /**
-     * Validation rules for the onboarding profile. The "other" free-text
-     * answers are required only when the matching selection is "other".
+     * Validation rules for the onboarding profile. Role and primary use each
+     * take a list of keys; their "other" free-text answers are required only
+     * when "other" is among the selections.
      *
+     * Members are checked by a closure on the list itself rather than by a
+     * `kyc_role.*` wildcard, so a bad key still reports under `kyc_role` and
+     * clients keep one error key per question.
+     *
+     * @param  array<int, string>  $roles  the roles the request selected
+     * @param  array<int, string>  $useCases  the primary uses the request selected
      * @return array<string, array<int, mixed>>
      */
-    public static function validationRules(): array
+    public static function validationRules(array $roles = [], array $useCases = []): array
     {
         return [
-            'kyc_role' => ['required', 'string', Rule::in(self::roleValues())],
-            'kyc_role_other' => ['nullable', 'string', 'max:255', 'required_if:kyc_role,'.self::ROLE_OTHER],
-            'kyc_use_case' => ['required', 'string', Rule::in(self::useCaseValues())],
-            'kyc_use_case_other' => ['nullable', 'string', 'max:255', 'required_if:kyc_use_case,'.self::USE_CASE_OTHER],
+            'kyc_role' => ['required', 'array', 'min:1', 'max:'.self::MAX_ROLES, self::membersIn(self::roleValues())],
+            'kyc_role_other' => ['nullable', 'string', 'max:255', Rule::requiredIf(
+                static fn (): bool => in_array(self::ROLE_OTHER, $roles, true)
+            )],
+            'kyc_use_case' => ['required', 'array', 'min:1', 'max:'.self::MAX_USE_CASES, self::membersIn(self::useCaseValues())],
+            'kyc_use_case_other' => ['nullable', 'string', 'max:255', Rule::requiredIf(
+                static fn (): bool => in_array(self::USE_CASE_OTHER, $useCases, true)
+            )],
             'kyc_document_types' => ['nullable', 'array'],
             'kyc_document_types.*' => ['string', 'max:255'],
             'kyc_experience_level' => ['nullable', 'string', Rule::in(self::experienceLevelValues())],
         ];
+    }
+
+    /**
+     * A rule that fails the list when any member is not one of $allowed.
+     *
+     * @param  array<int, string>  $allowed
+     */
+    protected static function membersIn(array $allowed): callable
+    {
+        return static function (string $attribute, mixed $value, callable $fail) use ($allowed): void {
+            foreach ((array) $value as $item) {
+                if (! is_string($item) || ! in_array($item, $allowed, true)) {
+                    $fail('The selected '.str_replace('_', ' ', $attribute).' is invalid.');
+
+                    return;
+                }
+            }
+        };
+    }
+
+    /**
+     * Split a stored comma-separated selection into its keys. Handles the
+     * pre-multi-select single value transparently.
+     *
+     * @return array<int, string>
+     */
+    public static function splitKeys(?string $value): array
+    {
+        if ($value === null || $value === '') {
+            return [];
+        }
+
+        return array_values(array_filter(array_map('trim', explode(',', $value)), static fn (string $key): bool => $key !== ''));
     }
 
     /**
@@ -231,17 +295,27 @@ final class UserProfile
             return null;
         }
 
-        $roleFragment = self::roleFragment((string) $user->kyc_role);
-        $useCaseFragment = self::useCaseFragment((string) $user->kyc_use_case);
+        $roles = self::splitKeys($user->kyc_role);
+        $useCases = self::splitKeys($user->kyc_use_case);
+
+        $roleFragment = self::selectionFragment($roles, self::roleFragments());
+        $useCaseFragment = self::selectionFragment($useCases, self::useCaseFragments());
         $documentTypesFragment = self::documentTypesFragment($user->kyc_document_types);
         $experienceFragment = self::experienceFragment($user->kyc_experience_level);
 
         $lines = [
             'The user completed Batayan\'s onboarding profile. This is what they self-identified as:',
             '',
-            'Role: '.self::displayLabel((string) $user->kyc_role, self::roleOptions(), 'Unspecified'),
-            'Primary use: '.self::displayLabel((string) $user->kyc_use_case, self::useCaseOptions(), 'Unspecified'),
+            'Role: '.self::displayLabels($roles, self::roleOptions()),
+            'Primary use: '.self::displayLabels($useCases, self::useCaseOptions()),
         ];
+
+        // More than one answer means no single calibration is the whole story;
+        // saying so keeps the model from latching onto the first fragment.
+        if (count($roles) > 1 || count($useCases) > 1) {
+            $lines[] = '';
+            $lines[] = 'The user selected more than one answer, so several calibrations below apply at once. Treat them as a combined picture — follow all of them, and where two point different directions, let the conversation decide which fits the request at hand rather than picking one in advance.';
+        }
 
         if ($user->kyc_document_types !== null) {
             $lines[] = 'Document types: '.self::formatDocumentTypes($user->kyc_document_types);
@@ -289,6 +363,47 @@ final class UserProfile
     }
 
     /**
+     * The calibration fragments for a multi-select answer, joined in the order
+     * the user's keys appear, or null when none of them are known.
+     *
+     * @param  array<int, string>  $keys
+     * @param  array<string, string>  $fragments
+     */
+    protected static function selectionFragment(array $keys, array $fragments): ?string
+    {
+        $selected = [];
+
+        foreach ($keys as $key) {
+            if (isset($fragments[$key])) {
+                $selected[] = $fragments[$key];
+            }
+        }
+
+        if ($selected === []) {
+            return null;
+        }
+
+        return implode("\n\n", $selected);
+    }
+
+    /**
+     * Human-readable labels for a multi-select answer.
+     *
+     * @param  array<int, string>  $keys
+     * @param  array<int, array{value: string, label: string}>  $options
+     */
+    protected static function displayLabels(array $keys, array $options): string
+    {
+        $labels = [];
+
+        foreach ($keys as $key) {
+            $labels[] = self::displayLabel($key, $options, $key);
+        }
+
+        return $labels === [] ? 'Unspecified' : implode(', ', $labels);
+    }
+
+    /**
      * Format comma-separated document type keys into human-readable labels.
      */
     protected static function formatDocumentTypes(string $documentTypes): string
@@ -312,11 +427,11 @@ final class UserProfile
     {
         $blocks = [];
 
-        if ($user->kyc_role === self::ROLE_OTHER && filled($user->kyc_role_other)) {
+        if (in_array(self::ROLE_OTHER, self::splitKeys($user->kyc_role), true) && filled($user->kyc_role_other)) {
             $blocks[] = 'Their own description of their role: '.PromptGuard::wrap((string) $user->kyc_role_other);
         }
 
-        if ($user->kyc_use_case === self::USE_CASE_OTHER && filled($user->kyc_use_case_other)) {
+        if (in_array(self::USE_CASE_OTHER, self::splitKeys($user->kyc_use_case), true) && filled($user->kyc_use_case_other)) {
             $blocks[] = 'Their own description of their primary use: '.PromptGuard::wrap((string) $user->kyc_use_case_other);
         }
 
@@ -457,7 +572,7 @@ final class UserProfile
             return null;
         }
 
-        $types = array_map('trim', explode(',', $documentTypes));
+        $types = self::splitKeys($documentTypes);
 
         $fragments = [];
 

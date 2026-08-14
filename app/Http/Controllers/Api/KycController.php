@@ -7,6 +7,7 @@ use App\Http\Resources\UserResource;
 use App\Support\UserProfile;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 
 class KycController extends Controller
 {
@@ -43,9 +44,24 @@ class KycController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
-        $validated = $request->validate(UserProfile::validationRules());
+        // Role and primary use are multi-select, but a single key is still a
+        // valid answer — wrapping it keeps older clients working unchanged.
+        // Duplicates are dropped before validating so a repeated key cannot eat
+        // into the selection cap.
+        $request->merge([
+            'kyc_role' => self::distinct($request->input('kyc_role')),
+            'kyc_use_case' => self::distinct($request->input('kyc_use_case')),
+        ]);
+
+        $validated = $request->validate(UserProfile::validationRules(
+            $request->input('kyc_role', []),
+            $request->input('kyc_use_case', []),
+        ));
 
         $user = $request->user();
+
+        $roles = $validated['kyc_role'];
+        $useCases = $validated['kyc_use_case'];
 
         $documentTypes = $validated['kyc_document_types'] ?? null;
         if (is_array($documentTypes)) {
@@ -53,12 +69,12 @@ class KycController extends Controller
         }
 
         $user->update([
-            'kyc_role' => $validated['kyc_role'],
-            'kyc_role_other' => $validated['kyc_role'] === UserProfile::ROLE_OTHER
+            'kyc_role' => implode(',', $roles),
+            'kyc_role_other' => in_array(UserProfile::ROLE_OTHER, $roles, true)
                 ? ($validated['kyc_role_other'] ?? null)
                 : null,
-            'kyc_use_case' => $validated['kyc_use_case'],
-            'kyc_use_case_other' => $validated['kyc_use_case'] === UserProfile::USE_CASE_OTHER
+            'kyc_use_case' => implode(',', $useCases),
+            'kyc_use_case_other' => in_array(UserProfile::USE_CASE_OTHER, $useCases, true)
                 ? ($validated['kyc_use_case_other'] ?? null)
                 : null,
             'kyc_document_types' => $documentTypes,
@@ -67,6 +83,17 @@ class KycController extends Controller
         ]);
 
         return (new UserResource($user->fresh()))->response();
+    }
+
+    /**
+     * A single key, a list, or nothing at all, normalized to a list of unique
+     * values with its order preserved.
+     *
+     * @return array<int, mixed>
+     */
+    protected static function distinct(mixed $value): array
+    {
+        return array_values(array_unique(Arr::wrap($value), SORT_REGULAR));
     }
 
     /**

@@ -147,10 +147,10 @@ HTML;
             // The letter's end is the start of the todo checklist when one is
             // present: the checklist closes the draft and is chat-only, so it
             // (and everything after it) never belongs in the exported file.
-            $todoStart = strpos($body, '[[TODO_START]]');
-
-            if ($todoStart !== false) {
-                $body = substr($body, 0, $todoStart);
+            // The marker may be wrapped in bold or use single brackets, so
+            // locate it tolerantly.
+            if (preg_match('/\[{1,2}TODO_START\]{1,2}/i', $body, $todoMatch, PREG_OFFSET_CAPTURE) === 1) {
+                $body = substr($body, 0, (int) $todoMatch[0][1]);
             }
 
             return $this->cleanBody((string) $body);
@@ -202,9 +202,10 @@ HTML;
         $cleaned = $this->stripNextStepsSection($cleaned);
 
         // Drop the marked checklist block along with any heading (e.g.
-        // "Next Steps:") that introduces it.
+        // "Next Steps:") that introduces it. The markers may be bold-wrapped
+        // or single-bracketed, so they are matched tolerantly.
         $cleaned = preg_replace(
-            '/\s*(?:(?:#{1,6}\s+)?(?:\*\*)?(?:next steps?|steps? to take|recommended steps?|action items?|checklist|immediate steps?|next actions?|steps? to follow|what to do(?: next)?)\s*(?:\*\*)?\s*:?\s*\R+\s*)?\[\[TODO_START\]\].*?\[\[TODO_END\]\]/is',
+            '/\s*(?:(?:#{1,6}\s+)?(?:\*\*)?(?:next steps?|steps? to take|recommended steps?|action items?|checklist|immediate steps?|next actions?|steps? to follow|what to do(?: next)?)\s*(?:\*\*)?\s*:?\s*\R+\s*)?[ \t*_\-–—~]*\[{1,2}TODO_START\]{1,2}[ \t*_\-–—~]*.*?[ \t*_\-–—~]*\[{1,2}TODO_END\]{1,2}[ \t*_\-–—~]*/is',
             '',
             $cleaned,
         );
@@ -218,7 +219,7 @@ HTML;
             (string) $cleaned,
         );
 
-        $cleaned = preg_replace('/^\s*\[\[(TODO|DOCUMENT)_(START|END)\]\]\s*$/m', '', (string) $cleaned);
+        $cleaned = preg_replace('/^[ \t*_\-–—~]*\[{1,2}(TODO|DOCUMENT)_(START|END)\]{1,2}[ \t*_\-–—~]*$/m', '', (string) $cleaned);
         $cleaned = preg_replace('/^\s*Next Steps Checklist Created Below Using create_todo Tool:\s*$/im', '', (string) $cleaned);
 
         // Strip the ATTACHMENTS section: the heading, any horizontal rule

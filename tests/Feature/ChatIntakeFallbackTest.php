@@ -3,6 +3,7 @@
 use App\Enums\MessageRole;
 use App\Models\Conversation;
 use App\Models\Document;
+use App\Models\DocumentChunk;
 use App\Models\LegalCase;
 use App\Models\Message;
 use App\Models\Plan;
@@ -279,7 +280,7 @@ it('streams a complete placeholder-free draft without the intake form', function
     $this->assertDatabaseHas('messages', ['role' => MessageRole::Assistant]);
 });
 
-it('suppresses the intake form when the case already supplies the facts', function () {
+it('drops the narrative fields but still shows the form when the case supplies the facts', function () {
     $draft = "[[DOCUMENT_START]]\nRe: Demand for Payment\n\nMaria Santos built a house on my land in Barangay San Jose.\n[[DOCUMENT_END]]";
 
     $this->app->instance(ChatService::class, makeFakeChatService([
@@ -303,12 +304,14 @@ it('suppresses the intake form when the case already supplies the facts', functi
 
     $body = $response->streamedContent();
 
-    // The model called the tool, but the case context already has the facts,
-    // so no intake form frame reaches the client and the direct draft does.
+    // The case description carries the narrative, so the facts field is
+    // dropped — but the sender's own name and address are not in any case
+    // description, so the form is still shown to collect them.
     expect($body)
-        ->not->toContain('event: tool_call')
-        ->not->toContain('"name":"request_intake_form"')
-        ->toContain('Maria Santos built a house on my land in Barangay San Jose')
+        ->toContain('event: tool_call')
+        ->toContain('"name":"request_intake_form"')
+        ->toContain('"sender_name"')
+        ->not->toContain('"key":"facts"')
         ->toContain('event: done');
 });
 
@@ -1109,8 +1112,10 @@ it('derives intake fields from a template referenced by name', function () {
         ->not->toContain('"court_preference"');
 });
 
-it('suppresses the intake form when the case description supplies the facts', function () {
-    Template::factory()->system()->create([
+it('keeps collecting the template fields the case description cannot supply', function () {
+    // User-owned so the template's own fields are authoritative: the library
+    // never overrides a template the user created.
+    Template::factory()->for($this->user)->create([
         'legal_subtype' => 'demand_letter',
         'placeholder_fields' => [
             ['key' => 'sender_name', 'label' => 'Sender / firm name', 'required' => true],
@@ -1143,29 +1148,35 @@ it('suppresses the intake form when the case description supplies the facts', fu
 
     $body = $response->streamedContent();
 
-    // The case description already carries the facts, so the form is never
-    // shown — the model drafts directly from the case context.
+    // The case description carries the narrative, so the facts field is
+    // dropped — but the sender, recipient, and amount are not in it, and
+    // suppressing the whole form left the model no way to ask for them.
     expect($body)
-        ->not->toContain('"name":"request_intake_form"')
-        ->toContain('NEXBYTE delivered inventory management software to Marisol Retail Group')
+        ->toContain('"name":"request_intake_form"')
+        ->toContain('"sender_name"')
+        ->toContain('"recipient_name"')
+        ->toContain('"amount_or_demand"')
+        ->not->toContain('"key":"facts"')
         ->toContain('event: done');
 });
 
-it('suppresses the intake form when a ready uploaded document supplies the facts', function () {
-    Template::factory()->system()->create([
+it('suppresses the intake form when the case leaves nothing to ask', function () {
+    // Every field this template needs is a narrative field the case
+    // description already supplies, so the form would open empty.
+    Template::factory()->for($this->user)->create([
         'legal_subtype' => 'demand_letter',
         'placeholder_fields' => [
-            ['key' => 'sender_name', 'label' => 'Sender / firm name', 'required' => true],
             ['key' => 'facts', 'label' => 'Statement of facts', 'required' => true],
         ],
     ]);
 
-    $case = LegalCase::factory()->for($this->user)->create(['description' => null]);
-    Document::factory()->for($this->user)->for($case, 'case')->ready()->create();
+    $case = LegalCase::factory()->for($this->user)->create([
+        'description' => 'NEXBYTE delivered inventory management software to Marisol Retail Group but the P855,000 invoice remains unpaid beyond the agreed 30-day term.',
+    ]);
 
     $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
 
-    $draft = "[[DOCUMENT_START]]\nRe: Demand for Payment\n\nDear Sir/Madam,\n\nThis letter concerns the contract we entered into, a copy of which you have on file.\n[[DOCUMENT_END]]";
+    $draft = "[[DOCUMENT_START]]\nRe: Demand for Payment\n\nNEXBYTE delivered inventory management software to Marisol Retail Group.\n[[DOCUMENT_END]]";
 
     $this->app->instance(ChatService::class, makeFakeChatService([
         makeToolCallEvent('request_intake_form', ['fields' => [['key' => 'anything']]]),
@@ -1175,7 +1186,7 @@ it('suppresses the intake form when a ready uploaded document supplies the facts
 
     $response = $this->signInAs($this->user)
         ->post("/api/conversations/{$conversation->id}/messages", [
-            'message' => "[Template: demand_letter]\nDraft a demand letter using the uploaded contract.",
+            'message' => "[Template: demand_letter]\nDraft a demand letter using the facts in this case.",
         ]);
 
     $response->assertOk();
@@ -1184,8 +1195,107 @@ it('suppresses the intake form when a ready uploaded document supplies the facts
 
     expect($body)
         ->not->toContain('"name":"request_intake_form"')
-        ->toContain('This letter concerns the contract we entered into')
+        ->toContain('NEXBYTE delivered inventory management software to Marisol Retail Group')
         ->toContain('event: done');
+});
+
+it('does not treat a label-length case description as the facts', function () {
+    Template::factory()->system()->create([
+        'legal_subtype' => 'demand_letter',
+        'placeholder_fields' => [
+            ['key' => 'sender_name', 'label' => 'Sender / firm name', 'required' => true],
+            ['key' => 'facts', 'label' => 'Statement of facts', 'required' => true],
+        ],
+    ]);
+
+    // Short enough to be a label rather than a narrative: it names the matter
+    // without saying who did what, when, or where.
+    $case = LegalCase::factory()->for($this->user)->create(['description' => 'Unpaid invoice']);
+
+    $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        makeToolCallEvent('request_intake_form', ['fields' => [['key' => 'anything']]]),
+    ]));
+
+    $response = $this->signInAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => "[Template: demand_letter]\nDraft a demand letter.",
+        ]);
+
+    $response->assertOk();
+
+    expect($response->streamedContent())
+        ->toContain('"name":"request_intake_form"')
+        ->toContain('"sender_name"')
+        ->toContain('"case_background_narrative"');
+});
+
+it('drops the narrative fields when an ingested document supplies the facts', function () {
+    Template::factory()->for($this->user)->create([
+        'legal_subtype' => 'demand_letter',
+        'placeholder_fields' => [
+            ['key' => 'sender_name', 'label' => 'Sender / firm name', 'required' => true],
+            ['key' => 'facts', 'label' => 'Statement of facts', 'required' => true],
+        ],
+    ]);
+
+    $case = LegalCase::factory()->for($this->user)->create(['description' => null]);
+    $document = Document::factory()->for($this->user)->for($case, 'case')->ready()->create();
+    DocumentChunk::factory()->count(2)->for($document)->for($this->user)->create();
+
+    $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        makeToolCallEvent('request_intake_form', ['fields' => [['key' => 'anything']]]),
+    ]));
+
+    $response = $this->signInAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => "[Template: demand_letter]\nDraft a demand letter using the uploaded contract.",
+        ]);
+
+    $response->assertOk();
+
+    // The uploaded contract carries the narrative, so the facts field goes —
+    // but the sender's own name is not in it, so the form still opens.
+    expect($response->streamedContent())
+        ->toContain('"name":"request_intake_form"')
+        ->toContain('"sender_name"')
+        ->not->toContain('"key":"facts"');
+});
+
+it('does not treat a ready document that yielded no text as the facts', function () {
+    Template::factory()->for($this->user)->create([
+        'legal_subtype' => 'demand_letter',
+        'placeholder_fields' => [
+            ['key' => 'sender_name', 'label' => 'Sender / firm name', 'required' => true],
+            ['key' => 'facts', 'label' => 'Statement of facts', 'required' => true],
+        ],
+    ]);
+
+    // Ready, but ingestion produced nothing worth drafting from — a photo of
+    // an ID, an unreadable scan. The facts are still the user's to supply.
+    $case = LegalCase::factory()->for($this->user)->create(['description' => null]);
+    Document::factory()->for($this->user)->for($case, 'case')->ready()->create();
+
+    $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        makeToolCallEvent('request_intake_form', ['fields' => [['key' => 'anything']]]),
+    ]));
+
+    $response = $this->signInAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => "[Template: demand_letter]\nDraft a demand letter using the uploaded contract.",
+        ]);
+
+    $response->assertOk();
+
+    expect($response->streamedContent())
+        ->toContain('"name":"request_intake_form"')
+        ->toContain('"sender_name"')
+        ->toContain('"key":"facts"');
 });
 
 it('keeps the facts field in the intake form when the case has no description and no documents', function () {

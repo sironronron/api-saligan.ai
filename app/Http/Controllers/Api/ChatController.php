@@ -284,27 +284,41 @@ class ChatController extends Controller
 
                 if ($event instanceof ToolCall) {
                     if ($event->toolCall->name === 'request_intake_form') {
-                        // When the case already supplies the facts (a filled
-                        // description and/or uploaded documents), the intake
-                        // form is suppressed: the model must draft directly
-                        // from the case context instead of interrupting the
-                        // user for facts the case already holds. The stream
+                        $documentType = $event->toolCall->arguments['document_type'] ?? null;
+
+                        // The form fields are authoritative server-side so
+                        // they match the selected template or the document
+                        // category instead of whatever fields the model
+                        // happened to invent. Fields the case context already
+                        // covers are dropped here (see intakeFieldsFor).
+                        $fields = $this->chatService->intakeFieldsFor(
+                            $conversation,
+                            $message,
+                            $documentType,
+                        );
+
+                        // Nothing left to ask: the case context covers every
+                        // field this document needs, so the form would open
+                        // empty. The model must draft directly from the case
+                        // context instead of interrupting the user. The stream
                         // continues and the tool executes server-side with a
-                        // directive to draft from the case context; the
-                        // premature-draft fallback below still catches drafts
-                        // that genuinely turned out to need more facts.
-                        if (! $isIntakeSubmission && $this->chatService->caseSuppliesFacts($conversation)) {
+                        // directive to that effect; the premature-draft
+                        // fallback below still catches drafts that genuinely
+                        // turned out to need more facts.
+                        //
+                        // Note this is field-level, not case-level: a case
+                        // that supplies only the narrative still shows the
+                        // form for the party names, addresses, and amounts a
+                        // description never carries.
+                        if (! $isIntakeSubmission && $fields === []) {
                             continue;
                         }
 
                         $intakeRequested = true;
 
-                        // The form fields are authoritative server-side so
-                        // they match the selected template or the document
-                        // category instead of whatever fields the model
-                        // happened to invent. Previously submitted intake
-                        // values are carried over so a repeated drafting
-                        // request reuses the user's original answers.
+                        // Previously submitted intake values are carried over
+                        // so a repeated drafting request reuses the user's
+                        // original answers.
                         if (! $isIntakeSubmission) {
                             // The stream is cut off right after the tool
                             // call, before the tool's handle() ever runs, so
@@ -319,12 +333,8 @@ class ChatController extends Controller
                         yield $emit('tool_call', [
                             'name' => 'request_intake_form',
                             'arguments' => [
-                                'document_type' => $event->toolCall->arguments['document_type'] ?? null,
-                                'fields' => $this->chatService->intakeFieldsFor(
-                                    $conversation,
-                                    $message,
-                                    $event->toolCall->arguments['document_type'] ?? null,
-                                ),
+                                'document_type' => $documentType,
+                                'fields' => $fields,
                                 'default_values' => $this->chatService->recentIntakeValues($conversation),
                             ],
                         ]);
@@ -410,10 +420,18 @@ class ChatController extends Controller
                             $this->chatService->discardLastAssistantMessage();
                         }
 
-                        $fields = DraftingIntent::intakeFieldsFromNeedsInfo($bufferedText);
+                        $asked = DraftingIntent::intakeFieldsFromNeedsInfo($bufferedText);
 
-                        if ($this->chatService->caseSuppliesFacts($conversation)) {
-                            $fields = $this->chatService->dropCaseCoveredFields($conversation, $fields);
+                        // dropCaseCoveredFields is a no-op when the case
+                        // supplies nothing, so it is safe to call either way.
+                        // If dropping empties the form, the model asked ONLY
+                        // for facts the case is meant to cover — its explicit
+                        // ask wins over the heuristic, since an empty form is
+                        // a dead end the user cannot answer.
+                        $fields = $this->chatService->dropCaseCoveredFields($conversation, $asked);
+
+                        if ($fields === []) {
+                            $fields = $asked;
                         }
 
                         yield $emit('tool_call', [
@@ -432,9 +450,13 @@ class ChatController extends Controller
                     }
                 }
 
-                if (! $todoRequested && $textLength > 0 && $isIntakeSubmission) {
+                if (! $todoRequested && $textLength > 0
+                    && ($isIntakeSubmission || DraftingIntent::hasTodoBlock($lastText))) {
                     // The model skipped the mandatory todo step. Persist the
                     // next steps extracted from the draft so tasks still appear.
+                    // A reply that wrote out a checklist (TODO markers or a
+                    // next-steps heading) without calling create_todo gets the
+                    // same treatment, whatever turn it came from.
                     try {
                         $created = [];
 

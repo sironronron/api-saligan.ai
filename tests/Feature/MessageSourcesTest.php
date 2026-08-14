@@ -1,10 +1,12 @@
 <?php
 
 use App\Enums\ChatProvider;
+use App\Enums\LabelKind;
 use App\Enums\MessageRole;
 use App\Models\CrawledPage;
 use App\Models\Document;
 use App\Models\DocumentChunk;
+use App\Models\Label;
 use App\Models\LegalChunk;
 use App\Models\LegalSource;
 use App\Models\Message;
@@ -327,4 +329,48 @@ it('keeps strict filtering when any source is cited inline', function () {
         ->and($sources[0]['label'])->toBe('RA No. 6657')
         ->and(collect($sources)->pluck('label'))->not->toContain('case-brief.pdf')
         ->and(collect($sources)->pluck('label'))->not->toContain('RA No. 8371');
+});
+
+it('carries every cited passage of a document plus how it is filed', function () {
+    $user = User::factory()->create();
+
+    $document = Document::factory()->for($user)->create([
+        'original_filename' => 'deed-of-sale.pdf',
+        'mime_type' => 'application/pdf',
+        'digest' => 'A deed transferring the lot.',
+    ]);
+
+    $label = Label::factory()->create([
+        'kind' => LabelKind::DocumentCategory,
+        'name' => 'Documentary evidence',
+    ]);
+    $document->labels()->attach($label);
+
+    $first = DocumentChunk::factory()->for($document)->for($user)->create([
+        'chunk_index' => 2,
+        'content' => 'The vendor warrants ownership.',
+    ]);
+    $second = DocumentChunk::factory()->for($document)->for($user)->create([
+        'chunk_index' => 7,
+        'content' => 'Payment is due on execution.',
+    ]);
+
+    $message = Message::factory()->create([
+        'role' => MessageRole::Assistant,
+        'content' => 'The deed says so.',
+        'cited_chunk_ids' => [$first->id, $second->id],
+    ]);
+
+    $sources = MessageSources::for($message);
+
+    expect($sources)->toHaveCount(1)
+        ->and($sources[0]['type'])->toBe('document')
+        ->and($sources[0]['document_id'])->toBe($document->id)
+        // Both passages, so the reader highlights each one the answer drew on.
+        ->and($sources[0]['cited_chunk_indexes'])->toBe([2, 7])
+        ->and($sources[0]['mime_type'])->toBe('application/pdf')
+        ->and($sources[0]['has_digest'])->toBeTrue()
+        ->and($sources[0]['uploaded_at'])->not->toBeNull()
+        ->and($sources[0]['tags'])->toHaveCount(1)
+        ->and($sources[0]['tags'][0]['name'])->toBe('Documentary evidence');
 });

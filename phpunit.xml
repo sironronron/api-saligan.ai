@@ -36,6 +36,9 @@
         <env name="AI_CHAT_PROVIDER" value="ollama"/>
         <!-- Classification reaches a model, so it stays off unless a test turns it on. -->
         <env name="DOCUMENT_CLASSIFICATION_ENABLED" value="false"/>
+        <!-- Crawler tests fake HTTP against hostnames that do not resolve, so
+             the address guard is off here; OutboundUrlTest covers it directly. -->
+        <env name="LEGAL_CRAWLER_BLOCK_PRIVATE_ADDRESSES" value="false"/>
         <env name="SUPABASE_URL" value="https://test.supabase.co"/>
         <env name="SUPABASE_JWT_SECRET" value="test-supabase-jwt-secret-with-more-than-32-bytes"/>
     </php>

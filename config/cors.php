@@ -30,7 +30,12 @@ return [
     // Local frontend hosts (localhost / 127.0.0.1 / IPv6) on any dev port.
     // Patterns also make the middleware echo back the actual request origin
     // instead of always returning the single configured origin.
-    'allowed_origins_patterns' => [
+    //
+    // Local origins are granted only outside production. Left on in
+    // production, any page the user can be induced to load from a local port —
+    // a dev server, an Electron app, a local tool with an HTTP interface —
+    // would be handed cross-origin read access to the API.
+    'allowed_origins_patterns' => env('APP_ENV') === 'production' ? [] : [
         '#^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$#',
     ],
 

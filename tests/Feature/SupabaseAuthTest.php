@@ -19,6 +19,25 @@ function withToken(string $token): TestCase
 }
 
 /**
+ * Fill in the claims every genuine Supabase access token carries, so a
+ * hand-built token differs from a real one only in the way the test is
+ * actually about. `aud` and `iss` are checked on every request; omitting them
+ * would make a token fail for a reason the test never intended to exercise.
+ *
+ * @param  array<string, mixed>  $claims
+ * @return array<string, mixed>
+ */
+function supabaseClaims(array $claims): array
+{
+    return $claims + [
+        'aud' => 'authenticated',
+        'iss' => app(SupabaseJwtService::class)->issuer(),
+        'role' => 'authenticated',
+        'user_metadata' => ['email_verified' => true],
+    ];
+}
+
+/**
  * A P-256 key pair, as the private PEM plus the public point the JWKS carries.
  *
  * @return array{0: string, 1: string, 2: string}
@@ -68,13 +87,13 @@ it('rejects a malformed Authorization header', function () {
 });
 
 it('rejects a token signed with the wrong secret', function () {
-    $forged = JWT::encode([
+    $forged = JWT::encode(supabaseClaims([
         'sub' => (string) Str::uuid(),
         'email' => 'attacker@example.com',
         'exp' => time() + 3600,
         // HS256 requires a 256-bit key, so the forged secret has to be long
         // enough to sign with — it just must not be the project's.
-    ], 'an-attacker-controlled-secret-that-is-long-enough', 'HS256');
+    ]), 'an-attacker-controlled-secret-that-is-long-enough', 'HS256');
 
     withToken($forged)->getJson('/api/user')->assertUnauthorized();
 
@@ -84,12 +103,12 @@ it('rejects a token signed with the wrong secret', function () {
 it('rejects an expired token', function () {
     $secret = config('supabase.jwt_secret');
 
-    $expired = JWT::encode([
+    $expired = JWT::encode(supabaseClaims([
         'sub' => (string) Str::uuid(),
         'email' => 'late@example.com',
         'iat' => time() - 7200,
         'exp' => time() - 3600,
-    ], $secret, 'HS256');
+    ]), $secret, 'HS256');
 
     withToken($expired)->getJson('/api/user')->assertUnauthorized();
 });
@@ -97,10 +116,10 @@ it('rejects an expired token', function () {
 it('rejects a token carrying no email claim', function () {
     $secret = config('supabase.jwt_secret');
 
-    $token = JWT::encode([
+    $token = JWT::encode(supabaseClaims([
         'sub' => (string) Str::uuid(),
         'exp' => time() + 3600,
-    ], $secret, 'HS256');
+    ]), $secret, 'HS256');
 
     withToken($token)->getJson('/api/user')->assertUnauthorized();
 });
@@ -163,6 +182,66 @@ it('links a pre-Supabase account by email, keeping its organization and profile'
         ->and(User::where('email', 'legacy@example.com')->count())->toBe(1);
 });
 
+it('refuses to hand an existing account to a token whose email was never confirmed', function () {
+    // Signing up in Supabase as someone else's address costs nothing;
+    // confirming it does. If an unconfirmed token could still be linked by
+    // email, anyone could register victim@example.com and inherit that user's
+    // cases, documents, organization, subscription, and admin flag.
+    $organization = Organization::factory()->create();
+    $victim = User::factory()->memberOf($organization)->create([
+        'email' => 'victim@example.com',
+        'supabase_uid' => null,
+        'is_admin' => true,
+    ]);
+
+    withToken(supabaseToken((string) Str::uuid(), 'victim@example.com', ['email_verified' => false]))
+        ->getJson('/api/user')
+        ->assertUnauthorized();
+
+    expect($victim->fresh()->supabase_uid)->toBeNull();
+});
+
+it('rejects a token minted for a different Supabase project', function () {
+    // Same signing secret, wrong issuer: the check that stops a token from
+    // another project (or an `anon`/`service_role` key) being replayed here.
+    $token = JWT::encode(supabaseClaims([
+        'sub' => (string) Str::uuid(),
+        'email' => 'other-project@example.com',
+        'iss' => 'https://someone-elses-project.supabase.co/auth/v1',
+        'exp' => time() + 3600,
+    ]), config('supabase.jwt_secret'), 'HS256');
+
+    withToken($token)->getJson('/api/user')->assertUnauthorized();
+
+    expect(User::where('email', 'other-project@example.com')->exists())->toBeFalse();
+});
+
+it('rejects a token that is not addressed to authenticated users', function () {
+    $token = JWT::encode(supabaseClaims([
+        'sub' => (string) Str::uuid(),
+        'email' => 'wrong-audience@example.com',
+        'aud' => 'anon',
+        'exp' => time() + 3600,
+    ]), config('supabase.jwt_secret'), 'HS256');
+
+    withToken($token)->getJson('/api/user')->assertUnauthorized();
+
+    expect(User::where('email', 'wrong-audience@example.com')->exists())->toBeFalse();
+});
+
+it('rejects an anonymous Supabase session', function () {
+    $token = JWT::encode(supabaseClaims([
+        'sub' => (string) Str::uuid(),
+        'email' => 'anonymous@example.com',
+        'is_anonymous' => true,
+        'exp' => time() + 3600,
+    ]), config('supabase.jwt_secret'), 'HS256');
+
+    withToken($token)->getJson('/api/user')->assertUnauthorized();
+
+    expect(User::where('email', 'anonymous@example.com')->exists())->toBeFalse();
+});
+
 it('matches an existing account regardless of email casing', function () {
     $existing = User::factory()->create(['email' => 'mixed@example.com']);
 
@@ -223,13 +302,13 @@ it('accepts a token signed with the key the project publishes', function () {
 
     $uid = (string) Str::uuid();
 
-    $token = JWT::encode([
+    $token = JWT::encode(supabaseClaims([
         'sub' => $uid,
         'email' => 'asymmetric@example.com',
         'iat' => time(),
         'exp' => time() + 3600,
         'user_metadata' => ['full_name' => 'Elliptic Curve'],
-    ], $private, 'ES256', $kid);
+    ]), $private, 'ES256', $kid);
 
     withToken($token)
         ->getJson('/api/user')
@@ -248,12 +327,12 @@ it('rejects a token signed with a key the project does not publish', function ()
     // stands between it and an account.
     Http::fake(['*/.well-known/jwks.json' => Http::response(jwksDocument($x, $y, $kid))]);
 
-    $token = JWT::encode([
+    $token = JWT::encode(supabaseClaims([
         'sub' => (string) Str::uuid(),
         'email' => 'forged@example.com',
         'iat' => time(),
         'exp' => time() + 3600,
-    ], $attackerPrivate, 'ES256', $kid);
+    ]), $attackerPrivate, 'ES256', $kid);
 
     withToken($token)->getJson('/api/user')->assertUnauthorized();
 
@@ -271,12 +350,12 @@ it('refetches the key set once when the token names an unknown key id', function
         ->push(jwksDocument($x, $y, $rotatedKid)),
     ]);
 
-    $token = JWT::encode([
+    $token = JWT::encode(supabaseClaims([
         'sub' => (string) Str::uuid(),
         'email' => 'rotated@example.com',
         'iat' => time(),
         'exp' => time() + 3600,
-    ], $private, 'ES256', $rotatedKid);
+    ]), $private, 'ES256', $rotatedKid);
 
     withToken($token)->getJson('/api/user')->assertSuccessful();
 });
@@ -286,12 +365,12 @@ it('rejects tokens rather than failing open when the key set cannot be fetched',
 
     Http::fake(['*/.well-known/jwks.json' => Http::response('', 500)]);
 
-    $token = JWT::encode([
+    $token = JWT::encode(supabaseClaims([
         'sub' => (string) Str::uuid(),
         'email' => 'unreachable@example.com',
         'iat' => time(),
         'exp' => time() + 3600,
-    ], $private, 'ES256', (string) Str::uuid());
+    ]), $private, 'ES256', (string) Str::uuid());
 
     withToken($token)->getJson('/api/user')->assertUnauthorized();
 
@@ -311,23 +390,23 @@ it('rejects tokens rather than failing open when the key set cannot be fetched',
 */
 
 it('accepts a token issued a few seconds ahead of this server clock', function () {
-    $token = JWT::encode([
+    $token = JWT::encode(supabaseClaims([
         'sub' => (string) Str::uuid(),
         'email' => 'skewed@example.com',
         'iat' => time() + 5,
         'exp' => time() + 3600,
-    ], config('supabase.jwt_secret'), 'HS256');
+    ]), config('supabase.jwt_secret'), 'HS256');
 
     withToken($token)->getJson('/api/user')->assertSuccessful();
 });
 
 it('still rejects a token issued far beyond the skew tolerance', function () {
-    $token = JWT::encode([
+    $token = JWT::encode(supabaseClaims([
         'sub' => (string) Str::uuid(),
         'email' => 'far-future@example.com',
         'iat' => time() + 3600,
         'exp' => time() + 7200,
-    ], config('supabase.jwt_secret'), 'HS256');
+    ]), config('supabase.jwt_secret'), 'HS256');
 
     withToken($token)->getJson('/api/user')->assertUnauthorized();
 

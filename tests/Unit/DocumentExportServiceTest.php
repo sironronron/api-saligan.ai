@@ -135,6 +135,28 @@ CONTENT;
         ->toBe("REPUBLIC OF THE PHILIPPINES\nDEMAND LETTER");
 });
 
+it('excludes a todo checklist wrapped in bold markers from the exported body', function () {
+    $content = <<<'CONTENT'
+[[DOCUMENT_START]]
+REPUBLIC OF THE PHILIPPINES
+DEMAND LETTER
+Very truly yours,
+[[DOCUMENT_END]]
+
+**[TODO_START]**
+- File the demand letter
+- Pay the filing fees
+-[TODO_END]
+
+[Download as Word](/api/messages/abc/export/word)
+CONTENT;
+
+    $service = new DocumentExportService;
+
+    expect($service->extractDocument($content))
+        ->toBe("REPUBLIC OF THE PHILIPPINES\nDEMAND LETTER\nVery truly yours,");
+});
+
 it('cuts a draft missing the closing marker at the todo checklist', function () {
     $content = <<<'CONTENT'
 [[DOCUMENT_START]]
