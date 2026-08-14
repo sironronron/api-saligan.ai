@@ -33,6 +33,13 @@ class Plan extends Model
 
     use HasUuids;
 
+    /**
+     * The plan a code-granted free trial runs on. Never sold: it is seeded
+     * inactive so it stays out of the pricing page and out of checkout, and
+     * exists only to give a trial its own, smaller allowance.
+     */
+    public const SLUG_TRIAL = 'trial';
+
     public const SLUG_STARTER = 'starter';
 
     public const SLUG_PRO = 'pro';

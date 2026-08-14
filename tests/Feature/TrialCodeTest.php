@@ -11,7 +11,9 @@ use App\Support\PlanLimits;
 use Illuminate\Http\Exceptions\HttpResponseException;
 
 beforeEach(function () {
-    // Ordered so the cheapest is the default any code without a plan falls to.
+    // The trial plan is what a code without a plan of its own falls to; the
+    // paid tiers are here for codes that name one.
+    $this->trial = Plan::factory()->trial()->create();
     $this->starter = Plan::factory()->create(['slug' => 'starter', 'name' => 'Starter', 'sort_order' => 1]);
     $this->firm = Plan::factory()->create(['slug' => 'firm', 'name' => 'Firm', 'sort_order' => 3]);
 
@@ -76,7 +78,20 @@ it('trials on the code plan when it names one', function () {
         ->assertJsonPath('data.plan.name', 'Firm');
 });
 
-it('falls back to the cheapest active plan when the code names none', function () {
+it('falls back to the free trial plan when the code names none', function () {
+    $code = TrialCode::factory()->create(['plan_id' => null]);
+
+    redeemAs($this->user, $code->code)
+        ->assertCreated()
+        ->assertJsonPath('data.plan.name', 'Free trial')
+        // A quarter of Starter's allowance, which is the whole point of the
+        // trial plan existing rather than trialling on Starter itself.
+        ->assertJsonPath('data.usage.messages.limit', 30);
+});
+
+it('falls back to the cheapest active plan when no trial plan is seeded', function () {
+    $this->trial->delete();
+
     $code = TrialCode::factory()->create(['plan_id' => null]);
 
     redeemAs($this->user, $code->code)

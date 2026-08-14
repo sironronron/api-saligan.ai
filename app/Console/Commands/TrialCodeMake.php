@@ -11,7 +11,7 @@ class TrialCodeMake extends Command
 {
     protected $signature = 'trial:code
         {--days=14 : Length of the trial in days}
-        {--plan= : Plan slug to trial on (defaults to the cheapest active plan)}
+        {--plan= : Plan slug to trial on (defaults to the free trial plan)}
         {--uses= : Maximum redemptions (omit for unlimited)}
         {--expires= : Days until the code itself stops working}
         {--code= : Use this exact code instead of generating one}

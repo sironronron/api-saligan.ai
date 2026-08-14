@@ -137,14 +137,19 @@ class TrialRedeemer
     }
 
     /**
-     * The plan a code trials on when it does not name one: the cheapest active
-     * plan, so an unspecified code never silently grants the top tier.
+     * The plan a code trials on when it does not name one: the dedicated trial
+     * plan, whose allowance is a quarter of Starter's.
+     *
+     * Falls back to the cheapest active plan where that plan has not been
+     * seeded, so an unspecified code still grants something rather than
+     * failing — and never silently grants the top tier.
      */
     protected function defaultTrialPlan(): ?Plan
     {
-        return Plan::query()
-            ->where('is_active', true)
-            ->orderBy('sort_order')
-            ->first();
+        return Plan::query()->where('slug', Plan::SLUG_TRIAL)->first()
+            ?? Plan::query()
+                ->where('is_active', true)
+                ->orderBy('sort_order')
+                ->first();
     }
 }

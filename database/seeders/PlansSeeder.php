@@ -24,6 +24,28 @@ class PlansSeeder extends Seeder
         // the cache never warms at all.
         $plans = [
             [
+                // A trial is a quarter of Starter across every allowance: enough
+                // to run a real matter end to end and see cited answers, not
+                // enough to be a substitute for paying. Seeded inactive so it
+                // never appears on the pricing page or in checkout — only
+                // {@see \App\Services\Billing\TrialRedeemer} reaches it.
+                'slug' => Plan::SLUG_TRIAL,
+                'name' => 'Free trial',
+                'price' => 0,
+                'price_annual' => 0,
+                'overage_price' => null,
+                'sort_order' => 0,
+                'is_active' => false,
+                'limits' => [
+                    'active_cases' => 3,
+                    'documents_uploaded' => 3,
+                    'messages_used' => 30,
+                ],
+                // The same capabilities as Starter: a trial that hides features
+                // is trialling a product nobody is being asked to buy.
+                'features' => ['templates', 'exports', 'web_search'],
+            ],
+            [
                 'slug' => Plan::SLUG_STARTER,
                 'name' => 'Starter',
                 'price' => 150000,
@@ -73,10 +95,16 @@ class PlansSeeder extends Seeder
         foreach ($plans as $plan) {
             $record = Plan::query()->updateOrCreate(
                 ['slug' => $plan['slug']],
+                // Union, not merge: a plan above that sets `is_active` itself
+                // keeps its own value.
                 $plan + ['currency' => 'PHP', 'interval' => Plan::INTERVAL_MONTHLY, 'is_active' => true],
             );
 
-            $this->syncPayMongoPlan($record);
+            // Nothing is ever charged for a free plan, so it needs no gateway
+            // plan behind it.
+            if ($record->price > 0) {
+                $this->syncPayMongoPlan($record);
+            }
         }
     }
 

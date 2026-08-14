@@ -35,6 +35,29 @@ class PlanFactory extends Factory
     }
 
     /**
+     * The free trial plan: a quarter of Starter's allowance, and inactive so it
+     * is never sold.
+     */
+    public function trial(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'slug' => Plan::SLUG_TRIAL,
+            'name' => 'Free trial',
+            'price' => 0,
+            'price_annual' => 0,
+            'overage_price' => null,
+            'sort_order' => 0,
+            'is_active' => false,
+            'limits' => [
+                'active_cases' => 3,
+                'documents_uploaded' => 3,
+                'messages_used' => 30,
+            ],
+            'features' => ['templates', 'exports', 'web_search'],
+        ]);
+    }
+
+    /**
      * The Starter plan configuration.
      */
     public function starter(): static

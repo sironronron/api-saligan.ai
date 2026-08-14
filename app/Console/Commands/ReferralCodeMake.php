@@ -17,7 +17,7 @@ class ReferralCodeMake extends Command
     protected $signature = 'referral:code
         {owner : User id or email the referral code belongs to}
         {--days=14 : Length of the trial in days}
-        {--plan= : Plan slug to trial on (defaults to the cheapest active plan)}';
+        {--plan= : Plan slug to trial on (defaults to the free trial plan)}';
 
     /**
      * The console command description.

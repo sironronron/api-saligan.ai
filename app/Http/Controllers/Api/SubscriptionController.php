@@ -79,7 +79,11 @@ class SubscriptionController extends Controller
                 user: $user,
                 plan: $plan,
                 interval: $billingInterval,
-                successUrl: "{$frontendUrl}/settings/billing?{$gateway->name()->value}=return",
+                // A completed checkout lands on the welcome screen, not in
+                // billing settings: the user just paid, so the return is a
+                // thank-you and a way into the app, not an invoice to read.
+                // That screen waits out the webhook before it says anything.
+                successUrl: "{$frontendUrl}/welcome?{$gateway->name()->value}=return",
                 cancelUrl: "{$frontendUrl}/pricing",
             );
 

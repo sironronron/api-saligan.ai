@@ -20,9 +20,9 @@ it('provisions monthly and annual PayMongo plans and persists their ids', functi
 
     $this->seeder->run();
 
-    expect(Plan::count())->toBe(3);
+    expect(Plan::count())->toBe(4);
 
-    foreach (Plan::all() as $plan) {
+    foreach (Plan::where('price', '>', 0)->get() as $plan) {
         expect($plan->paymongo_plan_id)->not->toBeNull()
             ->and($plan->paymongo_plan_id_annual)->not->toBeNull();
     }
@@ -47,7 +47,7 @@ it('skips PayMongo provisioning when no secret key is configured', function () {
 
     $this->seeder->run();
 
-    expect(Plan::count())->toBe(3);
+    expect(Plan::count())->toBe(4);
 
     foreach (Plan::all() as $plan) {
         expect($plan->paymongo_plan_id)->toBeNull()
@@ -105,6 +105,28 @@ it('seeds the new pricing, caps, and overage rates', function () {
         ->and($firm->limits['messages_used'])->toBe(1000);
 });
 
+it('seeds the free trial plan at a quarter of Starter, unsold', function () {
+    Http::fake(['api.paymongo.com/*' => Http::response(['data' => []])]);
+    config(['paymongo.secret_key' => 'sk_test_123']);
+
+    $this->seeder->run();
+
+    $trial = Plan::where('slug', Plan::SLUG_TRIAL)->firstOrFail();
+    $starter = Plan::where('slug', Plan::SLUG_STARTER)->firstOrFail();
+
+    foreach (['active_cases', 'documents_uploaded', 'messages_used'] as $key) {
+        expect($trial->limits[$key])->toBe((int) ceil($starter->limits[$key] / 4));
+    }
+
+    // Free and hidden: it must never reach the pricing page, checkout, or a
+    // gateway plan.
+    expect($trial->price)->toBe(0)
+        ->and($trial->is_active)->toBeFalse()
+        ->and($trial->paymongo_plan_id)->toBeNull()
+        ->and($trial->paymongo_plan_id_annual)->toBeNull()
+        ->and($trial->features)->toBe($starter->features);
+});
+
 it('prices every tier above what its messages cost to serve', function () {
     // The guardrail the old ladder failed: message cost is flat, so a tier
     // whose price divided by its cap falls under the marginal cost loses money
@@ -123,7 +145,9 @@ it('prices every tier above what its messages cost to serve', function () {
         cacheHitRate: 0.0,
     );
 
-    foreach (Plan::all() as $plan) {
+    // Paid tiers only: the free trial plan carries no revenue to cost against,
+    // and its allowance is deliberately a loss leader.
+    foreach (Plan::where('price', '>', 0)->get() as $plan) {
         $revenuePerMessage = $plan->price / 100 / $plan->limits['messages_used'];
 
         expect($revenuePerMessage)->toBeGreaterThan($costPerMessage);
@@ -139,7 +163,7 @@ it('logs a warning and continues when PayMongo provisioning fails', function () 
 
     $this->seeder->run();
 
-    expect(Plan::count())->toBe(3);
+    expect(Plan::count())->toBe(4);
 
     foreach (Plan::all() as $plan) {
         expect($plan->paymongo_plan_id)->toBeNull();
