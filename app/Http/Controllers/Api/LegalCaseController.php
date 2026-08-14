@@ -326,11 +326,15 @@ class LegalCaseController extends Controller
             // The edit form resubmits the case's own reference unchanged, so
             // the case under edit has to be exempt from its own uniqueness
             // check — otherwise every save fails against the stored row.
+            // References are only required to be unique per user, so two users
+            // may reference their cases independently.
             'reference' => [
                 'nullable',
                 'string',
                 'max:40',
-                Rule::unique('cases', 'reference')->ignore($case?->id),
+                Rule::unique('cases', 'reference')
+                    ->where(fn ($query) => $query->where('user_id', $request?->user()?->getKey()))
+                    ->ignore($case?->id),
             ],
             'priority' => ['nullable', 'in:'.implode(',', self::PRIORITIES)],
             'status' => [...$required('string'), 'in:'.implode(',', self::STATUSES)],

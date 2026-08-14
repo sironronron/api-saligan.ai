@@ -13,6 +13,11 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 
 beforeEach(function () {
+    // Pinned rather than left to the default: GEMINI_CHAT_MODEL is set in most
+    // real .env files, and a test that asserts on the model must not depend on
+    // whose machine it runs on.
+    config(['saligan.chat.gemini_model' => 'gemini-3.6-flash']);
+
     $this->user = User::factory()->create();
     Subscription::factory()->for($this->user)->create([
         'plan_id' => Plan::factory()->pro()->create()->id,

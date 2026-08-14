@@ -5,6 +5,7 @@ namespace App\Services\Documents;
 use App\Ai\DocumentCategoryAgent;
 use App\Enums\LabelKind;
 use App\Models\Document;
+use App\Models\DocumentClassificationRequest;
 use App\Models\Label;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
@@ -45,6 +46,15 @@ class DocumentClassifier
                 return;
             }
 
+            // Batched: the document is queued and filed by a later sweep,
+            // which costs half as much and arrives within the hour. Nothing
+            // downstream waits on the filing, so ingestion carries on.
+            if ($this->batches()) {
+                $this->enqueue($document, $text);
+
+                return;
+            }
+
             $suggestions = $this->suggest($document, $text, $vocabulary);
 
             if ($suggestions === []) {
@@ -71,14 +81,140 @@ class DocumentClassifier
     {
         [$provider, $model] = $this->resolveProvider();
 
-        $agent = new DocumentCategoryAgent(
-            slugs: $vocabulary->pluck('slug')->all(),
-            vocabulary: $this->renderVocabulary($vocabulary),
-        );
+        $agent = $this->agentFor($vocabulary);
 
         $response = $agent->prompt($this->buildPrompt($document, $text), [], $provider, $model);
 
         return $this->selectConfident($this->readCandidates($response), $vocabulary);
+    }
+
+    /**
+     * Queue a document for the next classification batch, replacing any
+     * request already queued for it — a re-ingested document is classified
+     * against the text it has now, not the text it had on the first attempt.
+     */
+    public function enqueue(Document $document, string $text): DocumentClassificationRequest
+    {
+        return DocumentClassificationRequest::updateOrCreate(
+            ['document_id' => $document->id],
+            [
+                'prompt' => $this->buildPrompt($document, $text),
+                'status' => DocumentClassificationRequest::STATUS_PENDING,
+                'batch_id' => null,
+                'error' => null,
+                'submitted_at' => null,
+                'completed_at' => null,
+            ],
+        );
+    }
+
+    /**
+     * File a document from an answer that arrived later.
+     *
+     * The eligibility checks run again here rather than being trusted from
+     * submission time: a batch takes up to a day, and in that time somebody
+     * may have filed the document by hand — their filing wins — or the firm's
+     * categories may have changed underneath it.
+     *
+     * @param  array<int, array{slug: string, confidence: float}>  $candidates
+     */
+    public function apply(Document $document, array $candidates): void
+    {
+        if ($this->wasFiledByHand($document)) {
+            return;
+        }
+
+        $vocabulary = $this->vocabularyFor($document);
+
+        if ($vocabulary->isEmpty()) {
+            return;
+        }
+
+        $suggestions = $this->selectConfident($candidates, $vocabulary);
+
+        if ($suggestions === []) {
+            return;
+        }
+
+        $document->syncSuggestedLabels($suggestions);
+    }
+
+    /**
+     * The providers that offer an asynchronous batch API, and so can classify
+     * in batches rather than inline.
+     *
+     * @var array<int, Lab>
+     */
+    protected const BATCH_PROVIDERS = [Lab::Anthropic, Lab::Gemini];
+
+    /**
+     * Whether classification should be batched rather than answered inline.
+     *
+     * A deployment pointed at a provider with no batch API — or at one with no
+     * key, which silently degrades to a local model — keeps classifying inline
+     * no matter what the flag says.
+     */
+    public function batches(): bool
+    {
+        if (! config('saligan.documents.classification.batch.enabled', false)) {
+            return false;
+        }
+
+        return $this->batchProvider() !== null;
+    }
+
+    /**
+     * The provider batched classification runs on, or null when this
+     * deployment is not classifying on one that batches.
+     */
+    public function batchProvider(): ?Lab
+    {
+        $provider = $this->resolveProvider()[0];
+
+        return in_array($provider, self::BATCH_PROVIDERS, true) ? $provider : null;
+    }
+
+    /**
+     * The model batched classification runs on, or null when this deployment
+     * is not classifying on a provider that batches.
+     */
+    public function batchModel(): ?string
+    {
+        [$provider, $model] = $this->resolveProvider();
+
+        return in_array($provider, self::BATCH_PROVIDERS, true) ? $model : null;
+    }
+
+    /**
+     * The agent whose instructions and output shape define a classification,
+     * batched or not.
+     *
+     * @param  Collection<int, Label>  $vocabulary
+     */
+    public function agentFor(Collection $vocabulary): DocumentCategoryAgent
+    {
+        return new DocumentCategoryAgent(
+            slugs: $vocabulary->pluck('slug')->all(),
+            vocabulary: $this->renderVocabulary($vocabulary),
+        );
+    }
+
+    /**
+     * Read the categories out of a raw JSON answer, as a batch result carries
+     * it. Unparseable JSON is a wrong answer, not an exception — the document
+     * stays unfiled, exactly as it would on a malformed inline response.
+     *
+     * @return array<int, array{slug: string, confidence: float}>
+     */
+    public function readJsonCandidates(string $json): array
+    {
+        $decoded = json_decode($json, true);
+
+        if (! is_array($decoded)) {
+            return [];
+        }
+
+        return $this->candidatesFrom($decoded['categories'] ?? []);
     }
 
     /**
@@ -87,7 +223,7 @@ class DocumentClassifier
      *
      * @return Collection<int, Label>
      */
-    protected function vocabularyFor(Document $document): Collection
+    public function vocabularyFor(Document $document): Collection
     {
         $owner = $document->user;
 
@@ -169,8 +305,16 @@ PROMPT;
             return [];
         }
 
-        $categories = $response->structured['categories'] ?? [];
+        return $this->candidatesFrom($response->structured['categories'] ?? []);
+    }
 
+    /**
+     * Normalise the model's category list, whichever shape it arrived in.
+     *
+     * @return array<int, array{slug: string, confidence: float}>
+     */
+    protected function candidatesFrom(mixed $categories): array
+    {
         if (! is_array($categories)) {
             return [];
         }

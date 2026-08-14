@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Enums\CrawlStatus;
 use App\Models\CrawledPage;
+use App\Services\Crawler\LegalDigestBatcher;
 use App\Services\Crawler\LegalDigestService;
 use Illuminate\Console\Command;
 
@@ -37,6 +38,25 @@ class DigestLegalPages extends Command
 
         if ($pages->isEmpty()) {
             $this->info('Nothing to digest.');
+
+            return self::SUCCESS;
+        }
+
+        // With batching on, a backfill is exactly the work a batch API is for:
+        // hundreds of authorities nobody has asked for, at half the cost. The
+        // pages are queued and the scheduled sweeps take them from here.
+        if ($digests->batches()) {
+            $queued = 0;
+
+            foreach ($pages as $page) {
+                $text = $page->chunks()->orderBy('chunk_index')->pluck('content')->implode("\n\n");
+
+                if (app(LegalDigestBatcher::class)->enqueue($page, $text) !== null) {
+                    $queued++;
+                }
+            }
+
+            $this->info("Queued {$queued} page(s) for the next digest batch.");
 
             return self::SUCCESS;
         }

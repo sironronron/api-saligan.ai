@@ -158,6 +158,34 @@ class ChatController extends Controller
         $draftStarted = false;
         $webSeen = [];
         $webIndex = 0;
+
+        // Web citations are numbered here, once, in first-seen order —
+        // the same numbering the persisted web_citations metadata gets, so
+        // the cards line up live and on reload. Both sources of citations
+        // (the answering provider's own web search, and the delegated
+        // web_search tool) are numbered by this one counter.
+        //
+        // @return array<int, array<string, mixed>> the card payloads to emit
+        $collectCitations = function (array $citations) use (&$webSeen, &$webIndex): array {
+            $cards = [];
+
+            foreach ($citations as $citation) {
+                $url = $citation['url'];
+
+                if (isset($webSeen[$url])) {
+                    $webSeen[$url]['snippet'] ??= $citation['snippet'] ?? null;
+
+                    continue;
+                }
+
+                $webSeen[$url] = $citation;
+                $webIndex++;
+
+                $cards[] = WebCitationParser::source($citation, $webIndex);
+            }
+
+            return $cards;
+        };
         // Derived once: it is the same for every frame of this turn.
         $topic = ChatStatus::topic($message);
 
@@ -204,6 +232,14 @@ class ChatController extends Controller
             }
 
             foreach ($stream as $event) {
+                // The delegated web search runs inside a tool call and emits no
+                // provider events of its own, so its sources are drained from
+                // the service on every event — the cards appear while the tool
+                // is still feeding the model, not after the answer ends.
+                foreach ($collectCitations($this->chatService->pullWebCitations()) as $card) {
+                    yield $emit('citation', $card);
+                }
+
                 if ($event instanceof ErrorEvent) {
                     $error = $event->message;
 
@@ -219,19 +255,8 @@ class ChatController extends Controller
                 // Deduplicated by URL in first-seen order — the same numbering
                 // the persisted web_citations metadata gets on reload.
                 if ($event instanceof Citation || ($event instanceof ProviderToolEvent && $event->type === 'web_search_tool_result')) {
-                    foreach (WebCitationParser::fromEvent($event) as $citation) {
-                        $url = $citation['url'];
-
-                        if (isset($webSeen[$url])) {
-                            $webSeen[$url]['snippet'] ??= $citation['snippet'] ?? null;
-
-                            continue;
-                        }
-
-                        $webSeen[$url] = $citation;
-                        $webIndex++;
-
-                        yield $emit('citation', WebCitationParser::source($citation, $webIndex));
+                    foreach ($collectCitations(WebCitationParser::fromEvent($event)) as $card) {
+                        yield $emit('citation', $card);
                     }
                 }
 
@@ -375,6 +400,13 @@ class ChatController extends Controller
                         $todoRequested = true;
                     }
                 }
+            }
+
+            // A search that ran on the last events of the stream leaves sources
+            // recorded but never drained; without this they would be persisted
+            // on the message and appear only on reload.
+            foreach ($collectCitations($this->chatService->pullWebCitations()) as $card) {
+                yield $emit('citation', $card);
             }
         } catch (StreamStoppedException $exception) {
             // The client went away mid-stream (navigated off the page, hit

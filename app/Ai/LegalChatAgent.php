@@ -22,6 +22,10 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
      * @param  string|null  $cachedContent  Gemini CachedContent resource name.
      * @param  string|null  $staticInstructions  The static system-prompt portion, emitted
      *                                           as the cached Anthropic system block.
+     * @param  string|null  $model  The model this turn will be sent to. Provider options
+     *                              are chosen per provider, but a few of them are only
+     *                              valid on some of that provider's models, and
+     *                              providerOptions() is handed the provider alone.
      */
     public function __construct(
         public string $instructions = '',
@@ -29,6 +33,7 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
         public array $tools = [],
         public ?string $cachedContent = null,
         public ?string $staticInstructions = null,
+        public ?string $model = null,
     ) {
         //
     }
@@ -138,11 +143,24 @@ class LegalChatAgent implements Agent, Conversational, HasProviderOptions, HasTo
         // already found the authorities by this point, so the model's job is to
         // read and write rather than to search — a lower setting reaches the
         // first token sooner without changing what it is working from.
-        if ($effort = config('saligan.chat.effort')) {
+        if (($effort = config('saligan.chat.effort')) && $this->supportsEffort()) {
             $options['output_config'] = ['effort' => $effort];
         }
 
         return $options;
+    }
+
+    /**
+     * Whether the model this turn is going to accepts `output_config.effort`.
+     *
+     * Haiku 4.5 does not, and it rejects the parameter with a 400 rather than
+     * ignoring it — so trial conversations, which are served Haiku, would fail
+     * on every turn if the effort tuned for Sonnet were sent along unchanged.
+     * There is nothing to substitute: Haiku has one speed.
+     */
+    protected function supportsEffort(): bool
+    {
+        return ! str_starts_with((string) $this->model, 'claude-haiku');
     }
 
     /**

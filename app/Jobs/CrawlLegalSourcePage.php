@@ -8,6 +8,7 @@ use App\Models\LegalChunk;
 use App\Models\LegalSource;
 use App\Services\Ai\EmbeddingService;
 use App\Services\Crawler\CrawlerAdapterFactory;
+use App\Services\Crawler\LegalDigestBatcher;
 use App\Services\Crawler\LegalDigestService;
 use App\Services\Crawler\PdfAdapter;
 use App\Services\Crawler\RobotsTxt;
@@ -180,10 +181,24 @@ class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
     /**
      * Generate and store the reader digest for a freshly crawled page.
      * Failures are swallowed by the service, so this never costs the crawl.
+     *
+     * With batching on, the page is queued instead: a crawl run digests
+     * hundreds of authorities nobody has asked for yet, which is the case a
+     * batch API exists for. The page simply carries no digest until the batch
+     * ends, and the reader falls back to full text meanwhile — the same state
+     * an inline digest failure leaves it in.
      */
     private function writeDigest(CrawledPage $page, string $text): void
     {
-        $digest = app(LegalDigestService::class)->generate($text, $page->title);
+        $digests = app(LegalDigestService::class);
+
+        if ($digests->batches()) {
+            app(LegalDigestBatcher::class)->enqueue($page, $text);
+
+            return;
+        }
+
+        $digest = $digests->generate($text, $page->title);
 
         if ($digest === null) {
             return;

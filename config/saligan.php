@@ -15,6 +15,21 @@ return [
     |
     */
 
+    /*
+    |--------------------------------------------------------------------------
+    | Batch API transport
+    |--------------------------------------------------------------------------
+    |
+    | How long a call to a provider's batch API may take. This is the HTTP
+    | timeout on submitting, polling, and reading a batch — not how long the
+    | batch itself may run, which is the provider's business and measured in
+    | hours. Shared by every batched feature (document classification, legal
+    | digests) because it describes the transport, not the work.
+    |
+    */
+
+    'batch_timeout' => (int) env('AI_BATCH_TIMEOUT', 60),
+
     'embedding' => [
         'provider' => env('AI_EMBED_PROVIDER', 'gemini'),
         'model' => env('AI_EMBED_MODEL', 'gemini-embedding-2'),
@@ -75,6 +90,21 @@ return [
         'anthropic_model' => env('ANTHROPIC_CHAT_MODEL', 'claude-sonnet-5'),
 
         /*
+         * The Anthropic model served to organizations still on a code-granted
+         * trial. Haiku 4.5 costs a third of Sonnet 5 on input and a fifth on
+         * output, which is what makes a free trial affordable to hand out; a
+         * trial is also where answer volume is highest and margin is zero.
+         *
+         * Paying organizations are unaffected — they keep `anthropic_model`.
+         * Set this to the same value as `anthropic_model` (or leave it empty)
+         * to serve everyone the same model.
+         *
+         * Note that Haiku 4.5 rejects `output_config.effort` outright, so the
+         * effort setting below is omitted for it; see LegalChatAgent.
+         */
+        'anthropic_trial_model' => env('ANTHROPIC_TRIAL_CHAT_MODEL', 'claude-haiku-4-5'),
+
+        /*
          * How hard the model works before answering: low | medium | high |
          * xhigh | max.
          *
@@ -84,6 +114,9 @@ return [
          * the model runs, so `medium` returns the first token noticeably
          * sooner while holding answer quality. Raise it if citation accuracy
          * suffers; drop to `low` for a faster, chattier feel.
+         *
+         * Only applies to models that accept it. Haiku 4.5 does not, and a
+         * request that sends it anyway is rejected with a 400.
          */
         'effort' => env('ANTHROPIC_CHAT_EFFORT', 'medium'),
     ],
@@ -120,6 +153,67 @@ return [
         // miss, so a hung call must fail fast — the caller then proceeds
         // without cached-input pricing instead of blocking the stream start.
         'create_timeout' => (int) env('GEMINI_CONTEXT_CACHE_CREATE_TIMEOUT', 10),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Web search
+    |--------------------------------------------------------------------------
+    |
+    | Web search is offered to the chat model on every turn: it is the primary
+    | source of law when retrieval comes back empty, and a way to verify or
+    | check for amendments when it does not.
+    |
+    | When `enabled` is on, the search does not run on the answering provider.
+    | The model calls the `web_search` tool, and the search itself is delegated
+    | to a small Gemini Flash agent with Google Search grounding, which reports
+    | the sources back for the chat model to write from. Provider-native web
+    | search is billed per query at a rate set by the answering provider rather
+    | than by the size of the model, so delegating it moves the largest
+    | non-token cost on a searching turn onto the cheapest model that can do
+    | the searching well — the answer is still written by the chat model, from
+    | the same sources.
+    |
+    | Turn it off to go back to each provider's native web search (Gemini's
+    | Google Search, OpenAI's and Anthropic's web_search tools). Note that
+    | Ollama has no native web search, so a local-model turn only has web
+    | search at all while this is enabled.
+    |
+    | `max_searches` caps the searches one answer may run: each is separately
+    | billed and separately waited on, so a model that decides to search its
+    | way through a question is stopped rather than left to run.
+    |
+    */
+
+    'web_search' => [
+        'enabled' => (bool) env('WEB_SEARCH_DELEGATED', true),
+        'provider' => env('WEB_SEARCH_PROVIDER', 'gemini'),
+        // Defaults to whatever Flash the chat is configured to fall back to,
+        // so the model only has to be bumped in one place.
+        'model' => env('WEB_SEARCH_MODEL', env('GEMINI_CHAT_MODEL', 'gemini-3.6-flash')),
+        'max_results' => (int) env('WEB_SEARCH_MAX_RESULTS', 6),
+        'max_searches' => (int) env('WEB_SEARCH_MAX_SEARCHES', 4),
+        'timeout' => (int) env('WEB_SEARCH_TIMEOUT', 60),
+
+        /*
+         * Fetch each search result once to find out what page it actually is.
+         *
+         * Google Search grounding reports its sources as redirects through
+         * vertexaisearch.cloud.google.com titled with a bare domain
+         * ("lawphil.net"), or as a bare URL with no title. A card built from
+         * that names the publisher rather than the decision, and the model —
+         * which sees the same titles — has nothing to tell one result from
+         * another, so it attaches the case it is discussing to whichever
+         * source it guesses. Resolving each one gives the card the page's own
+         * title, gives the model something to check its attribution against,
+         * and stores the real URL, which is also what lets a cited authority
+         * be captured into the knowledge base.
+         *
+         * The fetches run in parallel inside the search, so the cost is one
+         * page load added to a turn that already searched.
+         */
+        'resolve_sources' => (bool) env('WEB_SEARCH_RESOLVE_SOURCES', true),
+        'resolve_timeout' => (int) env('WEB_SEARCH_RESOLVE_TIMEOUT', 6),
     ],
 
     /*
@@ -238,6 +332,35 @@ return [
             'max_categories' => (int) env('DOCUMENT_CLASSIFICATION_MAX_CATEGORIES', 3),
             'excerpt_characters' => (int) env('DOCUMENT_CLASSIFICATION_EXCERPT_CHARS', 6000),
             'timeout' => (int) env('DOCUMENT_CLASSIFICATION_TIMEOUT', 90),
+
+            /*
+             | Batched classification
+             |
+             | Switched on, a freshly ingested document is queued instead of
+             | classified on the spot, and a scheduled sweep files it through
+             | the provider's batch API at half the token cost. The trade is
+             | latency: a document is usually filed within the hour, and both
+             | APIs allow up to a day, so it lands in the Unfiled queue first
+             | and sorts itself later. Off by default — when a document is
+             | filed is a product decision, not a deployment one.
+             |
+             | Anthropic and Gemini both offer this; pointing `provider` above
+             | at anything else keeps classification inline no matter what this
+             | flag says. Gemini Flash is the cheaper of the two by a wide
+             | margin, and classification is a short read-and-label call rather
+             | than a drafting one, so it is the sensible default for the work.
+             |
+             | `max_requests` stays well inside Gemini's 20MB inline-batch
+             | ceiling: 500 requests at the 6000-character excerpt above is
+             | roughly 3MB.
+             */
+
+            'batch' => [
+                'enabled' => (bool) env('DOCUMENT_CLASSIFICATION_BATCH', false),
+                'max_requests' => (int) env('DOCUMENT_CLASSIFICATION_BATCH_MAX_REQUESTS', 500),
+                'max_tokens' => (int) env('DOCUMENT_CLASSIFICATION_BATCH_MAX_TOKENS', 1024),
+                'timeout' => (int) env('DOCUMENT_CLASSIFICATION_BATCH_TIMEOUT', 60),
+            ],
         ],
     ],
 
@@ -274,6 +397,32 @@ return [
         'digest' => [
             'provider' => env('LEGAL_DIGEST_PROVIDER', 'gemini'),
             'model' => env('LEGAL_DIGEST_MODEL', env('GEMINI_CHAT_MODEL', 'gemini-3.6-flash')),
+
+            /*
+             | Batched digesting
+             |
+             | Applies to the bulk producers only — the nightly crawl and the
+             | `saligan:digest` backfill, which between them digest hundreds of
+             | authorities nobody has asked for yet. Those go out as one batch
+             | at half the token cost and land within the hour, a day at worst.
+             |
+             | A digest generated because somebody opened a source stays inline
+             | whatever this says: a reader is waiting on that one, and it is
+             | already the cheap case — only the authorities actually cited get
+             | digested at all.
+             |
+             | Supported on Anthropic and Gemini; any other digest provider
+             | keeps writing inline. `max_requests` is well inside Gemini's
+             | 20MB inline-batch ceiling: 200 requests at the 20k-character
+             | excerpt below is roughly 4MB.
+             */
+
+            'batch' => [
+                'enabled' => (bool) env('LEGAL_DIGEST_BATCH', false),
+                'max_requests' => (int) env('LEGAL_DIGEST_BATCH_MAX_REQUESTS', 200),
+                'max_tokens' => (int) env('LEGAL_DIGEST_BATCH_MAX_TOKENS', 2048),
+                'timeout' => (int) env('LEGAL_DIGEST_BATCH_TIMEOUT', 60),
+            ],
         ],
     ],
 

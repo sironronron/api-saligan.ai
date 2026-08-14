@@ -22,7 +22,14 @@ use Illuminate\Support\Facades\Storage;
 beforeEach(function () {
     (new LabelSeeder)->run();
 
-    config(['saligan.documents.classification.enabled' => true]);
+    config([
+        'saligan.documents.classification.enabled' => true,
+        // This suite is about classifying inline. Batching is switched on in
+        // most real .env files, and with it on a document is queued rather
+        // than filed — so it is pinned off here instead of left to whichever
+        // machine the suite runs on.
+        'saligan.documents.classification.batch.enabled' => false,
+    ]);
 
     $this->user = User::factory()->create();
 

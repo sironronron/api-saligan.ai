@@ -145,3 +145,25 @@ it('omits effort entirely when it is unset, deferring to the model default', fun
 
     expect($agent->providerOptions(Lab::Anthropic))->not->toHaveKey('output_config');
 });
+
+/**
+ * Haiku 4.5 rejects output_config.effort with a 400 rather than ignoring it.
+ * Trial conversations are served Haiku, so sending the effort tuned for Sonnet
+ * along unchanged would fail every trial turn before a token was generated.
+ */
+it('omits effort for models that reject it, even when one is configured', function () {
+    config(['saligan.chat.effort' => 'medium']);
+
+    $agent = new LegalChatAgent(staticInstructions: 'static', model: 'claude-haiku-4-5');
+
+    expect($agent->providerOptions(Lab::Anthropic))->not->toHaveKey('output_config');
+});
+
+it('still sends effort for models that accept it', function () {
+    config(['saligan.chat.effort' => 'medium']);
+
+    $agent = new LegalChatAgent(staticInstructions: 'static', model: 'claude-sonnet-5');
+
+    expect($agent->providerOptions(Lab::Anthropic)['output_config'])
+        ->toBe(['effort' => 'medium']);
+});

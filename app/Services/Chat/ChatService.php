@@ -6,6 +6,7 @@ use App\Ai\LegalChatAgent;
 use App\Ai\Tools\CreateTodoTool;
 use App\Ai\Tools\FillTemplateFieldsTool;
 use App\Ai\Tools\RequestIntakeFormTool;
+use App\Ai\Tools\WebSearchTool;
 use App\Enums\ChatProvider;
 use App\Enums\DocumentStatus;
 use App\Enums\MessageRole;
@@ -26,6 +27,8 @@ use App\Support\LegalTemplateLibrary;
 use App\Support\PromptGuard;
 use App\Support\UserProfile;
 use App\Support\WebCitationParser;
+use App\Support\WebSearchCollector;
+use App\Support\WebSourceResolver;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -66,6 +69,16 @@ class ChatService
      * @var array<string, string>
      */
     protected array $templateFields = [];
+
+    /**
+     * The web sources the delegated web search tool found on the current turn.
+     *
+     * A delegated search runs inside a tool call rather than on the answering
+     * provider, so it produces none of the stream events the native web search
+     * does: this is where its sources are recorded so the controller can stream
+     * them as cards and this service can persist them onto the message.
+     */
+    protected ?WebSearchCollector $webSearchCitations = null;
 
     public function __construct(
         private readonly RetrievalService $retrieval,
@@ -152,12 +165,24 @@ class ChatService
             ? $this->buildInstructions($retrieval, $provider, $exportRequested, $case, $template, $legalTemplate, staticInstructions: '', user: $conversation->user, verbatimTemplate: $draftingTemplate, turnNotices: $turnNotices)
             : $this->buildInstructions($retrieval, $provider, $exportRequested, $case, $template, $legalTemplate, $staticInstructions, user: $conversation->user, verbatimTemplate: $draftingTemplate, turnNotices: $turnNotices);
 
-        // Web search is always offered when the provider supports it: it is the
-        // primary source when retrieval is empty and a backup for verifying or
-        // investigating sources when retrieved context exists.
-        $usesWebSearch = $this->supportsWebSearch($provider);
+        // Web search is always offered when it is available: it is the primary
+        // source when retrieval is empty and a backup for verifying or
+        // investigating sources when retrieved context exists. It is served by
+        // the delegated Gemini Flash tool when that is configured, and
+        // otherwise by the answering provider's own web search.
+        $delegatesWebSearch = $this->delegatesWebSearch();
+        $usesWebSearch = $this->offersWebSearch($provider);
 
-        if ($usesWebSearch && $onStatus !== null) {
+        // Reset per turn, so nothing from a previous stream on this instance
+        // can be emitted or persisted against this one.
+        $this->webSearchCitations = $webSearchCitations = $delegatesWebSearch ? new WebSearchCollector : null;
+
+        // Native web search happens inside the provider's own turn, where it
+        // cannot be observed, so it is announced up front on the chance that
+        // the model searches. The delegated tool announces itself when it
+        // actually runs, so announcing it here would claim a search that may
+        // never happen.
+        if ($usesWebSearch && ! $delegatesWebSearch && $onStatus !== null) {
             $onStatus('searching_web', ChatStatus::label('searching_web', $question));
         }
 
@@ -169,6 +194,7 @@ class ChatService
             'model' => $model,
             'retrieval_empty' => $retrieval->isEmpty(),
             'uses_web_search' => $usesWebSearch,
+            'delegated_web_search' => $delegatesWebSearch,
             'profile_configured' => $conversation->user?->hasKycProfile(),
             'prompt_injection_attempt' => $isInjectionAttempt,
             'prompt_injection_repeat_offender' => $isRepeatOffender,
@@ -209,7 +235,9 @@ class ChatService
             });
         }
 
-        if ($usesWebSearch) {
+        if ($webSearchCitations !== null) {
+            $tools[] = new WebSearchTool($webSearchCitations, $onStatus);
+        } elseif ($usesWebSearch) {
             $tools[] = new WebSearch;
         }
 
@@ -219,6 +247,7 @@ class ChatService
             messages: $this->buildHistory($conversation, $userMessage->id),
             tools: $tools,
             cachedContent: $cachedContent,
+            model: $model,
         );
 
         $stream = $agent->stream(
@@ -447,14 +476,14 @@ class ChatService
             $instructions .= "\n\n=== SELECTED LETTER TEMPLATE ===\n".$this->templateBlock($template);
         }
 
-        if ($retrieval->isEmpty() && $this->supportsWebSearch($provider)) {
+        if ($retrieval->isEmpty() && $this->offersWebSearch($provider)) {
             $instructions .= "\n\n".$this->webSearchInstructions();
         } elseif ($retrieval->isEmpty()) {
             $instructions .= "\n\nRETRIEVED CONTEXT: No relevant material was retrieved from the knowledge base or the user's documents. Follow the 'Handling Missing Information' rules above — do not guess or fabricate citations.";
         } else {
             $instructions .= "\n\n=== RETRIEVED CONTEXT ===\n".$retrieval->contextBlock();
 
-            if ($this->supportsWebSearch($provider)) {
+            if ($this->offersWebSearch($provider)) {
                 $instructions .= "\n\n".$this->webSearchBackupInstructions();
             }
         }
@@ -1388,7 +1417,8 @@ PROMPT
 - Prefer official domains: Supreme Court E-Library (sc.judiciary.gov.ph), lawphil.net, officialgazette.gov.ph, dar.gov.ph (agrarian reform), denr.gov.ph, lra.gov.ph (land registration), bir.gov.ph (tax matters affecting real property), and the relevant LGU site where applicable.
 - When researching a statute or administrative issuance, check whether it has been amended and cite the amending law/issuance alongside the original provision.
 - When researching prescriptive or reglementary periods, cite the specific provision or rule stating the period and, where possible, the date it runs from based on the facts given.
-- Cite a web result inline as "[Web N]" (numbered in the order the results were returned), placed immediately after the sentence it supports. Never write a page title, site name, or URL yourself, and never list a web result in the "Sources" section — the app renders web citations as clickable source cards automatically. Alongside the [Web N] marker, name the specific statute/section, administrative issuance number, or G.R. number the result establishes.
+- Cite a web result inline as "[Web N]" — the number the search returned for that source (its "cite_as" value when the tool gives one, otherwise the order the results came back in) — placed immediately after the sentence it supports. Never write a page title, site name, or URL yourself, and never list a web result in the "Sources" section — the app renders web citations as clickable source cards automatically. Alongside the [Web N] marker, name the specific statute/section, administrative issuance number, or G.R. number the result establishes.
+- A marker must point at the source that IS the authority you named. Search results routinely include later decisions that quote an earlier leading case: citing one of those under the earlier case's name sends the reader to the wrong decision. If the source you have is a case applying an earlier one, cite it under its own name and say it applies that case; if you have no source that is the authority itself, state the rule without a web marker rather than attaching it to the nearest result.
 - If the web search returns nothing usable, say so plainly, do not fabricate citations, and state what would be needed to answer the question.
 PROMPT;
     }
@@ -1402,6 +1432,48 @@ PROMPT;
     protected function supportsWebSearch(Lab $provider): bool
     {
         return in_array($provider, [Lab::Gemini, Lab::OpenAI, Lab::Anthropic], true);
+    }
+
+    /**
+     * Whether this turn is offered web search at all, by either route.
+     *
+     * The delegated tool runs on its own provider, so it is available whatever
+     * the answering model is — including Ollama, which has no web search of
+     * its own.
+     */
+    protected function offersWebSearch(Lab $provider): bool
+    {
+        return $this->delegatesWebSearch() || $this->supportsWebSearch($provider);
+    }
+
+    /**
+     * Whether web search is served by the delegated Gemini Flash tool rather
+     * than by the answering provider's native web search.
+     *
+     * Requires a key for the searching provider: without one the tool would
+     * fail on every call, which is worse than the native search it replaced.
+     */
+    protected function delegatesWebSearch(): bool
+    {
+        if (! config('saligan.web_search.enabled')) {
+            return false;
+        }
+
+        $provider = (string) config('saligan.web_search.provider', 'gemini');
+
+        return filled(config('ai.providers.'.$provider.'.key'));
+    }
+
+    /**
+     * Drain the web sources the delegated search tool has found since the last
+     * call, so the controller can stream them as citation cards while the
+     * answer is still being written.
+     *
+     * @return array<int, array{url: string, title: string|null, snippet?: string|null}>
+     */
+    public function pullWebCitations(): array
+    {
+        return $this->webSearchCitations?->pull() ?? [];
     }
 
     /**
@@ -1431,7 +1503,7 @@ PROMPT;
     {
         return match ($conversation->provider) {
             ChatProvider::Anthropic => $this->anthropicConfigured()
-                ? [Lab::Anthropic, config('saligan.chat.anthropic_model')]
+                ? [Lab::Anthropic, $this->anthropicModelFor($conversation)]
                 : [Lab::Gemini, config('saligan.chat.gemini_model')],
             ChatProvider::Gemini => $this->geminiConfigured()
                 ? [Lab::Gemini, config('saligan.chat.gemini_model')]
@@ -1441,6 +1513,29 @@ PROMPT;
                 : [Lab::Ollama, config('saligan.chat.ollama_model')],
             default => [Lab::Ollama, config('saligan.chat.ollama_model')],
         };
+    }
+
+    /**
+     * The Anthropic model this conversation's owner is served.
+     *
+     * Organizations still inside a code-granted trial get the cheaper trial
+     * model: a trial earns nothing, and its message allowance is generous
+     * enough that serving it at the paid model's rates is the single largest
+     * line in the cost of giving trials away at all. Access is unchanged —
+     * both models answer the same questions from the same retrieved sources.
+     *
+     * A lapsed trial is not a trial: `onTrial()` is false once `trial_ends_at`
+     * passes, and such a user has no access at all, so they never reach here.
+     */
+    protected function anthropicModelFor(Conversation $conversation): string
+    {
+        $trialModel = (string) config('saligan.chat.anthropic_trial_model');
+
+        if ($trialModel !== '' && $conversation->user?->subscription?->onTrial()) {
+            return $trialModel;
+        }
+
+        return (string) config('saligan.chat.anthropic_model');
     }
 
     /**
@@ -2020,7 +2115,11 @@ PROMPT;
      */
     protected function webCitations(StreamedAgentResponse $response): array
     {
-        $items = [];
+        // The delegated tool's sources come first: it assigned their numbers
+        // when it handed them to the model, so the "[Web N]" markers in the
+        // text only line up with the cards if the persisted order matches the
+        // order they were recorded in.
+        $items = $this->webSearchCitations?->all() ?? [];
 
         foreach (WebCitationParser::fromMeta($response->meta->citations ?? new Collection) as $citation) {
             $items[] = $citation;
@@ -2032,7 +2131,13 @@ PROMPT;
             }
         }
 
-        return array_values(WebCitationParser::merge($items));
+        // Sources the delegated tool recorded are already resolved and pass
+        // through untouched; this is for the native path, where the provider's
+        // own grounding metadata is stored as-is. Without it a Gemini turn
+        // persists redirect urls titled with a bare domain — cards the reader
+        // cannot identify, and urls the capture job cannot recognize as an
+        // official source.
+        return WebSourceResolver::resolve(array_values(WebCitationParser::merge($items)));
     }
 
     /**

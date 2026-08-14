@@ -211,6 +211,20 @@ it('still rejects a reference already taken by another case', function () {
         ->assertJsonValidationErrors(['reference']);
 });
 
+it('allows the same reference on another users case', function () {
+    LegalCase::factory()->for(User::factory())->create(['reference' => 'CIV-2026-0001']);
+
+    $this->signInAs($this->user)
+        ->postJson('/api/cases', [
+            'title' => 'Civil Case',
+            'case_type' => 'legal',
+            'status' => 'open',
+            'reference' => 'CIV-2026-0001',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('data.reference', 'CIV-2026-0001');
+});
+
 it('updates only the status through the status endpoint', function () {
     $case = LegalCase::factory()->for($this->user)->create([
         'status' => 'open',

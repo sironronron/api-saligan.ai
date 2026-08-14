@@ -47,13 +47,46 @@ class LegalDigestService
             return null;
         }
 
-        $agent = new class implements Agent
+        $instructions = $this->instructions();
+
+        $agent = new class($instructions) implements Agent
         {
             use Promptable;
 
+            public function __construct(private readonly string $prompt)
+            {
+                //
+            }
+
             public function instructions(): string
             {
-                return <<<'PROMPT'
+                return $this->prompt;
+            }
+        };
+
+        try {
+            $response = $agent->prompt(
+                $this->promptFor($text, $title),
+                [],
+                $provider,
+                $model,
+            );
+        } catch (Throwable) {
+            return null;
+        }
+
+        return $this->read((string) $response->text);
+    }
+
+    /**
+     * The standing instructions every digest is written against, inline or
+     * batched. Held here rather than inside the agent so a batch — which sends
+     * the instruction block itself rather than an agent — writes digests to
+     * exactly the same specification.
+     */
+    public function instructions(): string
+    {
+        return <<<'PROMPT'
 You write digests of Philippine legal authorities for practising lawyers.
 
 For a COURT DECISION, use exactly these labelled lines, each on its own line:
@@ -77,25 +110,67 @@ Rules:
 - Write plainly, in English, with no preamble and no closing commentary.
 - Do not use markdown headings, bold, or the peso sign; write "PHP" for amounts.
 PROMPT;
-            }
-        };
+    }
 
-        try {
-            $response = $agent->prompt(
-                "Digest the following authority.\n\n"
-                    .($title !== null && $title !== '' ? "Title: {$title}\n\n" : '')
-                    .$this->excerpt($text),
-                [],
-                $provider,
-                $model,
-            );
-        } catch (Throwable) {
-            return null;
-        }
+    /**
+     * The user turn for one authority: its title, and as much of its text as
+     * is worth sending.
+     */
+    public function promptFor(string $text, ?string $title = null): string
+    {
+        return "Digest the following authority.\n\n"
+            .($title !== null && $title !== '' ? "Title: {$title}\n\n" : '')
+            .$this->excerpt($text);
+    }
 
-        $digest = trim((string) $response->text);
+    /**
+     * A model answer as a stored digest, or null when there is nothing worth
+     * storing. NO_DIGEST is the model saying the page was an index or an error
+     * page rather than an authority; an empty answer means the same thing.
+     */
+    public function read(string $answer): ?string
+    {
+        $digest = trim($answer);
 
         return $digest === '' || $digest === 'NO_DIGEST' ? null : $digest;
+    }
+
+    /**
+     * Whether digests should be batched rather than written inline.
+     *
+     * Batching only applies to work nobody is waiting on — the crawl and the
+     * bulk backfill. A digest generated on first read stays inline whatever
+     * this says: a reader is watching, and a batch takes up to a day.
+     */
+    public function batches(): bool
+    {
+        if (! config('saligan.crawler.digest.batch.enabled', false)) {
+            return false;
+        }
+
+        return $this->batchProvider() !== null;
+    }
+
+    /**
+     * The provider batched digests run on, or null when this deployment's
+     * digest provider has no batch API.
+     */
+    public function batchProvider(): ?Lab
+    {
+        $provider = $this->resolveProvider()[0];
+
+        return in_array($provider, [Lab::Anthropic, Lab::Gemini], true) ? $provider : null;
+    }
+
+    /**
+     * The model batched digests run on, or null when this deployment is not
+     * digesting on a provider that batches.
+     */
+    public function batchModel(): ?string
+    {
+        [$provider, $model] = $this->resolveProvider();
+
+        return in_array($provider, [Lab::Anthropic, Lab::Gemini], true) ? $model : null;
     }
 
     /**

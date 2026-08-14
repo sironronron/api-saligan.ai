@@ -178,12 +178,22 @@ it('instructs web search when no context is retrieved on a web-capable provider'
         ->toContain('lawphil.net');
 });
 
-it('keeps the missing-information rules when no context is retrieved on a non-web provider', function () {
+it('keeps the missing-information rules when no context is retrieved and there is no web search', function () {
+    config()->set('saligan.web_search.enabled', false);
+
     $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama);
 
     expect($instructions)
         ->not->toContain('WEB SEARCH FALLBACK')
         ->toContain('RETRIEVED CONTEXT: No relevant material was retrieved');
+});
+
+it('instructs web search on a provider without one of its own when the search is delegated', function () {
+    config()->set('saligan.web_search.enabled', true);
+
+    $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama);
+
+    expect($instructions)->toContain('WEB SEARCH FALLBACK');
 });
 
 it('includes the retrieved context block when sources are found', function () {
