@@ -9,7 +9,7 @@ use App\Models\User;
 beforeEach(function () {
     $this->organization = Organization::factory()->create(['name' => 'Acme Law Office']);
     $this->owner = User::factory()->ownerOf($this->organization)->create();
-    $this->plan = Plan::factory()->pro()->create();
+    $this->plan = Plan::factory()->firm()->create();
     $this->subscription = Subscription::factory()->for($this->organization)->for($this->owner)->create([
         'plan_id' => $this->plan->id,
         'seats_purchased' => 2,
@@ -95,13 +95,19 @@ it('rejects invalid seat quantities', function () {
         ->assertUnprocessable();
 });
 
+/*
+ * See the matching note in OrganizationMembershipTest: with the subscription
+ * gone there is no plan to carry the teams feature, so the capability check
+ * refuses before the "no subscription yet" branch is reached — and does so with
+ * the flag that shows an upgrade prompt.
+ */
 it('requires an organization subscription before changing seats', function () {
     $this->subscription->delete();
 
     $this->signInAs($this->owner)
         ->postJson('/api/subscription/seats', ['quantity' => 1])
-        ->assertStatus(422)
-        ->assertJsonPath('message', 'Your organization does not have a subscription yet.');
+        ->assertStatus(402)
+        ->assertJsonPath('upgrade_required', true);
 });
 
 it('exposes seat fields on the subscription resource', function () {

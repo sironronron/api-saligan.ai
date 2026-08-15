@@ -9,9 +9,11 @@ use App\Models\Invitation;
 use App\Models\Organization;
 use App\Models\User;
 use App\Services\Organizations\OrganizationService;
+use App\Support\PlanFeatures;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\Storage;
 
 class OrganizationController extends Controller
 {
@@ -46,9 +48,100 @@ class OrganizationController extends Controller
 
         abort_if($user->hasOrganization(), 422, 'You already belong to an organization.');
 
+        // Gated at creation rather than at invitation: a one-person
+        // organization is the shape every team starts as, so a plan that
+        // cannot hold a team should never get as far as owning one.
+        PlanFeatures::ensureHas($user, PlanFeatures::TEAMS);
+
         $this->organizations->createOrganization($validated['name'], $user);
 
         return (new UserResource($user->fresh()))->response()->setStatusCode(201);
+    }
+
+    /**
+     * Edit the organization's profile — its name, what it does, and its site.
+     *
+     * Every field is `sometimes`: the settings form saves one section at a
+     * time, and a request that omits a field means "leave it alone" rather
+     * than "clear it". Clearing is done by sending an empty string.
+     */
+    public function update(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        abort_unless($user->hasActiveMembership(), 404, 'You do not belong to an organization yet.');
+
+        $validated = $request->validate([
+            'name' => ['sometimes', 'required', 'string', 'max:255'],
+            'description' => ['sometimes', 'nullable', 'string', 'max:2000'],
+            'website' => ['sometimes', 'nullable', 'string', 'max:255'],
+        ]);
+
+        $organization = $this->organizations->updateProfile($user, $user->organization, $validated);
+
+        return response()->json([
+            'data' => $this->organizationPayload($organization, $user),
+        ]);
+    }
+
+    /**
+     * Replace the organization's logo.
+     */
+    public function storeLogo(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        abort_unless($user->hasActiveMembership(), 404, 'You do not belong to an organization yet.');
+
+        $request->validate([
+            // Raster only. SVG is markup, and markup served back from our own
+            // origin is a scripting hole no logo is worth.
+            'logo' => ['required', 'image', 'mimes:jpeg,jpg,png,webp', 'max:2048'],
+        ]);
+
+        $organization = $this->organizations->setLogo($user, $user->organization, $request->file('logo'));
+
+        return response()->json([
+            'data' => $this->organizationPayload($organization, $user),
+        ]);
+    }
+
+    /**
+     * Drop the logo, falling back to the drawn initial.
+     */
+    public function destroyLogo(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        abort_unless($user->hasActiveMembership(), 404, 'You do not belong to an organization yet.');
+
+        $organization = $this->organizations->removeLogo($user, $user->organization);
+
+        return response()->json([
+            'data' => $this->organizationPayload($organization, $user),
+        ]);
+    }
+
+    /**
+     * Serve the logo file itself.
+     *
+     * Reached through a signed URL rather than the bearer token every other
+     * route uses, because this one is read by an `<img>` tag that cannot send
+     * a header. The signature is the authorization: it is issued only in a
+     * payload the member already had the right to fetch.
+     */
+    public function logo(Organization $organization): mixed
+    {
+        abort_if($organization->logo_path === null, 404);
+
+        $disk = Storage::disk(OrganizationService::LOGO_DISK);
+
+        abort_unless($disk->exists($organization->logo_path), 404);
+
+        return $disk->response($organization->logo_path, null, [
+            'Cache-Control' => 'private, max-age=3600',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
     }
 
     /**
@@ -61,6 +154,7 @@ class OrganizationController extends Controller
         abort_unless($user->hasActiveMembership(), 403);
 
         $members = $user->organization->users()
+            ->with('organization')
             ->orderBy('org_status')
             ->orderBy('name')
             ->get();
@@ -80,6 +174,18 @@ class OrganizationController extends Controller
         $this->organizations->removeMember($user, $user->organization, $member);
 
         return response()->json(null, 204);
+    }
+
+    /**
+     * Leave the organization the signed-in user belongs to.
+     */
+    public function leave(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $this->organizations->leave($user);
+
+        return response()->json(['data' => (new UserResource($user->fresh()))->resolve()]);
     }
 
     /**
@@ -128,6 +234,34 @@ class OrganizationController extends Controller
     }
 
     /**
+     * The still-valid invitations waiting for the authenticated user, matched
+     * on their email address rather than on the emailed link.
+     *
+     * Someone invited to a workspace does not have to pay for one, so the
+     * paywall asks here first: an invited user who arrives without their email
+     * — or who lost it — is offered the invitation instead of a price list.
+     * Nothing to answer once they already belong somewhere, since acceptance
+     * would be refused anyway.
+     */
+    public function pendingInvitations(Request $request): AnonymousResourceCollection
+    {
+        $user = $request->user();
+
+        if ($user->organization_id !== null) {
+            return InvitationResource::collection([]);
+        }
+
+        $invitations = Invitation::query()
+            ->active()
+            ->whereRaw('lower(email) = ?', [mb_strtolower($user->email)])
+            ->with(['organization', 'invitedBy'])
+            ->latest()
+            ->get();
+
+        return InvitationResource::collection($invitations);
+    }
+
+    /**
      * Invite an email to the organization. Requires an admin, a free seat,
      * and an email not already tied to another organization.
      */
@@ -140,6 +274,11 @@ class OrganizationController extends Controller
         $user = $request->user();
 
         abort_unless($user->hasActiveMembership(), 403);
+
+        // Checked again on the way in: an organization created on a team plan
+        // outlives a downgrade, and its owner must not keep growing it on a
+        // plan that no longer carries seats.
+        PlanFeatures::ensureHas($user, PlanFeatures::TEAMS);
 
         $invitation = $this->organizations->invite($user, $user->organization, $validated['email']);
 
@@ -210,6 +349,9 @@ class OrganizationController extends Controller
         return [
             'id' => $organization->id,
             'name' => $organization->name,
+            'description' => $organization->description,
+            'website' => $organization->website,
+            'logo_url' => $organization->logoUrl(),
             'role' => $user->org_role,
             'created_at' => $organization->created_at,
             'seats' => [

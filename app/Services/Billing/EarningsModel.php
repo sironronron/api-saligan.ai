@@ -94,9 +94,12 @@ final class EarningsModel
     public static function defaultPlans(): array
     {
         return [
-            ['slug' => 'starter', 'name' => 'Starter', 'price' => 150_000, 'messages' => 120, 'documents' => 10, 'overage' => null],
+            ['slug' => 'standard', 'name' => 'Standard', 'price' => 150_000, 'messages' => 240, 'documents' => 25, 'overage' => null],
             ['slug' => 'pro', 'name' => 'Pro', 'price' => 350_000, 'messages' => 300, 'documents' => 100, 'overage' => 900],
-            ['slug' => 'firm', 'name' => 'Firm', 'price' => 1_100_000, 'messages' => 1_000, 'documents' => null, 'overage' => 850],
+            // Per seat, and the price is for three of them. Costed here as one
+            // seat against the whole base price, which flatters Firm — use
+            // `costing:seats` for the figure that divides it properly.
+            ['slug' => 'firm', 'name' => 'Firm', 'price' => 1_100_000, 'messages' => 300, 'documents' => null, 'overage' => 850],
         ];
     }
 

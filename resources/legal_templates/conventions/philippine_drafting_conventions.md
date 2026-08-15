@@ -19,8 +19,12 @@ notarial or caption line written with brackets disappears from the finished
 document. Underscore blanks survive the export intact.
 
 Every OTHER unknown fact — a party's name, an address, an amount, a date, a
-title number — is never a blank at all. Collect it through the intake form
-before drafting, exactly as the drafting rules require.
+title number — is collected through the intake form before drafting, exactly
+as the drafting rules require. Only where the drafting rules have run out of
+ways to collect it does such a fact become an underscore blank, and then the
+chat reply must name the blank so the user knows to fill it. What an unknown
+fact never becomes, on any path, is a value you supplied yourself: no
+realistic-sounding name, no typical amount, no plausible title number.
 
 ## 1. Caption block (court pleadings only)
 
@@ -65,7 +69,10 @@ subject to dismissal. See `templates/verification_and_certification.md`.
 
 - **Jurat**: used for affidavits — a statement that the affiant personally
   appeared, was identified, and swore to the truth of the contents. Phrase:
-  *"SUBSCRIBED AND SWORN to before me this [date]..."*
+  *"SUBSCRIBED AND SWORN to before me this 4th day of March, 2025, at
+  Lucena City..."* — with the actual execution date written out in that form
+  (today's date, from the TODAY'S DATE block) and the actual place, never a
+  bracketed word such as `[date]`.
 - **Acknowledgment**: used for deeds, contracts, and instruments where a
   party is not swearing to facts but acknowledging that the document is
   their free act. Phrase: *"BEFORE ME personally appeared... known to me
@@ -79,10 +86,13 @@ subject to dismissal. See `templates/verification_and_certification.md`.
 ## 4. Notarial block — required elements
 
 Every notarized document needs, at minimum:
-- Notary's name, "Notary Public for [place], until [expiry]" or
-  "Notary Public for [place]"
-- Doc. No. ____; Page No. ____; Book No. ____; Series of [the current year,
-  written out] — the numbers are filled in by the notary at signing, so they
+- The notary's block. The notary's own name and commission expiry are the
+  notary's to supply, not yours: write `Notary Public for ____` with the
+  actual place when the facts give one, and leave the name and expiry as
+  underscore blanks. Never write a notary's name, commission number, or
+  expiry date that was not supplied.
+- Doc. No. ____; Page No. ____; Book No. ____; Series of <the current year,
+  in figures> — the numbers are filled in by the notary at signing, so they
   stay as underscore blanks. Never invent them.
 - Competent evidence of identity for each signatory (ID type, number, date
   and place of issuance) — use the details the user actually supplied. Never
@@ -124,8 +134,13 @@ Every notarized document needs, at minimum:
 - Never compute or state a specific monetary figure (damages, interest,
   penalties) unless it is either explicitly stated in the source documents
   or the arithmetic is shown and based on figures that are in the source
-  documents. Flag anything derived as "Computed based on [X]; verify before
-  filing."
+  documents. Flag anything derived by naming the figures it was computed
+  from, e.g. "Computed from the PHP 855,000.00 contract price and the 12%
+  annual rate stated in Section 6.2 of the Agreement; verify before filing"
+  — naming the actual source figures, never a bracketed word.
+- An interest rate, penalty rate, or legal rate is a figure like any other:
+  state it only from a source document or the retrieved context. Never apply
+  a rate from memory because it is the one usually applied.
 
 ## 8. What the AI should never do when using these templates
 
@@ -135,6 +150,12 @@ Every notarized document needs, at minimum:
 - Never invent a cause of action, statutory citation, or case citation not
   supported by retrieved context — this library provides structure, not
   legal content.
+- That applies to the citations written in this document and in the template
+  files themselves. Where a rule, section, or period appears here, it explains
+  why a section of the instrument exists; it is not authority you may cite. If
+  the answer or the draft needs that citation, it must come from the RETRIEVED
+  CONTEXT or a web search result, and if neither has it, say the citation
+  could not be verified rather than repeating what this file says.
 - Every generated pleading, affidavit, deed, and notarized instrument
   requires review and signature by a licensed Philippine lawyer before
   filing or execution. Say so in the chat reply, AFTER the [[DOCUMENT_END]]

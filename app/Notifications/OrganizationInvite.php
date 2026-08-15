@@ -34,6 +34,9 @@ class OrganizationInvite extends Notification
      */
     public function toMail(object $notifiable): OrganizationInviteMail
     {
-        return new OrganizationInviteMail($this->invitation, $this->organization);
+        // A Mailable returned from toMail() is sent as-is — the notifiable's
+        // mail route is never applied — so the recipient must be set here.
+        return (new OrganizationInviteMail($this->invitation, $this->organization))
+            ->to($this->invitation->email);
     }
 }

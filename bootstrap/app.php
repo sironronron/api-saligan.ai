@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Middleware\EnsureActiveSubscription;
+use App\Http\Middleware\EnsureNotSuspended;
 use App\Http\Middleware\EnsureTermsAccepted;
 use App\Http\Middleware\EnsureUserIsAdmin;
 use App\Http\Middleware\TrackLastUsed;
@@ -32,6 +33,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'is_admin' => EnsureUserIsAdmin::class,
             'active_subscription' => EnsureActiveSubscription::class,
+            'not_suspended' => EnsureNotSuspended::class,
             'terms.accepted' => EnsureTermsAccepted::class,
             'track_last_used' => TrackLastUsed::class,
         ]);

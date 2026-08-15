@@ -21,18 +21,31 @@ class PlanLimits
             return true;
         }
 
+        // The subscription resolves through the organization, so a suspended
+        // member would otherwise pass every billing check their colleagues do.
+        if ($user->isSuspended()) {
+            return false;
+        }
+
         $subscription = $user->subscription;
 
         return $subscription !== null && $subscription->isActive();
     }
 
     /**
-     * Abort with a 402 when the user has no active subscription.
+     * Abort with a 402 when the user has no active subscription, or a 403 when
+     * their membership is suspended.
      */
     public static function ensureActiveAccess(User $user): void
     {
         if (self::hasActiveAccess($user)) {
             return;
+        }
+
+        // Not an upgrade prompt: their organization's plan is current, and the
+        // thing standing between them and the product is an administrator.
+        if (! $user->is_admin && $user->isSuspended()) {
+            abort(SuspendedResponse::make());
         }
 
         abort(self::upgradeResponse(self::noAccessMessage($user)));
@@ -242,9 +255,6 @@ class PlanLimits
      */
     protected static function upgradeResponse(string $message)
     {
-        return response()->json([
-            'message' => $message,
-            'upgrade_required' => true,
-        ], 402);
+        return UpgradeResponse::make($message);
     }
 }

@@ -73,7 +73,7 @@ WITNESS MY HAND AND SEAL on the date and place first above written.
 
 _________________________
 Notary Public
-Doc. No. [___]; Page No. [___]; Book No. [___]; Series of [___].
+Doc. No. ____; Page No. ____; Book No. ____; Series of ____.
 
 ---
 *[NOTE TO REVIEWER: This draft requires review by a licensed Philippine

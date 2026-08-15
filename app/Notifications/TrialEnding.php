@@ -29,6 +29,7 @@ class TrialEnding extends Notification
 
     public function toMail(object $notifiable): TrialEndingMail
     {
-        return new TrialEndingMail($this->subscription, $this->reason, $this->remaining);
+        return (new TrialEndingMail($this->subscription, $this->reason, $this->remaining))
+            ->to($notifiable);
     }
 }

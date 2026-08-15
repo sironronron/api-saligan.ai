@@ -7,6 +7,7 @@ use App\Models\LegalCase;
 use App\Models\LegalChunk;
 use App\Models\User;
 use App\Services\Ai\EmbeddingService;
+use App\Support\PlanFeatures;
 
 class RetrievalService
 {
@@ -28,6 +29,13 @@ class RetrievalService
     {
         $embedding = $this->embeddings->embed($query);
 
+        // How wide to cast the net is a plan feature: see the note in
+        // config/saligan.php on why this is the lever worth selling.
+        $deep = PlanFeatures::has($user, PlanFeatures::DEEP_RESEARCH);
+
+        $legalLimit = config($deep ? 'saligan.retrieval.max_legal_chunks' : 'saligan.retrieval.base_max_legal_chunks');
+        $documentLimit = config($deep ? 'saligan.retrieval.max_document_chunks' : 'saligan.retrieval.base_max_document_chunks');
+
         $legalChunks = LegalChunk::query()
             ->select(['id', 'crawled_page_id', 'chunk_index', 'content'])
             ->with(['crawledPage.legalSource:id,name,base_domain'])
@@ -36,7 +44,7 @@ class RetrievalService
                 $embedding,
                 minSimilarity: config('saligan.retrieval.min_similarity'),
             )
-            ->limit(config('saligan.retrieval.max_legal_chunks'))
+            ->limit($legalLimit)
             ->get();
 
         $documentChunks = DocumentChunk::query()
@@ -59,7 +67,7 @@ class RetrievalService
                 $embedding,
                 minSimilarity: config('saligan.retrieval.min_similarity'),
             )
-            ->limit(config('saligan.retrieval.max_document_chunks'))
+            ->limit($documentLimit)
             ->get();
 
         return new RetrievalResult($legalChunks, $documentChunks);

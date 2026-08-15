@@ -21,7 +21,7 @@ notes: >
 REPUBLIC OF THE PHILIPPINES
 [LEVEL OF COURT]
 [JUDICIAL REGION, if applicable]
-Branch [___]
+Branch ____
 [CITY/MUNICIPALITY]
 
 {{PLAINTIFF_NAME}},
@@ -79,10 +79,10 @@ under the premises.
 _________________________
 **[Counsel's Name]**
 Counsel for Defendant
-Roll of Attorneys No. [___]
-PTR No. [___], issued [date/place]
-IBP No. [___], issued [date/place]
-MCLE Compliance No. [___]
+Roll of Attorneys No. ____
+PTR No. ____, issued ____
+IBP No. ____, issued ____
+MCLE Compliance No. ____
 
 ---
 *[NOTE TO REVIEWER: This draft requires review, revision, and signature by

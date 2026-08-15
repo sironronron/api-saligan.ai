@@ -12,7 +12,7 @@ beforeEach(function () {
     $this->organization = Organization::factory()->create(['name' => 'Acme Law Office']);
     $this->owner = User::factory()->ownerOf($this->organization)->create(['email' => 'owner@acme.test']);
     $this->subscription = Subscription::factory()->for($this->organization)->for($this->owner)->create([
-        'plan_id' => Plan::factory()->pro()->create()->id,
+        'plan_id' => Plan::factory()->firm()->create()->id,
         'seats_purchased' => 3,
         'price_per_seat' => 200000,
     ]);
@@ -20,6 +20,9 @@ beforeEach(function () {
 
 it('creates an organization for an already authenticated user', function () {
     $user = User::factory()->create(['email' => 'solo@example.com']);
+    // Reuses the team plan from beforeEach: creating a second one collides on
+    // the slug, and one Firm row is all this needs.
+    Subscription::factory()->for($user)->create(['plan_id' => $this->subscription->plan_id]);
 
     $this->signInAs($user)
         ->postJson('/api/organizations', ['name' => 'Solo Practice'])
@@ -30,6 +33,20 @@ it('creates an organization for an already authenticated user', function () {
 
     $this->assertDatabaseHas('organizations', ['name' => 'Solo Practice']);
     expect($user->fresh()->organization_id)->not->toBeNull();
+});
+
+it('links an owner subscription recorded before the organization was created', function () {
+    $user = User::factory()->create(['email' => 'early-subscriber@example.com']);
+    $subscription = Subscription::factory()->for($user)->create([
+        'organization_id' => null,
+        'plan_id' => $this->subscription->plan_id,
+    ]);
+
+    $this->signInAs($user)
+        ->postJson('/api/organizations', ['name' => 'Linked Law'])
+        ->assertCreated();
+
+    expect($subscription->fresh()->organization_id)->toBe($user->fresh()->organization_id);
 });
 
 it('rejects creating an organization when the user already belongs to one', function () {
@@ -256,6 +273,47 @@ it('rejects accepting an invitation when the user already belongs to an organiza
         ->assertJsonPath('message', 'You already belong to an organization.');
 });
 
+it('lists the pending invitations waiting for the signed-in user', function () {
+    $invitation = Invitation::factory()->for($this->organization)->create([
+        'invited_by' => $this->owner->id,
+        'email' => 'lawyer@example.com',
+    ]);
+
+    // Addressed to someone else, and one already spent: neither is waiting.
+    Invitation::factory()->for($this->organization)->create([
+        'invited_by' => $this->owner->id,
+        'email' => 'other@example.com',
+    ]);
+    Invitation::factory()->for(Organization::factory()->create())->expired()->create([
+        'email' => 'lawyer@example.com',
+    ]);
+
+    $user = User::factory()->create(['email' => 'Lawyer@Example.com']);
+
+    $this->signInAs($user)
+        ->getJson('/api/invitations/pending')
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.id', $invitation->id)
+        ->assertJsonPath('data.0.organization.name', 'Acme Law Office')
+        ->assertJsonPath('data.0.invited_by.email', 'owner@acme.test');
+});
+
+it('returns no pending invitations for a user who already belongs to an organization', function () {
+    Invitation::factory()->for($this->organization)->create([
+        'invited_by' => $this->owner->id,
+        'email' => 'lawyer@example.com',
+    ]);
+
+    $otherOrg = Organization::factory()->create();
+    $user = User::factory()->memberOf($otherOrg)->create(['email' => 'lawyer@example.com']);
+
+    $this->signInAs($user)
+        ->getJson('/api/invitations/pending')
+        ->assertOk()
+        ->assertJsonCount(0, 'data');
+});
+
 it('lets an admin revoke a pending invitation and frees the seat', function () {
     $invitation = Invitation::factory()->for($this->organization)->create([
         'invited_by' => $this->owner->id,
@@ -325,11 +383,103 @@ it('lets an admin suspend and resume a member', function () {
         ->assertJsonPath('data.org_status', User::ORG_STATUS_ACTIVE);
 });
 
+/*
+ * The bug this guards: a suspended member's subscription still resolves through
+ * their organization, so every billing check passed and suspension revoked
+ * nothing but their place in the member pickers.
+ */
+it('refuses every request from a suspended member', function () {
+    $member = User::factory()->memberOf($this->organization)->create([
+        'org_status' => User::ORG_STATUS_SUSPENDED,
+    ]);
+
+    // A gated route and an ungated one: the notification feed and checkout sit
+    // outside the subscription gate deliberately, and must still be closed.
+    foreach (['/api/conversations', '/api/notifications', '/api/subscription'] as $path) {
+        $this->signInAs($member)
+            ->getJson($path)
+            ->assertStatus(403)
+            ->assertJsonPath('suspended', true);
+    }
+});
+
+it('lets a suspended member read their own account so the client can explain why', function () {
+    $member = User::factory()->memberOf($this->organization)->create([
+        'org_status' => User::ORG_STATUS_SUSPENDED,
+    ]);
+
+    $this->signInAs($member)
+        ->getJson('/api/user')
+        ->assertOk()
+        ->assertJsonPath('data.org_status', User::ORG_STATUS_SUSPENDED)
+        ->assertJsonPath('data.organization_name', 'Acme Law Office');
+});
+
+it('lets a suspended member leave the organization and start over unsubscribed', function () {
+    $member = User::factory()->memberOf($this->organization)->create([
+        'org_status' => User::ORG_STATUS_SUSPENDED,
+    ]);
+
+    $this->signInAs($member)
+        ->postJson('/api/organizations/leave')
+        ->assertOk()
+        ->assertJsonPath('data.organization_id', null)
+        ->assertJsonPath('data.org_status', null);
+
+    expect($member->fresh()->organization_id)->toBeNull();
+
+    // No organization means no subscription behind them: the paywall, not the
+    // suspension notice, is what they meet next.
+    $this->signInAs($member->fresh())
+        ->getJson('/api/conversations')
+        ->assertStatus(402)
+        ->assertJsonPath('upgrade_required', true);
+});
+
+it('lets an active member leave the organization', function () {
+    $member = User::factory()->memberOf($this->organization)->create();
+
+    $this->signInAs($member)
+        ->postJson('/api/organizations/leave')
+        ->assertOk();
+
+    expect($member->fresh()->organization_id)->toBeNull();
+});
+
+it('refuses to let the owner leave the organization', function () {
+    $this->signInAs($this->owner)
+        ->postJson('/api/organizations/leave')
+        ->assertStatus(422);
+
+    expect($this->owner->fresh()->organization_id)->toBe($this->organization->id);
+});
+
+it('restores a resumed member\'s access', function () {
+    $member = User::factory()->memberOf($this->organization)->create([
+        'org_status' => User::ORG_STATUS_SUSPENDED,
+    ]);
+
+    $this->signInAs($this->owner)
+        ->postJson("/api/organizations/members/{$member->id}/resume")
+        ->assertOk();
+
+    $this->signInAs($member->fresh())
+        ->getJson('/api/notifications')
+        ->assertOk();
+});
+
+/*
+ * Answered as a 402 rather than the 422 it once was: with no subscription there
+ * is no plan to carry the teams feature, so the capability check refuses first.
+ * That is the better answer of the two — it carries `upgrade_required`, which
+ * is what puts an upgrade prompt in front of someone who needs to subscribe.
+ */
 it('requires an active subscription before inviting', function () {
     $this->subscription->delete();
 
     $this->signInAs($this->owner)
         ->postJson('/api/organizations/invitations', ['email' => 'lawyer@example.com'])
-        ->assertStatus(422)
-        ->assertJsonPath('message', 'Your organization needs an active subscription before you can invite members.');
+        ->assertStatus(402)
+        ->assertJsonPath('upgrade_required', true)
+        ->assertJsonPath('message', 'Subscribe to a plan to access Saligan.ai.');
 });

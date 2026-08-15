@@ -8,6 +8,8 @@ use App\Services\Documents\DocumentClassifier;
 use Database\Seeders\LabelSeeder;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Monolog\Handler\TestHandler;
+use Monolog\Logger as MonologLogger;
 
 /*
  * The same batched-classification behaviour as the Anthropic suite, driven
@@ -227,13 +229,24 @@ it('closes out a request whose job is no longer available', function () {
 });
 
 it('leaves a request pending when the batch cannot be submitted', function () {
+    $handler = new TestHandler;
+
+    config([
+        'logging.channels.array' => [
+            'driver' => 'custom',
+            'via' => fn (array $config) => new MonologLogger('array', [$handler]),
+        ],
+        'logging.default' => 'array',
+    ]);
+
     ($this->classify)();
 
-    $this->createStatus = 503;
+    $this->createStatus = 400;
 
     expect(app(DocumentClassificationBatcher::class)->submit())->toBeNull()
         ->and(DocumentClassificationRequest::sole()->status)
-        ->toBe(DocumentClassificationRequest::STATUS_PENDING);
+        ->toBe(DocumentClassificationRequest::STATUS_PENDING)
+        ->and($handler->hasWarningThatContains('could not be submitted'))->toBeTrue();
 });
 
 it('classifies inline when Gemini has no API key, batching or not', function () {

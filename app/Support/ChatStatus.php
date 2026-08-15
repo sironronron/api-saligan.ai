@@ -60,7 +60,9 @@ final class ChatStatus
                 ? "Drafting your {$document}"
                 : 'Drafting your document',
             'preparing_next_steps' => 'Preparing your next steps',
+            'reviewing_gaps' => 'Flagging what to watch out for',
             'collecting_facts' => 'Collecting the facts I need',
+            'awaiting_choice' => 'Waiting for your choice',
             'filling_template' => 'Filling in your template',
             'composing' => 'Writing your answer',
             default => Str::headline($status),

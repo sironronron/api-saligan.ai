@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\ConversationResource;
 use App\Models\Conversation;
 use App\Models\Label;
+use App\Models\LegalCase;
 use App\Models\Message;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -73,7 +74,8 @@ class ConversationController extends Controller
         $case = $validated['case_id'] ?? null;
 
         if ($case !== null) {
-            abort_unless($request->user()->cases()->whereKey($case)->exists(), 403);
+            // Anyone on the case may open a thread in it, not just its owner.
+            $this->authorize('update', LegalCase::findOrFail($case));
         }
 
         $conversation = $request->user()->conversations()->create([
@@ -95,7 +97,7 @@ class ConversationController extends Controller
      */
     public function show(Request $request, Conversation $conversation): ConversationResource
     {
-        abort_unless($conversation->user_id === $request->user()->id, 403);
+        abort_unless($conversation->isAccessibleBy($request->user()), 403);
 
         $conversation->load(['messages', 'labels', 'case']);
 
@@ -107,7 +109,7 @@ class ConversationController extends Controller
      */
     public function update(Request $request, Conversation $conversation): ConversationResource
     {
-        abort_unless($conversation->user_id === $request->user()->id, 403);
+        abort_unless($conversation->isAccessibleBy($request->user()), 403);
 
         $validated = $request->validate([
             'title' => ['nullable', 'string', 'max:255'],
@@ -134,7 +136,7 @@ class ConversationController extends Controller
      */
     public function destroy(Request $request, Conversation $conversation): JsonResponse
     {
-        abort_unless($conversation->user_id === $request->user()->id, 403);
+        abort_unless($conversation->isAccessibleBy($request->user()), 403);
 
         $conversation->delete();
 

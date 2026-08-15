@@ -18,7 +18,7 @@ class CaseProgressController extends Controller
      */
     public function show(Request $request, LegalCase $case): JsonResponse
     {
-        abort_unless($case->user_id === $request->user()->id, 403);
+        $this->authorize('view', $case);
 
         return response()->json(['data' => $this->progress->build($case)]);
     }

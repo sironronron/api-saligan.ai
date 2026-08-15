@@ -17,7 +17,7 @@ class FeedbackController extends Controller
      */
     public function store(Request $request, Message $message): JsonResponse
     {
-        abort_unless($message->conversation->user_id === $request->user()->id, 403);
+        abort_unless($message->conversation->isAccessibleBy($request->user()), 403);
 
         $validated = $request->validate([
             'feedback' => ['required', Rule::in(['up', 'down'])],
@@ -42,7 +42,7 @@ class FeedbackController extends Controller
      */
     public function destroy(Request $request, Message $message): JsonResponse
     {
-        abort_unless($message->conversation->user_id === $request->user()->id, 403);
+        abort_unless($message->conversation->isAccessibleBy($request->user()), 403);
 
         $message->update([
             'feedback' => null,

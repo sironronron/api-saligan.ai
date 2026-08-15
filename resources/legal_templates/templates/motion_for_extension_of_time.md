@@ -19,7 +19,7 @@ notes: >
 REPUBLIC OF THE PHILIPPINES
 [LEVEL OF COURT]
 [JUDICIAL REGION, if applicable]
-Branch [___]
+Branch ____
 [CITY/MUNICIPALITY]
 
 {{PLAINTIFF_NAME}},
@@ -59,10 +59,10 @@ grant an extension of {{REQUESTED_EXTENSION_PERIOD}}, or until
 _________________________
 **[Counsel's Name]**
 Counsel for {{MOVING_PARTY}}
-Roll of Attorneys No. [___]
-PTR No. [___], issued [date/place]
-IBP No. [___], issued [date/place]
-MCLE Compliance No. [___]
+Roll of Attorneys No. ____
+PTR No. ____, issued ____
+IBP No. ____, issued ____
+MCLE Compliance No. ____
 
 **Explanation** (if filed by registered mail/electronic means rather than
 personal service, per Rule 13): [state reason personal service/filing was

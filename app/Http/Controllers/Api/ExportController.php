@@ -7,6 +7,7 @@ use App\Models\Message;
 use App\Models\Template;
 use App\Services\Export\DocumentExportService;
 use App\Services\Export\TemplateDocumentExportService;
+use App\Support\PlanFeatures;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -28,7 +29,9 @@ class ExportController extends Controller
      */
     public function word(Request $request, Message $message): StreamedResponse
     {
-        abort_unless($message->conversation->user_id === $request->user()->id, 403);
+        PlanFeatures::ensureHas($request->user(), PlanFeatures::EXPORTS);
+
+        abort_unless($message->conversation->isAccessibleBy($request->user()), 403);
 
         $title = $this->deriveTitle($message);
         $template = $this->resolvedTemplate($request, $message);
@@ -54,7 +57,9 @@ class ExportController extends Controller
      */
     public function pdf(Request $request, Message $message): StreamedResponse
     {
-        abort_unless($message->conversation->user_id === $request->user()->id, 403);
+        PlanFeatures::ensureHas($request->user(), PlanFeatures::EXPORTS);
+
+        abort_unless($message->conversation->isAccessibleBy($request->user()), 403);
 
         $title = $this->deriveTitle($message);
         $template = $this->resolvedTemplate($request, $message);
@@ -93,7 +98,7 @@ class ExportController extends Controller
 
     protected function deriveTitle(Message $message): string
     {
-        return $message->conversation->title ?? 'Saligan AI Response';
+        return $this->exportService->deriveTitle((string) $message->content);
     }
 
     protected function sanitizeFilename(string $name): string

@@ -12,6 +12,7 @@ use App\Services\Documents\DocumentClassifier;
 use App\Services\Documents\DocumentEncryptor;
 use App\Services\Documents\ImageOcrExtractor;
 use App\Services\Documents\TextExtractor;
+use App\Support\PlanFeatures;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -80,6 +81,13 @@ class ProcessDocumentUpload implements ShouldQueue
 
         $mimeType = $document->mime_type ?? '';
 
+        // Reading a scan and filing it into the case are what document
+        // intelligence buys; extracting a text layer and embedding it are not.
+        // A plan without the feature still ingests every text-based upload in
+        // full — it simply does not get the model-powered half.
+        $readsScans = $document->user !== null
+            && PlanFeatures::has($document->user, PlanFeatures::DOCUMENT_INTELLIGENCE);
+
         // Encrypted documents are decrypted to a temporary local file for
         // extraction and removed again as soon as extraction completes, so
         // plaintext never persists on disk.
@@ -87,14 +95,14 @@ class ProcessDocumentUpload implements ShouldQueue
         $path = $decryptedPath ?? Storage::path($document->storage_path);
 
         try {
-            $text = $this->isImage($mimeType)
+            $text = $this->isImage($mimeType) && $readsScans
                 ? $ocr->extract($path, $mimeType)
                 : $extractor->extract($path, $mimeType);
 
             // A scanned PDF has no text layer, so the parser returns nothing.
             // The pages are images, which is exactly what the OCR model reads,
             // so fall through to it rather than rejecting the upload.
-            if (trim($this->sanitizeText($text)) === '' && ImageOcrExtractor::handles($mimeType) && ! $this->isImage($mimeType)) {
+            if ($readsScans && trim($this->sanitizeText($text)) === '' && ImageOcrExtractor::handles($mimeType) && ! $this->isImage($mimeType)) {
                 $text = $ocr->extract($path, $mimeType);
             }
         } finally {
@@ -110,9 +118,14 @@ class ProcessDocumentUpload implements ShouldQueue
         $text = $this->sanitizeText($text);
 
         if (trim($text) === '') {
-            throw new DocumentProcessingException($this->isImage($mimeType)
-                ? 'No text could be read from the image. Upload a clearer image or a PDF/DOCX version.'
-                : 'No text could be read from this file, including by scanning it. Upload a clearer copy or a text-based PDF/DOCX version.');
+            throw new DocumentProcessingException(match (true) {
+                // Almost certainly a scan. Saying "upload a clearer copy" would
+                // send them to fix a file that is not the problem — their plan
+                // is, and that is something they can act on.
+                ! $readsScans => 'This file has no text layer, so it can only be read by scanning it. Upgrade your plan to read scanned and photographed documents.',
+                $this->isImage($mimeType) => 'No text could be read from the image. Upload a clearer image or a PDF/DOCX version.',
+                default => 'No text could be read from this file, including by scanning it. Upload a clearer copy or a text-based PDF/DOCX version.',
+            });
         }
 
         $chunks = $chunker->chunk(
@@ -148,8 +161,11 @@ class ProcessDocumentUpload implements ShouldQueue
         // File the document into the case file. This runs before the document
         // is marked ready so it lands already sorted, and it never throws: a
         // failed suggestion leaves the document unfiled, which is a state the
-        // Unfiled queue already handles.
-        $classifier->classify($document, $text);
+        // Unfiled queue already handles — and the same state a plan without
+        // document intelligence leaves every upload in, to be filed by hand.
+        if ($readsScans) {
+            $classifier->classify($document, $text);
+        }
 
         $document->update(['status' => DocumentStatus::Ready]);
     }

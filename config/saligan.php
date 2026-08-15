@@ -30,6 +30,22 @@ return [
 
     'batch_timeout' => (int) env('AI_BATCH_TIMEOUT', 60),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Legal timezone
+    |--------------------------------------------------------------------------
+    |
+    | The timezone the drafted documents are dated in. The application stores
+    | timestamps in UTC, but a Philippine instrument is dated by the calendar
+    | day in the Philippines: between midnight and 08:00 in Manila, UTC is
+    | still on the previous day, so a letter dated from the raw server clock
+    | carries yesterday's date — and any period counted "from the date of this
+    | letter" is off by one day with it.
+    |
+    */
+
+    'timezone' => env('SALIGAN_TIMEZONE', 'Asia/Manila'),
+
     'embedding' => [
         'provider' => env('AI_EMBED_PROVIDER', 'gemini'),
         'model' => env('AI_EMBED_MODEL', 'gemini-embedding-2'),
@@ -90,19 +106,22 @@ return [
         'anthropic_model' => env('ANTHROPIC_CHAT_MODEL', 'claude-sonnet-5'),
 
         /*
-         * The Anthropic model served to organizations still on a code-granted
-         * trial. Haiku 4.5 costs a third of Sonnet 5 on input and a fifth on
-         * output, which is what makes a free trial affordable to hand out; a
-         * trial is also where answer volume is highest and margin is zero.
+         * The Anthropic model served to plans without the `frontier_model`
+         * feature — the free trial and Standard. Haiku 4.5 costs half of
+         * Sonnet 5 per message at our measured token sizes (₱1.75 against
+         * ₱3.49; see EarningsModel), and that halving is what pays for
+         * Standard's message allowance and for giving trials away at all.
          *
-         * Paying organizations are unaffected — they keep `anthropic_model`.
-         * Set this to the same value as `anthropic_model` (or leave it empty)
-         * to serve everyone the same model.
+         * Both models answer from the same retrieved sources, so this changes
+         * how much deliberation a message buys, never what it can reach. Set
+         * it to the same value as `anthropic_model` (or leave it empty) to
+         * serve everyone the frontier model — but note that Standard's
+         * allowance is priced on the assumption that it is not.
          *
          * Note that Haiku 4.5 rejects `output_config.effort` outright, so the
          * effort setting below is omitted for it; see LegalChatAgent.
          */
-        'anthropic_trial_model' => env('ANTHROPIC_TRIAL_CHAT_MODEL', 'claude-haiku-4-5'),
+        'anthropic_base_model' => env('ANTHROPIC_BASE_CHAT_MODEL', 'claude-haiku-4-5'),
 
         /*
          * How hard the model works before answering: low | medium | high |
@@ -193,6 +212,10 @@ return [
         'model' => env('WEB_SEARCH_MODEL', env('GEMINI_CHAT_MODEL', 'gemini-3.6-flash')),
         'max_results' => (int) env('WEB_SEARCH_MAX_RESULTS', 6),
         'max_searches' => (int) env('WEB_SEARCH_MAX_SEARCHES', 4),
+        // What a plan without `deep_research` may run in one answer. Each
+        // search is separately billed and separately waited on, so this is the
+        // other half of the same lever as the retrieval caps above.
+        'base_max_searches' => (int) env('WEB_SEARCH_BASE_MAX_SEARCHES', 2),
         'timeout' => (int) env('WEB_SEARCH_TIMEOUT', 60),
 
         /*
@@ -467,10 +490,24 @@ return [
     |--------------------------------------------------------------------------
     */
 
+    /*
+     | The `max_*` caps are what a plan carrying `deep_research` retrieves; the
+     | `base_*` caps are what every other plan does. Retrieved context is the
+     | bulk of a message's input tokens (13,340 of 37,774 at the caps, per
+     | EarningsModel), so this is both the largest lever on answer quality and
+     | the largest lever on what an answer costs — which is what makes it worth
+     | selling rather than setting once for everyone.
+     |
+     | The base caps are deliberately not a token gesture: four authorities and
+     | two document passages answer most questions completely. Deep research
+     | pays for the long tail where they do not.
+     */
     'retrieval' => [
         'min_similarity' => (float) env('RETRIEVAL_MIN_SIMILARITY', 0.30),
         'max_legal_chunks' => (int) env('RETRIEVAL_MAX_LEGAL_CHUNKS', 6),
         'max_document_chunks' => (int) env('RETRIEVAL_MAX_DOCUMENT_CHUNKS', 4),
+        'base_max_legal_chunks' => (int) env('RETRIEVAL_BASE_MAX_LEGAL_CHUNKS', 4),
+        'base_max_document_chunks' => (int) env('RETRIEVAL_BASE_MAX_DOCUMENT_CHUNKS', 2),
     ],
 
 ];

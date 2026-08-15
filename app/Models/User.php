@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Foundation\Auth\User as Authenticatable;
@@ -143,6 +144,20 @@ class User extends Authenticatable
     }
 
     /**
+     * Whether an admin has suspended this user's membership.
+     *
+     * A suspended member keeps their row, their organization, and — because
+     * the subscription resolves through that organization — everything the
+     * plan pays for. Suspension is therefore a check of its own rather than a
+     * side effect of billing: without it, the only thing revoked is the
+     * ability to appear in member pickers.
+     */
+    public function isSuspended(): bool
+    {
+        return $this->org_status === self::ORG_STATUS_SUSPENDED;
+    }
+
+    /**
      * The documents uploaded by this user.
      */
     public function documents(): HasMany
@@ -159,11 +174,22 @@ class User extends Authenticatable
     }
 
     /**
-     * The cases owned by this user.
+     * The cases owned by this user. Ownership is what plan limits and billing
+     * count, so this deliberately excludes cases they are merely assigned to.
      */
     public function cases(): HasMany
     {
         return $this->hasMany(LegalCase::class);
+    }
+
+    /**
+     * The cases this user has been assigned to by someone else. Owned cases
+     * are not in here; use LegalCase::visibleTo() for "everything I can open".
+     */
+    public function assignedCases(): BelongsToMany
+    {
+        return $this->belongsToMany(LegalCase::class, 'case_user', 'user_id', 'case_id')
+            ->withTimestamps();
     }
 
     /**
@@ -180,6 +206,14 @@ class User extends Authenticatable
     public function todos(): HasManyThrough
     {
         return $this->hasManyThrough(Todo::class, Conversation::class);
+    }
+
+    /**
+     * The flagged caveats and gaps across all conversations.
+     */
+    public function advisories(): HasManyThrough
+    {
+        return $this->hasManyThrough(Advisory::class, Conversation::class);
     }
 
     /**

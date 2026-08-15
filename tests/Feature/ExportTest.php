@@ -80,6 +80,42 @@ it('forbids exporting another users message', function () {
         ->assertStatus(403);
 });
 
+it('derives the export filename from the document content, not the thread name', function () {
+    $conversation = Conversation::factory()->for($this->user)->create(['title' => 'Demand letter to Juan']);
+
+    $message = Message::factory()->create([
+        'conversation_id' => $conversation->id,
+        'role' => MessageRole::Assistant,
+        'content' => "Here is your draft.\n\n[[DOCUMENT_START]]\nREPUBLIC OF THE PHILIPPINES\nDEMAND LETTER\nVery truly yours,\n[[DOCUMENT_END]]",
+    ]);
+
+    $response = $this->signInAs($this->user)
+        ->post("/api/messages/{$message->id}/export/pdf")
+        ->assertOk();
+
+    $disposition = $response->headers->get('Content-Disposition');
+    expect($disposition)
+        ->toContain('REPUBLIC_OF_THE_PHILIPPINES')
+        ->not->toContain('Demand_letter_to_Juan');
+});
+
+it('does not print the thread name inside the exported PDF', function () {
+    $conversation = Conversation::factory()->for($this->user)->create(['title' => 'Demand letter to Juan']);
+
+    $message = Message::factory()->create([
+        'conversation_id' => $conversation->id,
+        'role' => MessageRole::Assistant,
+        'content' => "[[DOCUMENT_START]]\nREPUBLIC OF THE PHILIPPINES\nDEMAND LETTER\nVery truly yours,\n[[DOCUMENT_END]]",
+    ]);
+
+    $service = new DocumentExportService;
+    $html = $service->toPdfHtml($message->content, 'REPUBLIC OF THE PHILIPPINES');
+
+    expect($html)
+        ->toContain('<title>REPUBLIC OF THE PHILIPPINES</title>')
+        ->not->toContain('Demand letter to Juan');
+});
+
 it('renders peso amounts as PHP in exported documents', function () {
     $service = new DocumentExportService;
 

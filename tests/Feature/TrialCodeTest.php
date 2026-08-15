@@ -14,7 +14,7 @@ beforeEach(function () {
     // The trial plan is what a code without a plan of its own falls to; the
     // paid tiers are here for codes that name one.
     $this->trial = Plan::factory()->trial()->create();
-    $this->starter = Plan::factory()->create(['slug' => 'starter', 'name' => 'Starter', 'sort_order' => 1]);
+    $this->standard = Plan::factory()->create(['slug' => 'standard', 'name' => 'Standard', 'sort_order' => 1]);
     $this->firm = Plan::factory()->create(['slug' => 'firm', 'name' => 'Firm', 'sort_order' => 3]);
 
     $this->organization = Organization::factory()->create();
@@ -84,9 +84,9 @@ it('falls back to the free trial plan when the code names none', function () {
     redeemAs($this->user, $code->code)
         ->assertCreated()
         ->assertJsonPath('data.plan.name', 'Free trial')
-        // A quarter of Starter's allowance, which is the whole point of the
-        // trial plan existing rather than trialling on Starter itself.
-        ->assertJsonPath('data.usage.messages.limit', 30);
+        // A quarter of Standard's allowance, which is the whole point of the
+        // trial plan existing rather than trialling on Standard itself.
+        ->assertJsonPath('data.usage.messages.limit', $this->trial->limits['messages_used']);
 });
 
 it('falls back to the cheapest active plan when no trial plan is seeded', function () {
@@ -96,7 +96,7 @@ it('falls back to the cheapest active plan when no trial plan is seeded', functi
 
     redeemAs($this->user, $code->code)
         ->assertCreated()
-        ->assertJsonPath('data.plan.name', 'Starter');
+        ->assertJsonPath('data.plan.name', 'Standard');
 });
 
 it('rejects an unknown code', function () {
@@ -161,7 +161,7 @@ it('refuses a trial when the organization already pays', function () {
     Subscription::factory()->create([
         'organization_id' => $this->organization->id,
         'user_id' => $this->user->id,
-        'plan_id' => $this->starter->id,
+        'plan_id' => $this->standard->id,
         'status' => Subscription::STATUS_ACTIVE,
     ]);
 
@@ -172,11 +172,46 @@ it('refuses a trial when the organization already pays', function () {
         ->assertJsonPath('message', 'Your organization already has an active subscription.');
 });
 
-it('refuses a trial before the user has an organization', function () {
-    $orphan = User::factory()->create(['organization_id' => null]);
+/*
+ * Creating an organization is no longer part of signing up — teams are a paid
+ * capability — so the ordinary trial redeemer is one person with no
+ * organization at all. That case used to be refused outright.
+ */
+it('grants a trial to a user with no organization', function () {
+    $solo = User::factory()->create(['organization_id' => null]);
     $code = TrialCode::factory()->create();
 
-    redeemAs($orphan, $code->code)->assertStatus(422);
+    redeemAs($solo, $code->code)->assertCreated();
+
+    expect(Subscription::where('user_id', $solo->id)->first())
+        ->not->toBeNull()
+        ->and(Subscription::where('user_id', $solo->id)->first()->organization_id)->toBeNull();
+});
+
+it('holds a user with no organization to one trial ever', function () {
+    $solo = User::factory()->create(['organization_id' => null]);
+
+    redeemAs($solo, TrialCode::factory()->create()->code)->assertCreated();
+
+    // Lapse it: a spent trial must not be renewable by redeeming another code,
+    // and without an organization to scope by, the user is what anchors that.
+    Subscription::where('user_id', $solo->id)->update([
+        'trial_ends_at' => now()->subDay(),
+        'current_period_end' => now()->subDay(),
+    ]);
+
+    redeemAs($solo, TrialCode::factory()->create()->code)
+        ->assertStatus(422)
+        ->assertJsonPath('message', 'You have already used a free trial.');
+});
+
+it('does not let one user\'s trial block another with no organization', function () {
+    $first = User::factory()->create(['organization_id' => null]);
+    $second = User::factory()->create(['organization_id' => null]);
+    $code = TrialCode::factory()->create(['max_redemptions' => 2]);
+
+    redeemAs($first, $code->code)->assertCreated();
+    redeemAs($second, $code->code)->assertCreated();
 });
 
 it('counts a redemption only once against a limited code', function () {

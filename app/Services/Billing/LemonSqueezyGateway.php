@@ -33,6 +33,10 @@ class LemonSqueezyGateway implements PaymentGateway
             'interval' => $interval,
             'gateway' => BillingGateway::LemonSqueezy->value,
             'status' => Subscription::STATUS_INCOMPLETE,
+            'seats_purchased' => $plan->included_seats,
+            // See PaymongoGateway: a plan without a seat price still prices the
+            // seat its list price covers.
+            'price_per_seat' => $plan->seat_price ?? $plan->price,
         ]);
 
         $checkout = $this->client->createCheckout(

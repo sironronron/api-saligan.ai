@@ -6,6 +6,7 @@ use App\Models\BillingEvent;
 use App\Models\Organization;
 use App\Models\Subscription;
 use App\Models\User;
+use App\Support\PlanFeatures;
 
 class SeatBillingService
 {
@@ -18,7 +19,17 @@ class SeatBillingService
         abort_if($quantity < 1, 422, 'Seat quantity must be at least 1.');
         abort_unless($organization->canManage($actor), 403, 'Only organization admins can change seat counts.');
 
+        // Buying a seat is gated; giving one back never is, so an organization
+        // that downgrades can still shrink to fit the plan it moved to.
+        PlanFeatures::ensureHas($actor, PlanFeatures::TEAMS);
+
         $subscription = $this->requireSubscription($organization);
+
+        abort_if(
+            $subscription->plan?->seat_price === null,
+            422,
+            'Your plan does not sell additional seats. Talk to us about a Business plan sized to your team.',
+        );
 
         $seatsBefore = $subscription->seats_purchased;
         $seatsAfter = $seatsBefore + $quantity;

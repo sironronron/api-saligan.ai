@@ -4,6 +4,7 @@ namespace App\Services\Export;
 
 use App\Support\DraftingIntent;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Support\Str;
 use PhpOffice\PhpWord\IOFactory;
 use PhpOffice\PhpWord\PhpWord;
 use PhpOffice\PhpWord\SimpleType\NumberFormat;
@@ -80,15 +81,30 @@ class DocumentExportService
      */
     public function toPdf(string $markdown, string $title): string
     {
+        $pdf = Pdf::loadHTML($this->toPdfHtml($markdown, $title));
+        $pdf->setPaper('a4');
+
+        $tempFile = tempnam(sys_get_temp_dir(), 'saligan_pdf_');
+        $pdf->save($tempFile);
+
+        return $tempFile;
+    }
+
+    /**
+     * The full HTML document sent to the PDF renderer.
+     */
+    public function toPdfHtml(string $markdown, string $title): string
+    {
         $markdown = $this->extractDocument($markdown);
 
         $html = $this->markdownToHtml($markdown);
 
-        $fullHtml = <<<HTML
+        return <<<HTML
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
+<title>{$this->escapeHtml($title)}</title>
 <style>
     body { font-family: sans-serif; font-size: 11pt; line-height: 1.6; color: #1a1a1a; }
     h1 { font-size: 20pt; margin-top: 24pt; margin-bottom: 8pt; }
@@ -104,19 +120,28 @@ class DocumentExportService
 </style>
 </head>
 <body>
-<h1>{$this->escapeHtml($title)}</h1>
 {$html}
 </body>
 </html>
 HTML;
+    }
 
-        $pdf = Pdf::loadHTML($fullHtml);
-        $pdf->setPaper('a4');
+    /**
+     * A short title for an exported document, taken from the first non-empty
+     * line of the extracted letter body so exported files are named after the
+     * document itself — never the thread or case name.
+     */
+    public function deriveTitle(string $content, string $fallback = 'Saligan AI Response'): string
+    {
+        foreach (preg_split('/\R/', $this->extractDocument($content)) ?: [] as $line) {
+            $line = trim($line, " \t#*-");
 
-        $tempFile = tempnam(sys_get_temp_dir(), 'saligan_pdf_');
-        $pdf->save($tempFile);
+            if ($line !== '') {
+                return Str::limit($line, 80);
+            }
+        }
 
-        return $tempFile;
+        return $fallback;
     }
 
     /**

@@ -66,4 +66,35 @@ class Document extends Model
     {
         return $this->hasMany(DocumentChunk::class);
     }
+
+    /**
+     * Whether the user may read this document: they uploaded it, or it is
+     * attached to a case they are on.
+     *
+     * A case's documents are its shared evidence — an assignee who cannot open
+     * the file shelf cannot work the matter. A document with no case stays
+     * private to whoever uploaded it.
+     */
+    public function isAccessibleBy(User $user): bool
+    {
+        if ($this->user_id === $user->id) {
+            return true;
+        }
+
+        return $this->case !== null && $this->case->isAccessibleBy($user);
+    }
+
+    /**
+     * Whether the user may delete this document. Narrower than reading it:
+     * the uploader, or the owner of the case it was filed into. An assignee
+     * cannot delete a colleague's evidence out from under them.
+     */
+    public function isDeletableBy(User $user): bool
+    {
+        if ($this->user_id === $user->id) {
+            return true;
+        }
+
+        return $this->case !== null && $this->case->user_id === $user->id;
+    }
 }

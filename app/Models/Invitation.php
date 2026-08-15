@@ -12,6 +12,7 @@ use Illuminate\Notifications\Notifiable;
 
 #[Fillable([
     'organization_id',
+    'case_id',
     'invited_by',
     'email',
     'token',
@@ -56,6 +57,16 @@ class Invitation extends Model
     public function organization(): BelongsTo
     {
         return $this->belongsTo(Organization::class);
+    }
+
+    /**
+     * The case this invite was sent from, when it came from one. Acceptance
+     * assigns the new member to it, so the invite lands them on the matter
+     * they were actually invited to work rather than an empty case list.
+     */
+    public function case(): BelongsTo
+    {
+        return $this->belongsTo(LegalCase::class, 'case_id');
     }
 
     /**

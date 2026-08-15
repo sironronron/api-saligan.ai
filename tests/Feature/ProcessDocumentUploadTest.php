@@ -5,6 +5,8 @@ use App\Exceptions\DocumentProcessingException;
 use App\Jobs\ProcessDocumentUpload;
 use App\Models\Document;
 use App\Models\DocumentChunk;
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\User;
 use App\Services\Ai\EmbeddingService;
 use App\Services\Documents\DocumentChunker;
@@ -19,6 +21,21 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Mockery;
 use RuntimeException;
+
+/**
+ * A user whose plan reads scans and files them — the condition for the OCR and
+ * classification halves of ingestion to run at all.
+ */
+function userWhoReadsScans(): User
+{
+    $user = User::factory()->create();
+
+    Subscription::factory()->for($user)->create([
+        'plan_id' => Plan::factory()->pro()->create()->id,
+    ]);
+
+    return $user;
+}
 
 beforeEach(function () {
     Storage::fake('local');
@@ -154,7 +171,7 @@ it('marks a document as failed when no text can be extracted', function () {
 });
 
 it('uses OCR to extract text from an uploaded image', function () {
-    $user = User::factory()->create();
+    $user = userWhoReadsScans();
 
     Storage::put('documents/scan.png', 'fake image bytes');
 
@@ -187,7 +204,7 @@ Deed of Absolute Sale');
 });
 
 it('marks an image as failed when OCR returns no text', function () {
-    $user = User::factory()->create();
+    $user = userWhoReadsScans();
 
     Storage::put('documents/blank.jpg', 'fake image bytes');
 
@@ -354,7 +371,7 @@ it('prevents two workers from processing the same document at once', function ()
 it('scans a PDF with no text layer instead of rejecting it', function () {
     // A scanned PDF is page images with no extractable text, so the parser
     // returns nothing and the vision model is the only way to read it.
-    $user = User::factory()->create();
+    $user = userWhoReadsScans();
 
     Storage::put('documents/scan.pdf', '%PDF-1.4 fake bytes');
 
@@ -388,7 +405,7 @@ it('scans a PDF with no text layer instead of rejecting it', function () {
 });
 
 it('fails a PDF only after scanning it has also come up empty', function () {
-    $user = User::factory()->create();
+    $user = userWhoReadsScans();
 
     Storage::put('documents/blank.pdf', '%PDF-1.4 fake bytes');
 
@@ -417,7 +434,7 @@ it('fails a PDF only after scanning it has also come up empty', function () {
 it('does not re-scan a DOCX that yielded no text', function () {
     // Only images and PDFs are readable by the vision model; a DOCX with no
     // text is genuinely empty, so calling OCR on it would just burn a request.
-    $user = User::factory()->create();
+    $user = userWhoReadsScans();
 
     Storage::put('documents/empty.docx', 'PK fake bytes');
 

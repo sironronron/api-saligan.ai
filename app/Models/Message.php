@@ -57,16 +57,21 @@ class Message extends Model
     }
 
     /**
-     * A short title for a drafted document, taken from its first non-empty line.
+     * A short title for a drafted document, taken from its first non-empty
+     * line. Hidden document markers and chat-only export labels are skipped so
+     * the title reflects the document itself, never a marker or the thread
+     * name.
      */
     public function draftTitle(): string
     {
         foreach (preg_split('/\R/', (string) $this->content) ?: [] as $line) {
             $line = trim($line, " \t#*-");
 
-            if ($line !== '') {
-                return Str::limit($line, 80);
+            if ($line === '' || str_starts_with($line, '[[')) {
+                continue;
             }
+
+            return Str::limit($line, 80);
         }
 
         return $this->conversation?->title ?? 'Generated document';

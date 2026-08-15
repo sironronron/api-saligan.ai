@@ -40,6 +40,11 @@ class PaymongoGateway implements PaymentGateway
             'paymongo_subscription_id' => $paymongoSubscription['id'],
             'paymongo_customer_id' => $customerId,
             'status' => Subscription::STATUS_INCOMPLETE,
+            'seats_purchased' => $plan->included_seats,
+            // A plan that does not sell seats still has to price the one it
+            // covers, or the seat ledger would record every change against
+            // nothing. That price is the plan itself.
+            'price_per_seat' => $plan->seat_price ?? $plan->price,
         ]);
 
         $paymentIntent = data_get($paymongoSubscription, 'attributes.latest_invoice.payment_intent');

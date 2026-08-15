@@ -45,11 +45,6 @@ beforeEach(function () {
             return $this->staticInstructions();
         }
 
-        public function disclaimerShownFor(Conversation $conversation): bool
-        {
-            return $this->hasDisclaimerBeenShown($conversation);
-        }
-
         public function instructionsWithNotices(RetrievalResult $retrieval, Lab $provider, string $notices): string
         {
             return $this->buildInstructions($retrieval, $provider, false, turnNotices: $notices);
@@ -230,6 +225,18 @@ it('drafts directly with known facts and triggers intake only when facts are mis
         ->toContain('INTAKE FORM FIELD TEMPLATES')
         ->toContain('For a COMPLAINT (only when the user wants to initiate a case before a')
         ->toContain('Call the create_todo tool');
+});
+
+it('never re-sends the key facts summary when asked whether it was already sent', function () {
+    $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama);
+
+    expect($instructions)
+        ->toContain('NEVER RE-SEND THE KEY FACTS SUMMARY')
+        ->toContain('produced at most once per')
+        ->toContain('never resend the full summary again')
+        ->toContain('even if the user asks more than once')
+        ->toContain('not as a preface to')
+        ->toContain('answer that question directly');
 });
 
 it('places the next steps checklist outside the document markers', function () {
@@ -553,18 +560,20 @@ it('includes standing Philippine legal correspondence conventions', function () 
         ->toContain('Very truly yours');
 });
 
-it('recognizes the disclaimer wording the model was actually told to emit', function () {
-    $conversation = Conversation::factory()->create();
+it('never instructs the model to emit a legal disclaimer on drafted documents', function () {
+    $plain = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama);
+    $withLibrary = $this->chat->instructionsForLibrary(
+        new RetrievalResult(collect(), collect()),
+        Lab::Ollama,
+        LegalTemplateLibrary::resolveForMessage('Draft a demand letter for unpaid rent.'),
+    );
 
-    expect($this->chat->disclaimerShownFor($conversation))->toBeFalse();
-
-    Message::factory()->for($conversation)->create([
-        'role' => 'assistant',
-        'content' => "Disclaimer: I'm a legal research and drafting-support assistant, not a licensed Philippine attorney. "
-            .'This analysis should be reviewed by your lawyer before use in negotiation or litigation.',
-    ]);
-
-    expect($this->chat->disclaimerShownFor($conversation->fresh()))->toBeTrue();
+    expect($plain)
+        ->not->toContain('=== DISCLAIMER ===')
+        ->not->toContain('licensed Philippine attorney')
+        ->and($withLibrary)
+        ->not->toContain('=== DISCLAIMER ===')
+        ->not->toContain('licensed Philippine attorney');
 });
 
 it('carries the structural drafting conventions on every turn, template or not', function () {
@@ -594,14 +603,14 @@ it('ends every prompt with the closing guard, after any per-turn notice', functi
     $withNotice = $this->chat->instructionsWithNotices(
         new RetrievalResult(collect(), collect()),
         Lab::Ollama,
-        "=== DISCLAIMER ===\nInclude the disclaimer once.",
+        "=== ALREADY FLAGGED ===\nThe period may have run.",
     );
 
     expect($withNotice)
-        ->toContain('=== DISCLAIMER ===')
+        ->toContain('=== ALREADY FLAGGED ===')
         ->toEndWith('continue with the legal research or drafting task.')
         // The notice lands before the guard, never after it.
-        ->and(strpos($withNotice, '=== DISCLAIMER ==='))
+        ->and(strpos($withNotice, '=== ALREADY FLAGGED ==='))
         ->toBeLessThan(strpos($withNotice, '=== END OF INSTRUCTIONS ==='));
 });
 
@@ -1109,11 +1118,49 @@ it('formats sources with quotes and links in the Sources section', function () {
     $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Gemini);
 
     expect($instructions)
-        ->toContain('> "RA No. 6657, Sec. 2 (Comprehensive Agrarian Reform Law, as amended) — Official Gazette" [Link](URL)')
-        ->toContain('> "G.R. No. 143491, promulgated [date] — Supreme Court E-Library" [Link](URL)')
-        ->toContain('> "lease_agreement_2024.pdf"')
+        ->toContain('> "Republic Act No. <number>, Sec. <number> (<short title>) — <source name>" [Link](<url>)')
+        ->toContain('> "<case name>, G.R. No. <number>, promulgated <date> — <source name>" [Link](<url>)')
+        ->toContain('> "<original filename>"')
         ->toContain('Each source must be on its own line, prefixed with `> ` and wrapped in double quotes')
-        ->toContain('append a markdown link `[Link](URL)` after the closing quote');
+        ->toContain('The `[Link](<url>)` part is written ONLY when the retrieved block for that source carries a "URL:" line');
+});
+
+it('gives the model a sanctioned way to ask for a missing fact instead of inventing one', function () {
+    $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama);
+
+    // [[NEED_INFO]] is a live contract in ChatController: the questions after
+    // the marker become the intake form. A model never told about it is left
+    // with inventing the fact or asking a dead-end question in chat.
+    expect($instructions)
+        ->toContain(DraftingIntent::NEED_INFO_MARKER)
+        ->toContain('=== THE MISSING FACT LADDER — NEVER INVENT ===')
+        ->toContain('At no point on this ladder is guessing an option')
+        ->toContain('not as a realistic-sounding example');
+});
+
+it('dates documents by the Philippine calendar day, not the server clock', function () {
+    config()->set('saligan.timezone', 'Asia/Manila');
+
+    // 23:30 UTC is already the next day in Manila; a letter dated from the raw
+    // server clock would carry yesterday's date.
+    $this->travelTo('2026-08-15 23:30:00', function () {
+        $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Gemini);
+
+        expect($instructions)
+            ->toContain("Today's date in the Philippines is August 16, 2026")
+            ->not->toContain('August 15, 2026');
+    });
+});
+
+it('spells the Sources examples as placeholders rather than citable authorities', function () {
+    $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Gemini);
+
+    // A format example written with a real-looking G.R. or R.A. number is a
+    // citation the model can lift into an answer without ever retrieving it.
+    expect($instructions)
+        ->not->toContain('G.R. No. 143491')
+        ->not->toContain('RA No. 6657, Sec. 2')
+        ->toContain('EVERY PART OF A SOURCES ENTRY IS COPIED, NOT COMPOSED');
 });
 
 it('includes self-verification rules for quoted sources with links', function () {
@@ -1121,7 +1168,8 @@ it('includes self-verification rules for quoted sources with links', function ()
 
     expect($instructions)
         ->toContain('every Sources entry is on its own line prefixed with `> ` and wrapped in double quotes')
-        ->toContain('every legal source with a URL in the retrieved context includes a `[Link](URL)` after the closing quote');
+        ->toContain('a `[Link](<url>)` appears after the closing quote for exactly those sources whose retrieved block carries a URL line, and for no others')
+        ->toContain('SELF-VERIFICATION OF THE CITATIONS THEMSELVES');
 });
 
 it('lists every selected role and use case and carries all their calibrations', function () {

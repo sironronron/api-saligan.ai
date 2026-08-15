@@ -28,13 +28,13 @@ notes: >
 REPUBLIC OF THE PHILIPPINES
 [LEVEL OF COURT]
 [JUDICIAL REGION, if applicable]
-Branch [___]
+Branch ____
 [CITY/MUNICIPALITY]
 
 {{PLAINTIFF_NAME}},
                     Plaintiff,
 
-        -versus-                          Civil Case No. [___]
+        -versus-                          Civil Case No. ____
                                            For: {{NATURE_OF_ACTION}}
 
 {{DEFENDANT_NAME}},
@@ -93,10 +93,10 @@ of plaintiff and against defendant, ordering the latter to:
 _________________________
 **[Counsel's Name]**
 Counsel for Plaintiff
-Roll of Attorneys No. [___]
-PTR No. [___], issued [date/place]
-IBP No. [___], issued [date/place]
-MCLE Compliance No. [___]
+Roll of Attorneys No. ____
+PTR No. ____, issued ____
+IBP No. ____, issued ____
+MCLE Compliance No. ____
 [Address / contact details]
 
 *[NOTE TO REVIEWER: This draft requires review, revision, and signature by a

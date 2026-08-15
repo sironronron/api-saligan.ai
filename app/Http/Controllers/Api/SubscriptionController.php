@@ -42,6 +42,7 @@ class SubscriptionController extends Controller
 
         $plan = Plan::findOrFail($validated['plan_id']);
         abort_unless($plan->is_active, 422);
+        $this->assertSelfServe($plan);
 
         $user = $request->user();
 
@@ -97,6 +98,24 @@ class SubscriptionController extends Controller
     }
 
     /**
+     * Refuse a contract-priced plan at checkout. Such a plan has no list
+     * price and no gateway plan behind it, so letting one through would
+     * either charge nothing or fail at the gateway; it is granted by the
+     * `plan:business` command once the contract is signed.
+     */
+    protected function assertSelfServe(Plan $plan): void
+    {
+        if ($plan->isSelfServe()) {
+            return;
+        }
+
+        abort(response()->json([
+            'message' => "The {$plan->name} plan is priced per organization. Contact sales to get set up.",
+            'contact_sales' => true,
+        ], 422));
+    }
+
+    /**
      * Show the current user's subscription, plan, and usage.
      */
     public function show(Request $request): JsonResponse
@@ -122,10 +141,25 @@ class SubscriptionController extends Controller
 
         $plan = Plan::findOrFail($validated['plan_id']);
         abort_unless($plan->is_active, 422);
+        $this->assertSelfServe($plan);
 
         $this->gateways->for($subscription)->changePlan($subscription, $plan);
 
-        $subscription->update(['plan_id' => $plan->id]);
+        // The seat price travels with the plan: a subscription that moved off a
+        // team plan must stop billing that plan's seat rate, and one that moved
+        // onto it must start.
+        //
+        // Seat count moves in one direction only. Upgrading has to hand over the
+        // seats the new plan bundles — that is what was bought — so the count
+        // rises to `included_seats`. It never falls: seats bought on top of the
+        // old plan stay bought, and taking seats away here would lock out
+        // members still using them, which is the owner's decision rather than a
+        // side effect of changing plans.
+        $subscription->update([
+            'plan_id' => $plan->id,
+            'price_per_seat' => $plan->seat_price ?? $plan->price,
+            'seats_purchased' => max($subscription->seats_purchased, $plan->included_seats ?? 1),
+        ]);
 
         return response()->json([
             'data' => (new SubscriptionResource($subscription->fresh()->load('plan')))->resolve(),

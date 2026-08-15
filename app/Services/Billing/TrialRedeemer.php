@@ -27,11 +27,11 @@ class TrialRedeemer
      */
     public function redeem(User $user, string $code): Subscription
     {
+        // An organization is optional now: teams are a paid capability, so most
+        // accounts redeeming a trial are a single person who has never created
+        // one. Where there is an organization the trial belongs to it — one
+        // trial for the whole firm, not one per colleague invited.
         $organization = $user->organization;
-
-        if ($organization === null) {
-            throw new TrialRedemptionException('Create your organization before starting a trial.');
-        }
 
         // Everything from here re-reads under a row lock: two requests racing
         // the same last remaining redemption must not both succeed.
@@ -46,7 +46,7 @@ class TrialRedeemer
             }
 
             $this->assertCodeUsable($trialCode);
-            $this->assertRedeemerEligible($user, $trialCode, $organization->id);
+            $this->assertRedeemerEligible($user, $trialCode, $organization?->id);
 
             $plan = $trialCode->plan ?? $this->defaultTrialPlan();
 
@@ -57,7 +57,7 @@ class TrialRedeemer
             $endsAt = now()->addDays($trialCode->trial_days);
 
             $subscription = Subscription::create([
-                'organization_id' => $organization->id,
+                'organization_id' => $organization?->id,
                 'user_id' => $user->id,
                 'plan_id' => $plan->id,
                 'interval' => Plan::INTERVAL_MONTHLY,
@@ -97,9 +97,13 @@ class TrialRedeemer
     }
 
     /**
+     * @param  int|string|null  $organizationId  Null for an account that has no
+     *                                           organization, which is now the
+     *                                           ordinary case rather than an error.
+     *
      * @throws TrialRedemptionException
      */
-    protected function assertRedeemerEligible(User $user, TrialCode $code, int|string $organizationId): void
+    protected function assertRedeemerEligible(User $user, TrialCode $code, int|string|null $organizationId): void
     {
         // Self-referral would make a personal code a free trial generator for
         // its own owner.
@@ -107,38 +111,43 @@ class TrialRedeemer
             throw new TrialRedemptionException('You cannot redeem your own referral code.');
         }
 
-        $existing = Subscription::query()
-            ->where('organization_id', $organizationId)
-            ->orderByDesc('id')
-            ->first();
+        // The trial belongs to whoever it was granted to: the firm when there
+        // is one, the person when there is not. Scoping to the user in the
+        // second case is what stops "one trial ever" from being defeated by
+        // simply never creating an organization.
+        $scope = fn () => $organizationId === null
+            ? Subscription::query()->whereNull('organization_id')->where('user_id', $user->id)
+            : Subscription::query()->where('organization_id', $organizationId);
+
+        $existing = $scope()->orderByDesc('id')->first();
 
         if ($existing === null) {
             return;
         }
 
+        $personal = $organizationId === null;
+
         if ($existing->isActive()) {
-            throw new TrialRedemptionException(
-                $existing->onTrial()
-                    ? 'Your organization is already on a trial.'
-                    : 'Your organization already has an active subscription.',
-            );
+            throw new TrialRedemptionException(match (true) {
+                $existing->onTrial() && $personal => 'You are already on a trial.',
+                $existing->onTrial() => 'Your organization is already on a trial.',
+                $personal => 'You already have an active subscription.',
+                default => 'Your organization already has an active subscription.',
+            });
         }
 
-        // One trial per organization, ever. Without this, a lapsed trial could
-        // be renewed indefinitely by redeeming another code.
-        $hasTrialled = Subscription::query()
-            ->where('organization_id', $organizationId)
-            ->whereNotNull('trial_ends_at')
-            ->exists();
-
-        if ($hasTrialled) {
-            throw new TrialRedemptionException('Your organization has already used a free trial.');
+        // One trial ever. Without this, a lapsed trial could be renewed
+        // indefinitely by redeeming another code.
+        if ($scope()->whereNotNull('trial_ends_at')->exists()) {
+            throw new TrialRedemptionException($personal
+                ? 'You have already used a free trial.'
+                : 'Your organization has already used a free trial.');
         }
     }
 
     /**
      * The plan a code trials on when it does not name one: the dedicated trial
-     * plan, whose allowance is a quarter of Starter's.
+     * plan, whose allowance is a quarter of Standard's.
      *
      * Falls back to the cheapest active plan where that plan has not been
      * seeded, so an unspecified code still grants something rather than

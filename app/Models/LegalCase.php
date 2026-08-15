@@ -5,10 +5,12 @@ namespace App\Models;
 use App\Enums\MessageRole;
 use Database\Factories\LegalCaseFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\HasOne;
@@ -73,11 +75,81 @@ class LegalCase extends Model
     }
 
     /**
-     * The user who owns this case.
+     * The user who owns this case. Ownership is fixed at creation and is what
+     * billing counts against; sharing the work out never moves it.
      */
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    /**
+     * The firm this case belongs to, fixed from the owner's organization at
+     * creation. Null for a solo account, which is what makes a case
+     * unshareable rather than shareable-with-nobody.
+     */
+    public function organization(): BelongsTo
+    {
+        return $this->belongsTo(Organization::class);
+    }
+
+    /**
+     * Reads better than `user()` at every call site that means "the owner",
+     * now that a case has other people on it too.
+     */
+    public function owner(): BelongsTo
+    {
+        return $this->user();
+    }
+
+    /**
+     * The colleagues assigned to work this case alongside the owner. The owner
+     * is deliberately not a row here: they hold the case by `user_id`, and
+     * duplicating that would let the two disagree.
+     */
+    public function assignees(): BelongsToMany
+    {
+        return $this->belongsToMany(User::class, 'case_user', 'case_id', 'user_id')
+            ->withPivot('assigned_by')
+            ->withTimestamps()
+            ->orderBy('users.name');
+    }
+
+    /**
+     * Whether the user holds this case, either as its owner or as someone
+     * assigned to it. The single question every access check asks.
+     */
+    public function isAccessibleBy(User $user): bool
+    {
+        if ($this->user_id === $user->id) {
+            return true;
+        }
+
+        return $this->assignees()->whereKey($user->id)->exists();
+    }
+
+    /**
+     * Whether the matter is finished. A closed or archived case still reads,
+     * exports, and reopens, but nothing about it may be changed — including
+     * who is on it, which stays as the record of who actually worked it.
+     */
+    public function isReadOnly(): bool
+    {
+        return $this->archived_at !== null || $this->status === 'closed';
+    }
+
+    /**
+     * Scope to the cases a user may open: the ones they own, plus the ones
+     * they have been assigned to.
+     *
+     * @param  Builder<LegalCase>  $query
+     */
+    public function scopeVisibleTo($query, User $user): void
+    {
+        $query->where(function ($scoped) use ($user) {
+            $scoped->where('cases.user_id', $user->id)
+                ->orWhereHas('assignees', fn ($assignee) => $assignee->whereKey($user->id));
+        });
     }
 
     /**

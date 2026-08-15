@@ -41,7 +41,11 @@ class LegalCaseController extends Controller
      */
     public function index(Request $request): AnonymousResourceCollection
     {
-        $query = $request->user()->cases()
+        // Owned cases plus the ones the user has been assigned to — the list is
+        // "cases I can open", not "cases I created".
+        $query = LegalCase::query()
+            ->visibleTo($request->user())
+            ->with(['owner', 'assignees'])
             ->withCount('messages')
             ->withCount(['tasks as open_tasks_count' => fn ($task) => $task->where('status', '!=', 'completed')])
             ->withCount('tasks as total_tasks_count')
@@ -130,7 +134,7 @@ class LegalCaseController extends Controller
      */
     public function show(Request $request, LegalCase $case): LegalCaseResource
     {
-        abort_unless($case->user_id === $request->user()->id, 403);
+        $this->authorize('view', $case);
 
         $conversations = $case->conversations()
             ->withCount('messages')
@@ -148,7 +152,7 @@ class LegalCaseController extends Controller
             'messages',
             $activeConversation ? $activeConversation->messages()->orderBy('created_at')->get() : new Collection,
         );
-        $case->load(['defaultTemplate', 'tasks']);
+        $case->load(['defaultTemplate', 'tasks', 'owner', 'assignees']);
 
         return new LegalCaseResource($case);
     }
@@ -158,7 +162,7 @@ class LegalCaseController extends Controller
      */
     public function update(Request $request, LegalCase $case): LegalCaseResource
     {
-        abort_unless($case->user_id === $request->user()->id, 403);
+        $this->authorize('update', $case);
 
         $validated = $request->validate($this->rules(excludeRequired: true, request: $request, case: $case));
 
@@ -177,7 +181,7 @@ class LegalCaseController extends Controller
      */
     public function updateStatus(Request $request, LegalCase $case): LegalCaseResource
     {
-        abort_unless($case->user_id === $request->user()->id, 403);
+        $this->authorize('update', $case);
 
         $validated = $request->validate([
             'status' => ['required', 'string', 'in:'.implode(',', self::STATUSES)],
@@ -195,7 +199,7 @@ class LegalCaseController extends Controller
      */
     public function duplicate(Request $request, LegalCase $case): JsonResponse
     {
-        abort_unless($case->user_id === $request->user()->id, 403);
+        $this->authorize('view', $case);
 
         $copy = DB::transaction(function () use ($request, $case) {
             $copy = $request->user()->cases()->create([
@@ -229,7 +233,7 @@ class LegalCaseController extends Controller
      */
     public function storeConversation(Request $request, LegalCase $case): JsonResponse
     {
-        abort_unless($case->user_id === $request->user()->id, 403);
+        $this->authorize('update', $case);
 
         $validated = $request->validate([
             'purpose' => ['nullable', 'string', 'max:100'],
@@ -253,7 +257,7 @@ class LegalCaseController extends Controller
      */
     public function restore(Request $request, LegalCase $case): LegalCaseResource
     {
-        abort_unless($case->user_id === $request->user()->id, 403);
+        $this->authorize('delete', $case);
 
         $case->update(['archived_at' => null]);
 
@@ -265,7 +269,7 @@ class LegalCaseController extends Controller
      */
     public function destroy(Request $request, LegalCase $case): JsonResponse
     {
-        abort_unless($case->user_id === $request->user()->id, 403);
+        $this->authorize('delete', $case);
 
         $case->update(['archived_at' => now()]);
 
@@ -277,7 +281,7 @@ class LegalCaseController extends Controller
      */
     public function forceDestroy(Request $request, LegalCase $case): JsonResponse
     {
-        abort_unless($case->user_id === $request->user()->id, 403);
+        $this->authorize('delete', $case);
 
         $validated = $request->validate([
             'confirmation' => ['required', 'string'],
@@ -384,6 +388,20 @@ class LegalCaseController extends Controller
 
         if ($request->filled('tag')) {
             $query->whereJsonContains('tags', $request->string('tag'));
+        }
+
+        // Narrow to the cases one colleague is on. "On the case" means owner or
+        // assignee — the same reading the list rows use, so filtering by a
+        // person never hides a matter they actually hold. "me" saves the client
+        // from having to know its own id.
+        if ($request->filled('assignee')) {
+            $assignee = $request->string('assignee')->toString();
+            $userId = $assignee === 'me' ? $request->user()->id : $assignee;
+
+            $query->where(function ($scoped) use ($userId) {
+                $scoped->where('user_id', $userId)
+                    ->orWhereHas('assignees', fn ($member) => $member->whereKey($userId));
+            });
         }
     }
 

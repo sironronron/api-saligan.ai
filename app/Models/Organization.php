@@ -8,14 +8,41 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Support\Facades\URL;
 
 #[Fillable([
     'name',
+    'description',
+    'website',
 ])]
 class Organization extends Model
 {
     /** @use HasFactory<OrganizationFactory> */
     use HasFactory;
+
+    /** How long a logo link stays good for. Long enough to survive a session. */
+    public const LOGO_URL_TTL_DAYS = 7;
+
+    /**
+     * A link the browser can put straight in an `<img src>`.
+     *
+     * The file lives on the private disk, and the API is bearer-authenticated,
+     * so an `<img>` tag cannot reach it the ordinary way. A signed URL carries
+     * its own proof instead of needing a header, without exposing the storage
+     * path or opening the disk to the public.
+     */
+    public function logoUrl(): ?string
+    {
+        if ($this->logo_path === null) {
+            return null;
+        }
+
+        return URL::temporarySignedRoute(
+            'organizations.logo',
+            now()->addDays(self::LOGO_URL_TTL_DAYS),
+            ['organization' => $this->id],
+        );
+    }
 
     /**
      * The users that belong to this organization.

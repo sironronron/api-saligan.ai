@@ -14,6 +14,7 @@ use App\Models\Label;
 use App\Models\LegalCase;
 use App\Services\Crawler\LegalDigestService;
 use App\Services\Documents\DocumentEncryptor;
+use App\Support\PlanFeatures;
 use App\Support\PlanLimits;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -51,12 +52,19 @@ class DocumentController extends Controller
             'uncategorized' => ['nullable', 'boolean'],
         ]);
 
-        $query = $request->user()->documents()->withCount('chunks')->with('labels');
+        $query = Document::query()->withCount('chunks')->with('labels');
 
         if (isset($validated['case_id'])) {
             $case = LegalCase::findOrFail($validated['case_id']);
-            abort_unless($case->user_id === $request->user()->id, 403);
+            $this->authorize('view', $case);
+
+            // Scoped to the case rather than the caller: a case's file shelf is
+            // shared by everyone on it, so an assignee must see what the owner
+            // attached. The policy check above is what makes this safe.
             $query->where('case_id', $case->id);
+        } else {
+            // No case in play, so this is the user's own document library.
+            $query->where('user_id', $request->user()->id);
         }
 
         $categoryIds = $validated['category_id'] ?? [];
@@ -105,12 +113,21 @@ class DocumentController extends Controller
 
         if (isset($validated['case_id'])) {
             $case = LegalCase::findOrFail($validated['case_id']);
-            abort_unless($case->user_id === $request->user()->id, 403);
+            $this->authorize('update', $case);
+        }
+
+        $file = $validated['file'];
+
+        // An image is nothing but a picture of text: without the OCR that
+        // document intelligence pays for, ingesting it can only fail. Refusing
+        // it here rather than in the queue means the upload allowance is not
+        // spent on a document that was never going to be readable, and the
+        // reader is told why while they are still looking at the picker.
+        if (str_starts_with((string) $file->getClientMimeType(), 'image/')) {
+            PlanFeatures::ensureHas($request->user(), PlanFeatures::DOCUMENT_INTELLIGENCE);
         }
 
         PlanLimits::ensureCanUse($request->user(), 'documents_uploaded');
-
-        $file = $validated['file'];
 
         $originalFilename = $file->getClientOriginalName();
 
@@ -149,7 +166,7 @@ class DocumentController extends Controller
      */
     public function show(Request $request, Document $document): DocumentResource
     {
-        abort_unless($document->user_id === $request->user()->id, 403);
+        abort_unless($document->isAccessibleBy($request->user()), 403);
 
         return new DocumentResource($document->load('labels')->loadCount('chunks'));
     }
@@ -163,7 +180,7 @@ class DocumentController extends Controller
      */
     public function update(Request $request, Document $document): DocumentResource
     {
-        abort_unless($document->user_id === $request->user()->id, 403);
+        abort_unless($document->isAccessibleBy($request->user()), 403);
 
         $validated = $request->validate([
             'title' => ['sometimes', 'string', 'max:255'],
@@ -198,11 +215,36 @@ class DocumentController extends Controller
         ]);
 
         $case = LegalCase::findOrFail($validated['case_id']);
-        abort_unless($case->user_id === $request->user()->id, 403);
+        $this->authorize('update', $case);
 
         $document->update(['case_id' => $case->id]);
 
         return new DocumentResource($document->loadCount('chunks'));
+    }
+
+    /**
+     * Re-queue a document whose ingestion failed so processing runs again.
+     * Only a failed document can be retried: the queued and processing states
+     * already have a worker on them, and a ready document has nothing left to
+     * do.
+     */
+    public function retry(Request $request, Document $document): DocumentResource
+    {
+        abort_unless($document->isAccessibleBy($request->user()), 403);
+
+        abort_unless($document->status === DocumentStatus::Failed, 422, 'Only a failed document can be retried.');
+
+        $document->update([
+            'status' => DocumentStatus::Queued,
+            'error_message' => null,
+        ]);
+
+        $document->chunks()->delete();
+
+        ProcessDocumentUpload::dispatch($document)
+            ->onQueue(config('saligan.documents.queue'));
+
+        return new DocumentResource($document->load('labels')->loadCount('chunks'));
     }
 
     /**
@@ -216,7 +258,7 @@ class DocumentController extends Controller
      */
     public function content(Request $request, Document $document): JsonResponse
     {
-        abort_unless($document->user_id === $request->user()->id, 403);
+        abort_unless($document->isAccessibleBy($request->user()), 403);
 
         $chunks = $document->chunks()
             ->orderBy('chunk_index')
@@ -291,7 +333,7 @@ class DocumentController extends Controller
      */
     public function file(Request $request, Document $document): StreamedResponse
     {
-        abort_unless($document->user_id === $request->user()->id, 403);
+        abort_unless($document->isAccessibleBy($request->user()), 403);
 
         $validated = $request->validate([
             'disposition' => ['nullable', 'in:inline,attachment'],
@@ -371,7 +413,7 @@ class DocumentController extends Controller
      */
     public function destroy(Request $request, Document $document): JsonResponse
     {
-        abort_unless($document->user_id === $request->user()->id, 403);
+        abort_unless($document->isDeletableBy($request->user()), 403);
 
         Storage::delete($document->storage_path);
 

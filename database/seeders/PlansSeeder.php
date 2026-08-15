@@ -4,77 +4,115 @@ namespace Database\Seeders;
 
 use App\Models\Plan;
 use App\Services\Billing\PaymongoClient;
+use App\Support\PlanFeatures;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Log;
 
 class PlansSeeder extends Seeder
 {
     /**
-     * Seed the billing plans used by the PayMongo integration.
+     * The paid ladder, and the reasoning behind every number on it.
+     *
+     * Messages are the cost driver, and what a message costs depends on which
+     * model writes it: ₱1.75 on the base model against ₱3.49 on the frontier
+     * one, measured by EarningsModel at a 70% prompt-cache hit rate. That
+     * halving is the whole shape of this ladder. Standard buys volume on the
+     * base model; Pro buys the frontier model, deeper retrieval, and scan
+     * reading, and therefore buys fewer messages per peso — not because it is
+     * worse value, but because its messages genuinely cost twice as much to
+     * serve. Firm buys the same messages as Pro for a team, and sells more
+     * seats at less than a Pro subscription each.
+     *
+     * Every plan is sized to hold roughly 65% gross margin at a 70% cache-hit
+     * rate and to stay profitable if the cache never warms at all. Verify with
+     * `artisan costing:earnings --cache-hit-rate=0.7` after changing anything
+     * here — but note that command reads `messages_used` as a per-account
+     * figure, so it understates Firm, whose allowance is per seat.
      */
     public function run(): void
     {
-        // Message allowances are the cost driver, and the cost per message is
-        // flat — a retrieved, cited answer costs the same whoever asks it, so
-        // unlike seats or storage there is no economy of scale to pass on. The
-        // allowances below therefore price at a similar rate per message across
-        // the ladder (~₱11-12.50), with only a shallow volume discount. Sized
-        // from EarningsModel's measured token counts to hold a ~65% gross
-        // margin at a 70% prompt-cache hit rate, and to stay profitable even if
-        // the cache never warms at all.
+        // Standard's allowances, named once: the trial is defined as a quarter
+        // of them rather than as its own set of numbers, so the two can never
+        // drift into a trial that is more or less generous than intended.
+        $standardLimits = [
+            'active_cases' => 15,
+            'documents_uploaded' => 25,
+            'messages_used' => 240,
+        ];
+
+        // What every paid plan carries. Reading the template library is free
+        // to everyone; drafting from one, exporting the result, and checking
+        // the law against the live web are what a subscription buys.
+        $baseFeatures = [
+            PlanFeatures::DRAFTING,
+            PlanFeatures::EXPORTS,
+            PlanFeatures::WEB_SEARCH,
+        ];
+
         $plans = [
             [
-                // A trial is a quarter of Starter across every allowance: enough
-                // to run a real matter end to end and see cited answers, not
-                // enough to be a substitute for paying. Seeded inactive so it
-                // never appears on the pricing page or in checkout — only
-                // {@see \App\Services\Billing\TrialRedeemer} reaches it.
+                // Seeded inactive so it never appears on the pricing page or in
+                // checkout — only {@see \App\Services\Billing\TrialRedeemer}
+                // reaches it.
                 'slug' => Plan::SLUG_TRIAL,
                 'name' => 'Free trial',
                 'price' => 0,
                 'price_annual' => 0,
                 'overage_price' => null,
+                'included_seats' => 1,
+                'seat_price' => null,
                 'sort_order' => 0,
                 'is_active' => false,
-                'limits' => [
-                    'active_cases' => 3,
-                    'documents_uploaded' => 3,
-                    'messages_used' => 30,
-                ],
-                // The same capabilities as Starter: a trial that hides features
-                // is trialling a product nobody is being asked to buy.
-                'features' => ['templates', 'exports', 'web_search'],
+                // A quarter of Standard across every allowance: enough to run a
+                // real matter end to end and see cited answers, not enough to be
+                // a substitute for paying.
+                'limits' => array_map(
+                    fn (int $limit): int => (int) ceil($limit / 4),
+                    $standardLimits,
+                ),
+                // Exactly Standard's capabilities. A trial that hides features
+                // is trialling a product nobody is being asked to buy — and
+                // like Standard, it is answered by the base model.
+                'features' => $baseFeatures,
             ],
             [
-                'slug' => Plan::SLUG_STARTER,
-                'name' => 'Starter',
+                'slug' => Plan::SLUG_STANDARD,
+                'name' => 'Standard',
                 'price' => 150000,
                 'price_annual' => 1494000,
+                // Capped rather than metered, deliberately. Standard is where
+                // someone is still working out what they need; a bill that can
+                // grow while they do that is the wrong thing to hand them.
                 'overage_price' => null,
+                'included_seats' => 1,
+                'seat_price' => null,
                 'sort_order' => 1,
-                'limits' => [
-                    'active_cases' => 10,
-                    'documents_uploaded' => 10,
-                    'messages_used' => 120,
-                ],
-                'features' => ['templates', 'exports', 'web_search'],
+                'limits' => $standardLimits,
+                'features' => $baseFeatures,
             ],
             [
                 'slug' => Plan::SLUG_PRO,
                 'name' => 'Pro',
                 'price' => 350000,
                 'price_annual' => 3490000,
-                // Overage clears the ~₱3.65 marginal cost with room to spare;
-                // pricing it near cost, as before, made every extra message a
-                // rounding error against the support burden it carries.
+                // Clears the ~₱3.49 marginal cost with room to spare. Priced at
+                // cost, as it once was, every extra message was a rounding error
+                // against the support burden it carries.
                 'overage_price' => 900,
+                'included_seats' => 1,
+                'seat_price' => null,
                 'sort_order' => 2,
                 'limits' => [
                     'active_cases' => null,
                     'documents_uploaded' => 100,
                     'messages_used' => 300,
                 ],
-                'features' => ['templates', 'exports', 'web_search', 'unlimited_cases'],
+                'features' => [
+                    ...$baseFeatures,
+                    PlanFeatures::FRONTIER_MODEL,
+                    PlanFeatures::DEEP_RESEARCH,
+                    PlanFeatures::DOCUMENT_INTELLIGENCE,
+                ],
             ],
             [
                 'slug' => Plan::SLUG_FIRM,
@@ -82,13 +120,63 @@ class PlansSeeder extends Seeder
                 'price' => 1100000,
                 'price_annual' => 10990000,
                 'overage_price' => 850,
+                // Three people for ₱11,000, against ₱10,500 for three separate
+                // Pro accounts that cannot share a matter between them. The
+                // fourth seat onwards costs less than a Pro subscription.
+                'included_seats' => 3,
+                'seat_price' => 320000,
                 'sort_order' => 3,
+                // Allowances are counted per seat (see PlanLimits::consumeMessage),
+                // so this is 300 messages each, not 300 shared between them.
                 'limits' => [
                     'active_cases' => null,
                     'documents_uploaded' => null,
-                    'messages_used' => 1000,
+                    'messages_used' => 300,
                 ],
-                'features' => ['templates', 'exports', 'web_search', 'unlimited_cases', 'unlimited_documents', 'priority_support'],
+                'features' => [
+                    ...$baseFeatures,
+                    PlanFeatures::FRONTIER_MODEL,
+                    PlanFeatures::DEEP_RESEARCH,
+                    PlanFeatures::DOCUMENT_INTELLIGENCE,
+                    PlanFeatures::TEAMS,
+                    PlanFeatures::SUPPORT_24_7,
+                ],
+            ],
+            [
+                // Sold by conversation, not by card. Organizations at this size
+                // negotiate seats, allowance, and term, so the row carries no
+                // list price and no allowance of its own — the contract sets
+                // both, and `plan:business` writes them onto the subscription.
+                // Active so it is listed, `contact_sales` so checkout refuses
+                // it and the pricing page asks for a conversation instead.
+                'slug' => Plan::SLUG_BUSINESS,
+                'name' => 'Business',
+                'price' => 0,
+                'price_annual' => 0,
+                'overage_price' => null,
+                'included_seats' => 1,
+                // Seat terms are agreed, not listed, so there is no number to
+                // print — the same reason the row carries no price.
+                'seat_price' => null,
+                'sort_order' => 4,
+                'contact_sales' => true,
+                'limits' => [
+                    'active_cases' => null,
+                    'documents_uploaded' => null,
+                    'messages_used' => null,
+                ],
+                // Everything Firm has, plus what only a contract can carry: the
+                // account set up and the team trained by us.
+                'features' => [
+                    ...$baseFeatures,
+                    PlanFeatures::FRONTIER_MODEL,
+                    PlanFeatures::DEEP_RESEARCH,
+                    PlanFeatures::DOCUMENT_INTELLIGENCE,
+                    PlanFeatures::TEAMS,
+                    PlanFeatures::GUIDED_SETUP,
+                    PlanFeatures::TEAM_TRAINING,
+                    PlanFeatures::SUPPORT_24_7,
+                ],
             ],
         ];
 
@@ -125,6 +213,10 @@ class PlansSeeder extends Seeder
             ? 'paymongo_plan_id_annual'
             : 'paymongo_plan_id';
 
+        // A gateway plan is an immutable price object, so an id that is already
+        // set describes a price that may no longer be this plan's. Repricing
+        // therefore has to clear these columns to take effect — see the
+        // migration that renames Starter for why that is deliberate.
         if ($plan->{$column} !== null) {
             return;
         }

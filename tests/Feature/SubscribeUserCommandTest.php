@@ -26,11 +26,11 @@ it('grants a user an active subscription on a specific plan', function () {
 
 it('accepts the user id instead of the email', function () {
     $user = User::factory()->create();
-    $plan = Plan::factory()->starter()->create();
+    $plan = Plan::factory()->standard()->create();
 
     $this->artisan('subscribe:user', [
         'user' => $user->id,
-        '--plan' => Plan::SLUG_STARTER,
+        '--plan' => Plan::SLUG_STANDARD,
     ])->assertExitCode(0);
 
     expect($user->subscription->plan_id)->toBe($plan->id);
@@ -54,7 +54,7 @@ it('supports an annual interval', function () {
 
 it('moves an existing subscription to the new plan', function () {
     $user = User::factory()->create();
-    Plan::factory()->starter()->create();
+    Plan::factory()->standard()->create();
     $pro = Plan::factory()->pro()->create();
 
     $user->subscriptions()->create([
@@ -68,21 +68,21 @@ it('moves an existing subscription to the new plan', function () {
 
     $this->artisan('subscribe:user', [
         'user' => $user->email,
-        '--plan' => Plan::SLUG_STARTER,
+        '--plan' => Plan::SLUG_STANDARD,
     ])->assertExitCode(0);
 
     expect($user->subscriptions()->count())->toBe(1)
-        ->and($user->subscription->plan->slug)->toBe(Plan::SLUG_STARTER)
+        ->and($user->subscription->plan->slug)->toBe(Plan::SLUG_STANDARD)
         ->and($user->subscription->status)->toBe(Subscription::STATUS_ACTIVE)
         ->and($user->subscription->cancelled_at)->toBeNull();
 });
 
 it('fails with a non-zero exit code when the user is not found', function () {
-    Plan::factory()->starter()->create();
+    Plan::factory()->standard()->create();
 
     $this->artisan('subscribe:user', [
         'user' => 'missing@example.com',
-        '--plan' => Plan::SLUG_STARTER,
+        '--plan' => Plan::SLUG_STANDARD,
     ])->assertExitCode(1);
 });
 

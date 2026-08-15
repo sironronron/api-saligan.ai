@@ -120,7 +120,7 @@ it('computes the firm break-even message count including embeddings', function (
 
 it('prints the earnings report in pesos', function () {
     $this->artisan('costing:earnings')
-        ->expectsOutputToContain('Starter')
+        ->expectsOutputToContain('Standard')
         ->expectsOutputToContain('Pro')
         ->expectsOutputToContain('Firm')
         ->expectsOutputToContain('₱/msg')

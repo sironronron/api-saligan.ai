@@ -6,8 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Models\Conversation;
 use App\Models\Document;
 use App\Models\Todo;
+use App\Services\Chat\AdvisoryRecorder;
 use App\Services\Chat\ChatService;
+use App\Support\AdvisoryParser;
 use App\Support\ChatStatus;
+use App\Support\ChoicePrompt;
 use App\Support\DraftingIntent;
 use App\Support\PlanLimits;
 use App\Support\WebCitationParser;
@@ -40,7 +43,7 @@ class ChatController extends Controller
      */
     public function store(Request $request, Conversation $conversation): StreamedResponse
     {
-        abort_unless($conversation->user_id === $request->user()->id, 403);
+        abort_unless($conversation->isAccessibleBy($request->user()), 403);
 
         $validated = $request->validate([
             'message' => ['required', 'string', 'max:8000'],
@@ -149,7 +152,9 @@ class ChatController extends Controller
         $error = null;
         $completed = false;
         $intakeRequested = false;
+        $choiceRequested = false;
         $todoRequested = false;
+        $advisoriesRequested = false;
         $fillTemplateRequested = false;
         $textLength = 0;
         $lastText = '';
@@ -376,6 +381,44 @@ class ChatController extends Controller
                         continue;
                     }
 
+                    if ($event->toolCall->name === 'ask_user_question') {
+                        // The model's arguments are never rendered as they
+                        // arrive: a one-option question is not a choice, and a
+                        // model-authored "Other" would collide with the escape
+                        // the UI already offers.
+                        $questions = ChoicePrompt::normalize($event->toolCall->arguments['questions'] ?? null);
+
+                        // Nothing answerable survived normalization. Cutting the
+                        // stream here would strand the user on a question they
+                        // were never shown, so the turn simply carries on and
+                        // the model's own text stands as the answer.
+                        if ($questions === []) {
+                            Log::info('Discarded an unanswerable ask_user_question call', [
+                                'conversation_id' => $conversation->id,
+                            ]);
+
+                            continue;
+                        }
+
+                        $choiceRequested = true;
+
+                        yield $emit('status', [
+                            'status' => 'awaiting_choice',
+                            'label' => ChatStatus::label('awaiting_choice', $message),
+                        ]);
+
+                        yield $emit('tool_call', [
+                            'name' => 'ask_user_question',
+                            'arguments' => ['questions' => $questions],
+                        ]);
+
+                        // The rest of the turn depends on an answer nobody has
+                        // given yet. Breaking keeps whatever the model wrote on
+                        // the far side of the question — a draft that assumes a
+                        // choice — off the wire and out of the conversation.
+                        break;
+                    }
+
                     yield $emit('tool_call', [
                         'name' => $event->toolCall->name,
                         'arguments' => $event->toolCall->arguments,
@@ -383,6 +426,10 @@ class ChatController extends Controller
 
                     if ($event->toolCall->name === 'create_todo') {
                         $todoRequested = true;
+                    }
+
+                    if ($event->toolCall->name === 'flag_advisories') {
+                        $advisoriesRequested = true;
                     }
 
                     if ($event->toolCall->name === 'fill_template_fields') {
@@ -398,6 +445,10 @@ class ChatController extends Controller
 
                     if ($event->toolResult->name === 'create_todo') {
                         $todoRequested = true;
+                    }
+
+                    if ($event->toolResult->name === 'flag_advisories') {
+                        $advisoriesRequested = true;
                     }
                 }
             }
@@ -439,7 +490,7 @@ class ChatController extends Controller
             if ($error !== null) {
                 yield $emit('error', ['message' => $error]);
             } else {
-                if ($buffering && ! $intakeRequested) {
+                if ($buffering && ! $intakeRequested && ! $choiceRequested) {
                     // The model asked for the missing facts in chat using the
                     // [[NEED_INFO]] marker contract. Those questions become
                     // the intake form — the user answers exactly what the
@@ -482,7 +533,9 @@ class ChatController extends Controller
                     }
                 }
 
-                if (! $todoRequested && $textLength > 0
+                // A turn cut short by a question has no finished document, so
+                // its partial text must not be mined for next steps or caveats.
+                if (! $todoRequested && ! $choiceRequested && $textLength > 0
                     && ($isIntakeSubmission || DraftingIntent::hasTodoBlock($lastText))) {
                     // The model skipped the mandatory todo step. Persist the
                     // next steps extracted from the draft so tasks still appear.
@@ -516,6 +569,39 @@ class ChatController extends Controller
                         }
                     } catch (Throwable $exception) {
                         Log::warning('Fallback todo creation failed', [
+                            'conversation_id' => $conversation->id,
+                            'exception' => $exception->getMessage(),
+                        ]);
+                    }
+                }
+
+                if (! $advisoriesRequested && ! $choiceRequested && $textLength > 0 && AdvisoryParser::hasSection($lastText)) {
+                    // The model wrote its caveats as prose instead of calling
+                    // flag_advisories. Skipping a tool call is ordinary model
+                    // behaviour — create_todo has carried the same fallback
+                    // since before advisories existed — and these are the part
+                    // of the answer the user most needs to see, so they are
+                    // recovered rather than lost. The recorder applies the same
+                    // boilerplate and duplicate guards as the tool path.
+                    try {
+                        $created = app(AdvisoryRecorder::class)->record(
+                            $conversation->id,
+                            AdvisoryParser::fromReply($lastText),
+                        );
+
+                        if ($created !== []) {
+                            Log::info('Recovered advisories from reply text', [
+                                'conversation_id' => $conversation->id,
+                                'count' => count($created),
+                            ]);
+
+                            yield $emit('tool_result', [
+                                'name' => 'flag_advisories',
+                                'result' => json_encode(['items' => $created], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                            ]);
+                        }
+                    } catch (Throwable $exception) {
+                        Log::warning('Fallback advisory creation failed', [
                             'conversation_id' => $conversation->id,
                             'exception' => $exception->getMessage(),
                         ]);

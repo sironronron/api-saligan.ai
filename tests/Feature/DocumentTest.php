@@ -266,6 +266,63 @@ it('forbids attaching a document to another user case', function () {
         ->assertForbidden();
 });
 
+it('retries a failed document and re-queues ingestion', function () {
+    Queue::fake();
+
+    $document = Document::factory()->for($this->user)->failed()->create();
+
+    $response = $this->signInAs($this->user)
+        ->postJson("/api/documents/{$document->id}/retry")
+        ->assertOk();
+
+    expect($response->json('data.status'))->toBe(DocumentStatus::Queued->value)
+        ->and($response->json('data.error_message'))->toBeNull();
+
+    $this->assertDatabaseHas('documents', [
+        'id' => $document->id,
+        'status' => DocumentStatus::Queued->value,
+        'error_message' => null,
+    ]);
+
+    Queue::assertPushed(ProcessDocumentUpload::class);
+});
+
+it('clears leftover chunks when retrying a failed document', function () {
+    Queue::fake();
+
+    $document = Document::factory()->for($this->user)->failed()->hasChunks(2)->create();
+
+    $this->signInAs($this->user)
+        ->postJson("/api/documents/{$document->id}/retry")
+        ->assertOk();
+
+    expect($document->chunks()->count())->toBe(0);
+});
+
+it('refuses to retry a document that did not fail', function () {
+    Queue::fake();
+
+    $document = Document::factory()->for($this->user)->create();
+
+    $this->signInAs($this->user)
+        ->postJson("/api/documents/{$document->id}/retry")
+        ->assertStatus(422);
+
+    Queue::assertNotPushed(ProcessDocumentUpload::class);
+});
+
+it('forbids retrying another user document', function () {
+    Queue::fake();
+
+    $document = Document::factory()->for(User::factory())->failed()->create();
+
+    $this->signInAs($this->user)
+        ->postJson("/api/documents/{$document->id}/retry")
+        ->assertForbidden();
+
+    Queue::assertNotPushed(ProcessDocumentUpload::class);
+});
+
 it('serves a viewable document inline with its content', function () {
     Storage::fake('local');
 

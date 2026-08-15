@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Services\Documents\TextExtractor;
 use App\Services\Templates\DocxTemplateFiller;
 use App\Services\Templates\TemplatePlaceholderService;
+use App\Support\PlanFeatures;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -56,6 +57,8 @@ class TemplateController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
+        PlanFeatures::ensureHas($request->user(), PlanFeatures::DRAFTING);
+
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:120'],
             'category' => ['sometimes', 'in:'.implode(',', Template::CATEGORIES)],
@@ -156,6 +159,11 @@ class TemplateController extends Controller
      */
     public function fill(Request $request, Template $template): StreamedResponse
     {
+        // Checked before the template is inspected at all: whether the plan can
+        // draft does not depend on which template was asked for, and refusing
+        // first keeps the 402 from doubling as an existence oracle.
+        PlanFeatures::ensureHas($request->user(), PlanFeatures::DRAFTING);
+
         if ($template->isSystem()) {
             throw new NotFoundHttpException('System templates cannot be filled.');
         }

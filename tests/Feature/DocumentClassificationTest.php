@@ -7,6 +7,8 @@ use App\Jobs\ProcessDocumentUpload;
 use App\Models\Document;
 use App\Models\Label;
 use App\Models\Organization;
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\User;
 use App\Services\Ai\EmbeddingService;
 use App\Services\Documents\DocumentChunker;
@@ -32,6 +34,13 @@ beforeEach(function () {
     ]);
 
     $this->user = User::factory()->create();
+
+    // Auto-filing is half of the document-intelligence feature, so the whole
+    // suite needs a plan that carries it — otherwise ingestion skips the
+    // classifier and every expectation here is about work that never ran.
+    Subscription::factory()->for($this->user)->create([
+        'plan_id' => Plan::factory()->pro()->create()->id,
+    ]);
 
     $this->document = Document::factory()->for($this->user)->create([
         'original_filename' => 'judicial-affidavit-cruz.pdf',

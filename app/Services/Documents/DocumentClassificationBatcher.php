@@ -5,6 +5,7 @@ namespace App\Services\Documents;
 use App\Models\DocumentClassificationRequest;
 use App\Services\Ai\BatchClient;
 use App\Services\Ai\BatchClientFactory;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -77,6 +78,7 @@ class DocumentClassificationBatcher
             Log::warning('Document classification batch could not be submitted.', [
                 'requests' => count($requests),
                 'exception' => $exception->getMessage(),
+                'response' => $this->responseBody($exception),
             ]);
 
             return null;
@@ -229,6 +231,7 @@ class DocumentClassificationBatcher
             Log::warning('Document classification batch could not be polled.', [
                 'batch_id' => $batchId,
                 'exception' => $exception->getMessage(),
+                'response' => $this->responseBody($exception),
             ]);
 
             return 0;
@@ -251,6 +254,7 @@ class DocumentClassificationBatcher
             Log::warning('Document classification batch results could not be read.', [
                 'batch_id' => $batchId,
                 'exception' => $exception->getMessage(),
+                'response' => $this->responseBody($exception),
             ]);
 
             return 0;
@@ -327,6 +331,19 @@ class DocumentClassificationBatcher
 
             $request->markFailed('The answer could not be applied.');
         }
+    }
+
+    /**
+     * The provider's error body, when the failure was an HTTP error. The
+     * exception message alone only says "HTTP request returned status code
+     * 400" — the reason is in the body, and a log that cannot see it is a log
+     * that cannot be acted on.
+     */
+    protected function responseBody(Throwable $exception): ?string
+    {
+        return $exception instanceof RequestException
+            ? $exception->response->body()
+            : null;
     }
 
     /**

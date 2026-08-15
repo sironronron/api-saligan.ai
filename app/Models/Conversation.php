@@ -58,6 +58,24 @@ class Conversation extends Model
     /**
      * The messages in this conversation.
      */
+    /**
+     * Whether the user may open this thread: they started it, or it hangs off
+     * a case they are on.
+     *
+     * A case conversation is created by whoever opened the thread, so an
+     * assignee working someone else's matter fails an owner comparison on the
+     * thread while passing one on the case. The case is the unit of access;
+     * threads inherit it.
+     */
+    public function isAccessibleBy(User $user): bool
+    {
+        if ($this->user_id === $user->id) {
+            return true;
+        }
+
+        return $this->case !== null && $this->case->isAccessibleBy($user);
+    }
+
     public function messages(): HasMany
     {
         return $this->hasMany(Message::class)->orderBy('created_at');

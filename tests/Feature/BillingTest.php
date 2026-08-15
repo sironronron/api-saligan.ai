@@ -18,7 +18,7 @@ use Illuminate\Support\Str;
 
 beforeEach(function () {
     $this->user = User::factory()->create();
-    $this->starter = Plan::factory()->starter()->create();
+    $this->standard = Plan::factory()->standard()->create();
     $this->pro = Plan::factory()->pro()->create();
 });
 
@@ -26,7 +26,7 @@ it('lists the active plans for a guest', function () {
     $response = $this->getJson('/api/plans')->assertOk();
 
     expect($response->json('data'))->toHaveCount(2)
-        ->and($response->json('data.0.slug'))->toBe('starter')
+        ->and($response->json('data.0.slug'))->toBe('standard')
         ->and($response->json('data.0.price_label'))->toBe('₱1,500')
         ->and($response->json('data.1.slug'))->toBe('pro');
 });
@@ -186,6 +186,43 @@ it('rejects subscribing while an active subscription exists', function () {
         ->assertStatus(422);
 });
 
+it('refuses to check out a contact-sales plan', function () {
+    $business = Plan::factory()->business()->create();
+
+    $this->signInAs($this->user)
+        ->postJson('/api/subscription', ['plan_id' => $business->id])
+        ->assertStatus(422)
+        ->assertJsonPath('contact_sales', true);
+
+    // Nothing was created: a Business account is granted by `plan:business`
+    // once the contract is signed, never by the checkout route.
+    $this->assertDatabaseCount('subscriptions', 0);
+});
+
+it('refuses to switch an existing subscription onto a contact-sales plan', function () {
+    $business = Plan::factory()->business()->create();
+    Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
+
+    $this->signInAs($this->user)
+        ->postJson('/api/subscription/change-plan', ['plan_id' => $business->id])
+        ->assertStatus(422)
+        ->assertJsonPath('contact_sales', true);
+
+    expect($this->user->subscription->plan_id)->toBe($this->pro->id);
+});
+
+it('lists a contact-sales plan without quoting a price', function () {
+    Plan::factory()->business()->create();
+
+    $response = $this->getJson('/api/plans')->assertOk();
+
+    $business = collect($response->json('data'))->firstWhere('slug', Plan::SLUG_BUSINESS);
+
+    expect($business['contact_sales'])->toBeTrue()
+        ->and($business['price_label'])->toBe('Custom')
+        ->and($business['price_annual_label'])->toBe('Custom');
+});
+
 it('rejects starting a checkout while a payment is already pending', function () {
     Subscription::factory()->for($this->user)->create([
         'plan_id' => $this->pro->id,
@@ -219,7 +256,7 @@ it('shows the current subscription with usage', function () {
 
     expect($response->json('data.plan.slug'))->toBe('pro')
         ->and($response->json('data.usage.messages.used'))->toBe(42)
-        ->and($response->json('data.usage.messages.limit'))->toBe(500)
+        ->and($response->json('data.usage.messages.limit'))->toBe(300)
         ->and($response->json('data.usage.messages.overage'))->toBe(0)
         ->and($response->json('data.usage.documents.limit'))->toBe(100);
 });
@@ -231,11 +268,11 @@ it('returns null subscription for users without one', function () {
 });
 
 it('changes the subscription plan', function () {
-    $this->starter->update(['paymongo_plan_id' => 'plan_starter']);
+    $this->standard->update(['paymongo_plan_id' => 'plan_standard']);
     $this->pro->update(['paymongo_plan_id' => 'plan_pro']);
 
     Subscription::factory()->for($this->user)->create([
-        'plan_id' => $this->starter->id,
+        'plan_id' => $this->standard->id,
         'paymongo_subscription_id' => 'subs_test123',
     ]);
 
@@ -249,6 +286,44 @@ it('changes the subscription plan', function () {
         ->and(Subscription::firstWhere('user_id', $this->user->id)->plan_id)->toBe($this->pro->id);
 
     Http::assertSent(fn ($request) => str_contains($request->url(), '/v1/subscriptions/subs_test123/plan'));
+});
+
+it('hands over the new plan\'s included seats when upgrading', function () {
+    $firm = Plan::factory()->firm()->create(['paymongo_plan_id' => 'plan_firm']);
+    $this->standard->update(['paymongo_plan_id' => 'plan_standard']);
+
+    Subscription::factory()->for($this->user)->create([
+        'plan_id' => $this->standard->id,
+        'seats_purchased' => 1,
+        'paymongo_subscription_id' => 'subs_test123',
+    ]);
+
+    Http::fake(['api.paymongo.com/*' => Http::response(['data' => []])]);
+
+    $this->signInAs($this->user)
+        ->postJson('/api/subscription/change-plan', ['plan_id' => $firm->id])
+        ->assertOk()
+        ->assertJsonPath('data.seats.purchased', 3);
+});
+
+it('keeps seats bought on top of the old plan when downgrading', function () {
+    $firm = Plan::factory()->firm()->create(['paymongo_plan_id' => 'plan_firm']);
+    $this->pro->update(['paymongo_plan_id' => 'plan_pro']);
+
+    Subscription::factory()->for($this->user)->create([
+        'plan_id' => $firm->id,
+        'seats_purchased' => 5,
+        'paymongo_subscription_id' => 'subs_test123',
+    ]);
+
+    Http::fake(['api.paymongo.com/*' => Http::response(['data' => []])]);
+
+    // Pro includes one seat, but the five already paid for are still holding
+    // members — dropping them here would lock those people out.
+    $this->signInAs($this->user)
+        ->postJson('/api/subscription/change-plan', ['plan_id' => $this->pro->id])
+        ->assertOk()
+        ->assertJsonPath('data.seats.purchased', 5);
 });
 
 it('cancels the subscription', function () {
@@ -271,7 +346,7 @@ it('cancels the subscription', function () {
 
 it('activates a subscription on invoice paid webhook', function () {
     Subscription::factory()->for($this->user)->create([
-        'plan_id' => $this->starter->id,
+        'plan_id' => $this->standard->id,
         'paymongo_subscription_id' => 'subs_test123',
         'status' => Subscription::STATUS_INCOMPLETE,
     ]);
@@ -306,7 +381,7 @@ it('activates a subscription on invoice paid webhook', function () {
 
 it('mirrors a subscription status update webhook', function () {
     Subscription::factory()->for($this->user)->create([
-        'plan_id' => $this->starter->id,
+        'plan_id' => $this->standard->id,
         'paymongo_subscription_id' => 'subs_test123',
     ]);
 
@@ -347,8 +422,13 @@ it('rejects webhooks with an invalid signature', function () {
 });
 
 it('blocks a message when the monthly message limit is reached', function () {
-    Subscription::factory()->for($this->user)->create(['plan_id' => $this->starter->id]);
-    UsageCounter::factory()->for($this->user)->create(['messages_used' => 200, 'documents_uploaded' => 0]);
+    Subscription::factory()->for($this->user)->create(['plan_id' => $this->standard->id]);
+    // Read off the plan rather than hardcoded, so a change to the allowance
+    // cannot leave this asserting a cap the plan no longer has.
+    UsageCounter::factory()->for($this->user)->create([
+        'messages_used' => $this->standard->limits['messages_used'],
+        'documents_uploaded' => 0,
+    ]);
 
     $conversation = Conversation::factory()->for($this->user)->create();
 
@@ -376,8 +456,11 @@ it('blocks all product endpoints for users without a subscription', function () 
 });
 
 it('blocks document upload when the monthly upload limit is reached', function () {
-    Subscription::factory()->for($this->user)->create(['plan_id' => $this->starter->id]);
-    UsageCounter::factory()->for($this->user)->create(['messages_used' => 0, 'documents_uploaded' => 10]);
+    Subscription::factory()->for($this->user)->create(['plan_id' => $this->standard->id]);
+    UsageCounter::factory()->for($this->user)->create([
+        'messages_used' => 0,
+        'documents_uploaded' => $this->standard->limits['documents_uploaded'],
+    ]);
     Queue::fake();
     Storage::fake('local');
 
@@ -401,8 +484,9 @@ it('increments document upload usage', function () {
 });
 
 it('blocks creating a case over the active case limit', function () {
-    Subscription::factory()->for($this->user)->create(['plan_id' => $this->starter->id]);
-    LegalCase::factory()->for($this->user)->state(['status' => 'open'])->count(10)->create();
+    Subscription::factory()->for($this->user)->create(['plan_id' => $this->standard->id]);
+    LegalCase::factory()->for($this->user)->state(['status' => 'open'])
+        ->count($this->standard->limits['active_cases'])->create();
 
     $response = $this->signInAs($this->user)->postJson('/api/cases', [
         'title' => 'Another case',
@@ -417,7 +501,7 @@ it('blocks creating a case over the active case limit', function () {
 it('counts messages beyond the cap as overage when the plan has an overage price', function () {
     Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
     UsageCounter::factory()->for($this->user)->create([
-        'messages_used' => 500,
+        'messages_used' => $this->pro->limits['messages_used'],
         'messages_overage' => 2,
         'documents_uploaded' => 0,
     ]);
@@ -426,14 +510,14 @@ it('counts messages beyond the cap as overage when the plan has an overage price
 
     $counter = UsageCounter::firstWhere('user_id', $this->user->id);
 
-    expect($counter->messages_used)->toBe(500)
+    expect($counter->messages_used)->toBe($this->pro->limits['messages_used'])
         ->and($counter->messages_overage)->toBe(3);
 });
 
 it('blocks over-cap messages when the plan has no overage price', function () {
-    Subscription::factory()->for($this->user)->create(['plan_id' => $this->starter->id]);
+    Subscription::factory()->for($this->user)->create(['plan_id' => $this->standard->id]);
     UsageCounter::factory()->for($this->user)->create([
-        'messages_used' => 200,
+        'messages_used' => $this->standard->limits['messages_used'],
         'documents_uploaded' => 0,
     ]);
 
@@ -445,7 +529,7 @@ it('blocks over-cap messages when the plan has no overage price', function () {
 it('exposes the overage balance in the subscription payload', function () {
     Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
     UsageCounter::factory()->for($this->user)->create([
-        'messages_used' => 510,
+        'messages_used' => $this->pro->limits['messages_used'] + 10,
         'messages_overage' => 10,
         'documents_uploaded' => 0,
     ]);
@@ -453,9 +537,9 @@ it('exposes the overage balance in the subscription payload', function () {
     $response = $this->signInAs($this->user)->getJson('/api/subscription')->assertOk();
 
     expect($response->json('data.usage.messages.overage'))->toBe(10)
-        ->and($response->json('data.usage.messages.overage_rate'))->toBe(350)
-        ->and($response->json('data.usage.messages.overage_due_cents'))->toBe(3500)
-        ->and($response->json('data.usage.messages.overage_due_pesos'))->toBe(35);
+        ->and($response->json('data.usage.messages.overage_rate'))->toBe(900)
+        ->and($response->json('data.usage.messages.overage_due_cents'))->toBe(9000)
+        ->and($response->json('data.usage.messages.overage_due_pesos'))->toBe(90);
 });
 
 it('starts an annual subscription with a yearly PayMongo plan', function () {
@@ -510,18 +594,18 @@ it('starts an annual subscription with a yearly PayMongo plan', function () {
     Http::assertSent(function ($request) {
         return str_contains($request->url(), '/v1/subscriptions/plans')
             && data_get($request->data(), 'data.attributes.interval') === 'yearly'
-            && data_get($request->data(), 'data.attributes.amount') === 1990000;
+            && data_get($request->data(), 'data.attributes.amount') === 3490000;
     });
 
     Http::assertSent(function ($request) {
         return str_contains($request->url(), '/v1/checkout_sessions')
-            && data_get($request->data(), 'data.attributes.line_items.0.amount') === 1990000;
+            && data_get($request->data(), 'data.attributes.line_items.0.amount') === 3490000;
     });
 });
 
 it('extends the current period to a year for annual invoice payments', function () {
     Subscription::factory()->for($this->user)->create([
-        'plan_id' => $this->starter->id,
+        'plan_id' => $this->standard->id,
         'interval' => 'annual',
         'paymongo_subscription_id' => 'subs_annual',
         'status' => Subscription::STATUS_INCOMPLETE,

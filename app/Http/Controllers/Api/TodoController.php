@@ -47,7 +47,7 @@ class TodoController extends Controller
         ]);
 
         $conversation = Conversation::findOrFail($validated['conversation_id']);
-        abort_unless($conversation->user_id === $request->user()->id, 403);
+        abort_unless($conversation->isAccessibleBy($request->user()), 403);
 
         $validated['order'] = Todo::query()
             ->where('conversation_id', $conversation->id)
@@ -63,7 +63,7 @@ class TodoController extends Controller
      */
     public function update(Request $request, Todo $todo): JsonResponse
     {
-        abort_unless($todo->conversation->user_id === $request->user()->id, 403);
+        abort_unless($todo->conversation->isAccessibleBy($request->user()), 403);
 
         $validated = $request->validate([
             'title' => ['sometimes', 'string', 'max:255'],
@@ -93,7 +93,7 @@ class TodoController extends Controller
         ]);
 
         $conversation = Conversation::findOrFail($validated['conversation_id']);
-        abort_unless($conversation->user_id === $request->user()->id, 403);
+        abort_unless($conversation->isAccessibleBy($request->user()), 403);
 
         $todos = $conversation->todos;
 
@@ -115,7 +115,7 @@ class TodoController extends Controller
      */
     public function destroy(Request $request, Todo $todo): JsonResponse
     {
-        abort_unless($todo->conversation->user_id === $request->user()->id, 403);
+        abort_unless($todo->conversation->isAccessibleBy($request->user()), 403);
 
         $todo->delete();
 

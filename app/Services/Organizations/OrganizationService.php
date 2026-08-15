@@ -6,11 +6,16 @@ use App\Models\Invitation;
 use App\Models\Organization;
 use App\Models\User;
 use App\Notifications\OrganizationInvite;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class OrganizationService
 {
+    /** Logos live beside the other private uploads, not on a public bucket. */
+    public const LOGO_DISK = 'local';
+
     /**
      * Create a new organization and make the given user its owner.
      */
@@ -25,8 +30,111 @@ class OrganizationService
                 'org_status' => User::ORG_STATUS_ACTIVE,
             ])->save();
 
+            // An owner who subscribed before creating their organization has
+            // a subscription recorded without an organization. Link it now,
+            // or the organization's seat ledger and billing read nothing.
+            $owner->subscriptions()
+                ->whereNull('organization_id')
+                ->update(['organization_id' => $organization->id]);
+
             return $organization;
         });
+    }
+
+    /**
+     * Update the organization's public face: its name, what it does, and where
+     * to find it. Only the fields present in $attributes are touched, so a
+     * caller editing one field cannot blank the others by omission.
+     *
+     * A website arrives as people type it — "saligan.ai" rather than a URL —
+     * and is normalized here so every reader gets something a browser can open.
+     */
+    public function updateProfile(User $actor, Organization $organization, array $attributes): Organization
+    {
+        abort_unless($organization->canManage($actor), 403, 'Only organization admins can edit the organization.');
+
+        if (array_key_exists('name', $attributes)) {
+            $organization->name = trim((string) $attributes['name']);
+        }
+
+        if (array_key_exists('description', $attributes)) {
+            $description = trim((string) $attributes['description']);
+            $organization->description = $description === '' ? null : $description;
+        }
+
+        if (array_key_exists('website', $attributes)) {
+            $organization->website = $this->normalizeWebsite($attributes['website']);
+        }
+
+        $organization->save();
+
+        return $organization->fresh();
+    }
+
+    /**
+     * Replace the organization's logo, discarding whatever it had before.
+     *
+     * The file goes to the private disk. A logo is not secret, but putting it
+     * on a public bucket would mean a second storage path to deploy and
+     * secure, and the signed URL on the model already reads well enough.
+     */
+    public function setLogo(User $actor, Organization $organization, UploadedFile $file): Organization
+    {
+        abort_unless($organization->canManage($actor), 403, 'Only organization admins can change the logo.');
+
+        $previous = $organization->logo_path;
+
+        $path = $file->store("organization-logos/{$organization->id}", self::LOGO_DISK);
+
+        abort_if($path === false, 500, 'The logo could not be stored. Try again.');
+
+        $organization->forceFill(['logo_path' => $path])->save();
+
+        // Only after the new path is committed: a failed write must leave the
+        // organization with the logo it already had, not with none.
+        if ($previous !== null) {
+            Storage::disk(self::LOGO_DISK)->delete($previous);
+        }
+
+        return $organization->fresh();
+    }
+
+    /**
+     * Drop the logo and fall back to the drawn initial.
+     */
+    public function removeLogo(User $actor, Organization $organization): Organization
+    {
+        abort_unless($organization->canManage($actor), 403, 'Only organization admins can change the logo.');
+
+        if ($organization->logo_path !== null) {
+            Storage::disk(self::LOGO_DISK)->delete($organization->logo_path);
+
+            $organization->forceFill(['logo_path' => null])->save();
+        }
+
+        return $organization->fresh();
+    }
+
+    /**
+     * Turn what someone typed into a URL, or null if they typed nothing.
+     * A bare host gets https:// — the scheme is punctuation to the person
+     * filling in the field, and refusing them over it helps nobody.
+     */
+    protected function normalizeWebsite(mixed $value): ?string
+    {
+        $website = trim((string) $value);
+
+        if ($website === '') {
+            return null;
+        }
+
+        if (! preg_match('#^https?://#i', $website)) {
+            $website = "https://{$website}";
+        }
+
+        abort_unless(filter_var($website, FILTER_VALIDATE_URL) !== false, 422, 'That website address does not look valid.');
+
+        return $website;
     }
 
     /**
@@ -90,6 +198,18 @@ class OrganizationService
             ])->save();
 
             $invitation->update(['status' => Invitation::STATUS_ACCEPTED]);
+
+            // An invite sent from a case carries that case. Assign now that the
+            // user is seated — the case may have been deleted in the meantime,
+            // and the guard on organization_id keeps a stale invite from
+            // granting access to a matter that has since moved firms.
+            $case = $invitation->case;
+
+            if ($case !== null && $case->organization_id === $invitation->organization_id && $case->user_id !== $user->id) {
+                $case->assignees()->syncWithoutDetaching([
+                    $user->id => ['assigned_by' => $invitation->invited_by],
+                ]);
+            }
         });
     }
 
@@ -116,6 +236,28 @@ class OrganizationService
         abort_unless($member->org_role !== User::ORG_ROLE_OWNER, 422, 'The organization owner cannot be removed.');
 
         $member->forceFill([
+            'organization_id' => null,
+            'org_role' => null,
+            'org_status' => null,
+        ])->save();
+    }
+
+    /**
+     * Leave the organization on the member's own initiative, freeing their
+     * seat immediately. The owner cannot leave — the organization would be
+     * left with nobody who can manage it, and no way to buy that back.
+     *
+     * A suspended member is deliberately allowed through: leaving is the only
+     * move available to them, and refusing it would leave them holding an
+     * account that can do nothing at all.
+     */
+    public function leave(User $user): void
+    {
+        abort_unless($user->hasOrganization(), 422, 'You do not belong to an organization.');
+
+        abort_if($user->isOrganizationOwner(), 422, 'The organization owner cannot leave. Transfer ownership or delete the organization instead.');
+
+        $user->forceFill([
             'organization_id' => null,
             'org_role' => null,
             'org_status' => null,

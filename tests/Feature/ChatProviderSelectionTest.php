@@ -3,9 +3,11 @@
 use App\Enums\ChatProvider;
 use App\Models\Conversation;
 use App\Models\Organization;
+use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\User;
 use App\Services\Chat\ChatService;
+use App\Support\PlanFeatures;
 use Laravel\Ai\Enums\Lab;
 
 beforeEach(function () {
@@ -107,8 +109,11 @@ it('falls back to Gemini when Anthropic is stored but no API key is configured',
 it('uses Anthropic when Anthropic is stored and an API key is configured', function () {
     config()->set('ai.providers.anthropic.key', 'test-key');
 
-    $conversation = Conversation::factory()->create([
-        'provider' => ChatProvider::Anthropic,
+    // On a plan that carries the frontier model, so this asserts the provider
+    // choice without the model choice riding along on it.
+    $conversation = anthropicConversationFor([
+        'status' => Subscription::STATUS_ACTIVE,
+        'plan_id' => Plan::factory()->pro(),
     ]);
 
     expect($this->chat->resolveFor($conversation))->toBe([
@@ -123,14 +128,21 @@ it('derives Anthropic as the default provider from configuration', function () {
 });
 
 /**
- * An Anthropic conversation owned by a user whose organization is in the given
- * subscription state.
+ * An Anthropic conversation owned by a user whose organization is on a
+ * subscription in the given state, on a plan with the given features.
+ *
+ * @param  list<string>|null  $features  Null leaves the factory default, which
+ *                                       carries every capability.
  */
-function anthropicConversationFor(array $subscription): Conversation
+function anthropicConversationFor(array $subscription, ?array $features = null): Conversation
 {
     $organization = Organization::factory()->create();
 
-    Subscription::factory()->create([...$subscription, 'organization_id' => $organization->id]);
+    Subscription::factory()->create([
+        ...$subscription,
+        'organization_id' => $organization->id,
+        ...($features === null ? [] : ['plan_id' => Plan::factory()->create(['features' => $features])]),
+    ]);
 
     return Conversation::factory()->create([
         'provider' => ChatProvider::Anthropic,
@@ -139,28 +151,49 @@ function anthropicConversationFor(array $subscription): Conversation
 }
 
 /*
- * A trial earns nothing and its message allowance is generous, so it is served
- * the cheaper model. What is being switched is cost, not access: both models
- * answer from the same retrieved sources.
+ * The frontier model is a plan feature. What is being switched is cost, not
+ * access: both models answer from the same retrieved sources.
  */
-it('serves the trial model to an organization still inside its trial', function () {
+it('serves the base model to a plan without the frontier model feature', function () {
+    config()->set('ai.providers.anthropic.key', 'test-key');
+
+    $conversation = anthropicConversationFor(
+        ['status' => Subscription::STATUS_ACTIVE],
+        features: [PlanFeatures::DRAFTING, PlanFeatures::EXPORTS],
+    );
+
+    expect($this->chat->resolveFor($conversation))->toBe([
+        Lab::Anthropic,
+        config('saligan.chat.anthropic_base_model'),
+    ]);
+});
+
+/*
+ * The trial is not special-cased any more — it is simply a plan that does not
+ * carry the feature, and it lands on the base model for that reason alone.
+ */
+it('serves the base model to an organization still inside its trial', function () {
     config()->set('ai.providers.anthropic.key', 'test-key');
 
     $conversation = anthropicConversationFor([
         'status' => Subscription::STATUS_TRIALING,
         'trial_ends_at' => now()->addDays(7),
+        'plan_id' => Plan::factory()->trial(),
     ]);
 
     expect($this->chat->resolveFor($conversation))->toBe([
         Lab::Anthropic,
-        config('saligan.chat.anthropic_trial_model'),
+        config('saligan.chat.anthropic_base_model'),
     ]);
 });
 
-it('serves the paid model to a paying organization', function () {
+it('serves the frontier model to a plan that carries it', function () {
     config()->set('ai.providers.anthropic.key', 'test-key');
 
-    $conversation = anthropicConversationFor(['status' => Subscription::STATUS_ACTIVE]);
+    $conversation = anthropicConversationFor([
+        'status' => Subscription::STATUS_ACTIVE,
+        'plan_id' => Plan::factory()->pro(),
+    ]);
 
     expect($this->chat->resolveFor($conversation))->toBe([
         Lab::Anthropic,
@@ -170,15 +203,16 @@ it('serves the paid model to a paying organization', function () {
 
 /*
  * A lapsed trial is not a trial. Such a user has no access at all and never
- * reaches a chat turn, but the model choice must not quietly treat the expired
- * row as one that still earns the discount.
+ * reaches a chat turn, but the model choice must follow the plan they are on
+ * rather than the status of the row.
  */
-it('serves the paid model once the trial has lapsed', function () {
+it('follows the plan once the trial has lapsed', function () {
     config()->set('ai.providers.anthropic.key', 'test-key');
 
     $conversation = anthropicConversationFor([
         'status' => Subscription::STATUS_TRIALING,
         'trial_ends_at' => now()->subDay(),
+        'plan_id' => Plan::factory()->pro(),
     ]);
 
     expect($this->chat->resolveFor($conversation))->toBe([
@@ -187,13 +221,14 @@ it('serves the paid model once the trial has lapsed', function () {
     ]);
 });
 
-it('serves the paid model to everyone when no trial model is configured', function () {
+it('serves the frontier model to everyone when no base model is configured', function () {
     config()->set('ai.providers.anthropic.key', 'test-key');
-    config()->set('saligan.chat.anthropic_trial_model', null);
+    config()->set('saligan.chat.anthropic_base_model', null);
 
     $conversation = anthropicConversationFor([
         'status' => Subscription::STATUS_TRIALING,
         'trial_ends_at' => now()->addDays(7),
+        'plan_id' => Plan::factory()->trial(),
     ]);
 
     expect($this->chat->resolveFor($conversation))->toBe([

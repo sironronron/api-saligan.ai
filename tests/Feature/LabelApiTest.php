@@ -43,16 +43,23 @@ it('lists the system vocabulary alongside the organization custom terms', functi
         ->and($ids)->toHaveCount(27);
 });
 
-it('hides organization labels from a suspended member', function () {
-    $shared = Label::factory()->forOrganization($this->organization, $this->owner)->create();
+/*
+ * Once, this asserted that a suspended member got the list back without the
+ * organization's own terms in it — the scoping query hid the rows, but the
+ * request itself was still served. Suspension now stops the request, so there
+ * is no list to filter.
+ */
+it('refuses the vocabulary to a suspended member', function () {
+    Label::factory()->forOrganization($this->organization, $this->owner)->create();
 
     $suspended = User::factory()
         ->memberOf($this->organization, User::ORG_ROLE_MEMBER, User::ORG_STATUS_SUSPENDED)
         ->create();
 
-    $response = $this->signInAs($suspended)->getJson('/api/labels')->assertOk();
-
-    expect(collect($response->json('data'))->pluck('id'))->not->toContain($shared->id);
+    $this->signInAs($suspended)
+        ->getJson('/api/labels')
+        ->assertStatus(403)
+        ->assertJsonPath('suspended', true);
 });
 
 it('filters the vocabulary by kind', function () {

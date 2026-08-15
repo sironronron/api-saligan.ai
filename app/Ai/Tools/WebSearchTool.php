@@ -51,6 +51,11 @@ class WebSearchTool implements Tool
     public function __construct(
         private readonly WebSearchCollector $citations,
         private readonly mixed $onStatus = null,
+        /**
+         * How many searches this turn may run, when the caller has decided it
+         * from the user's plan. Null falls back to the configured cap.
+         */
+        private readonly ?int $maxSearches = null,
     ) {}
 
     /**
@@ -201,7 +206,7 @@ class WebSearchTool implements Tool
 
     protected function maxSearches(): int
     {
-        return max(1, (int) config('saligan.web_search.max_searches', 4));
+        return max(1, $this->maxSearches ?? (int) config('saligan.web_search.max_searches', 4));
     }
 
     /**

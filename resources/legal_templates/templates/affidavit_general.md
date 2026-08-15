@@ -48,7 +48,7 @@ exhibiting to me [his/her] {{ID_TYPE}} No. {{ID_NUMBER}}, issued on
 
 _________________________
 Notary Public
-Doc. No. [___]; Page No. [___]; Book No. [___]; Series of [___].
+Doc. No. ____; Page No. ____; Book No. ____; Series of ____.
 
 ---
 *[NOTE TO REVIEWER: ID and notarial numbers are placeholders — never

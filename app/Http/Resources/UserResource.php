@@ -27,6 +27,11 @@ class UserResource extends JsonResource
             'organization_id' => $this->organization_id,
             'org_role' => $this->org_role,
             'org_status' => $this->org_status,
+            // Named here so the suspension notice can say which workspace
+            // locked the member out: every organization endpoint is closed to
+            // them by then, and "an organization has suspended you" is not an
+            // answer someone on a shared plan can act on.
+            'organization_name' => $this->organization?->name,
             'kyc_role' => $this->kyc_role,
             'kyc_role_other' => $this->kyc_role_other,
             'kyc_use_case' => $this->kyc_use_case,

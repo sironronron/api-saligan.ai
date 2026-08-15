@@ -4,7 +4,9 @@ use App\Http\Controllers\Api\Admin\CrawledPageController;
 use App\Http\Controllers\Api\Admin\LegalDocumentController;
 use App\Http\Controllers\Api\Admin\LegalSourceController;
 use App\Http\Controllers\Api\Admin\SystemPromptController;
+use App\Http\Controllers\Api\AdvisoryController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\CaseAssigneeController;
 use App\Http\Controllers\Api\CaseProgressController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\ConversationController;
@@ -48,8 +50,24 @@ Route::get('/auth/last-used', [AuthController::class, 'lastUsed'])
 // visitors can open. Acceptance and status are per-user and stay protected.
 Route::get('/terms/document', [TermsController::class, 'document']);
 
-Route::middleware(['auth:supabase', 'track_last_used'])->group(function (): void {
-    Route::get('/user', [AuthController::class, 'user'])->name('user');
+// An organization's logo, read by an `<img>` tag that cannot carry the bearer
+// token every other route expects. The signature on the URL stands in for it,
+// and is only ever handed out inside a payload a member had the right to read.
+Route::get('/organizations/{organization}/logo', [OrganizationController::class, 'logo'])
+    ->middleware('signed')
+    ->name('organizations.logo');
+
+Route::middleware(['auth:supabase', 'track_last_used', 'not_suspended'])->group(function (): void {
+    // Exempt from `not_suspended`: the client has to be able to read back the
+    // suspended status it is about to act on, and the member has to be able to
+    // walk away from the organization that suspended them. Everything else in
+    // this group is closed to them.
+    Route::get('/user', [AuthController::class, 'user'])
+        ->withoutMiddleware('not_suspended')
+        ->name('user');
+
+    Route::post('/organizations/leave', [OrganizationController::class, 'leave'])
+        ->withoutMiddleware('not_suspended');
 
     Route::get('/terms/status', [TermsController::class, 'status']);
     Route::post('/terms/accept', [TermsController::class, 'accept']);
@@ -86,6 +104,9 @@ Route::middleware(['auth:supabase', 'track_last_used'])->group(function (): void
 
     Route::get('/organizations', [OrganizationController::class, 'show']);
     Route::post('/organizations', [OrganizationController::class, 'store']);
+    Route::patch('/organizations', [OrganizationController::class, 'update']);
+    Route::post('/organizations/logo', [OrganizationController::class, 'storeLogo']);
+    Route::delete('/organizations/logo', [OrganizationController::class, 'destroyLogo']);
     Route::get('/organizations/members', [OrganizationController::class, 'members']);
     Route::delete('/organizations/members/{member}', [OrganizationController::class, 'removeMember']);
     Route::post('/organizations/members/{member}/suspend', [OrganizationController::class, 'suspendMember']);
@@ -95,6 +116,7 @@ Route::middleware(['auth:supabase', 'track_last_used'])->group(function (): void
     Route::post('/organizations/invitations', [OrganizationController::class, 'storeInvitation']);
     Route::post('/organizations/invitations/accept', [OrganizationController::class, 'acceptInvitationByToken']);
     Route::delete('/organizations/invitations/{invitation}', [OrganizationController::class, 'revokeInvitation']);
+    Route::get('/invitations/pending', [OrganizationController::class, 'pendingInvitations']);
     Route::post('/invitations/{invitation}/accept', [OrganizationController::class, 'acceptInvitation']);
 
     Route::middleware(['active_subscription', 'terms.accepted'])->group(function (): void {
@@ -102,6 +124,7 @@ Route::middleware(['auth:supabase', 'track_last_used'])->group(function (): void
 
         Route::apiResource('documents', DocumentController::class);
         Route::post('/documents/{document}/attach', [DocumentController::class, 'attach']);
+        Route::post('/documents/{document}/retry', [DocumentController::class, 'retry']);
         Route::get('/documents/{document}/file', [DocumentController::class, 'file']);
         Route::get('/documents/{document}/content', [DocumentController::class, 'content']);
 
@@ -118,6 +141,8 @@ Route::middleware(['auth:supabase', 'track_last_used'])->group(function (): void
         Route::apiResource('todos', TodoController::class)->only(['index', 'store', 'update', 'destroy']);
         Route::post('/todos/reorder', [TodoController::class, 'reorder']);
 
+        Route::apiResource('advisories', AdvisoryController::class)->only(['index', 'update', 'destroy']);
+
         Route::get('/templates', [TemplateController::class, 'index']);
         Route::post('/templates', [TemplateController::class, 'store']);
         Route::post('/templates/{template}/fill', [TemplateController::class, 'fill']);
@@ -130,6 +155,14 @@ Route::middleware(['auth:supabase', 'track_last_used'])->group(function (): void
         Route::post('/cases/{case}/duplicate', [LegalCaseController::class, 'duplicate']);
         Route::post('/cases/{case}/restore', [LegalCaseController::class, 'restore']);
         Route::delete('/cases/{case}/force', [LegalCaseController::class, 'forceDestroy']);
+
+        // Who is working a case. `candidates` is separate from `index` because
+        // it answers a different question — who could be added — and only
+        // someone who may manage the case is allowed to ask it.
+        Route::get('/cases/{case}/assignees', [CaseAssigneeController::class, 'index']);
+        Route::get('/cases/{case}/assignees/candidates', [CaseAssigneeController::class, 'candidates']);
+        Route::post('/cases/{case}/assignees', [CaseAssigneeController::class, 'store']);
+        Route::delete('/cases/{case}/assignees/{user}', [CaseAssigneeController::class, 'destroy']);
     });
 
     Route::prefix('admin')->middleware('is_admin')->group(function (): void {

@@ -14,33 +14,33 @@ beforeEach(function () {
     ]);
 
     $this->user = User::factory()->create();
-    $this->starter = Plan::factory()->starter()->create();
+    $this->standard = Plan::factory()->standard()->create();
     $this->pro = Plan::factory()->pro()->create();
 });
 
 it('resolves to LemonSqueezy when it is the default and the plan has a variant', function () {
-    $this->starter->update(['lemonsqueezy_variant_id' => 123]);
+    $this->standard->update(['lemonsqueezy_variant_id' => 123]);
 
     $manager = app(BillingGatewayManager::class);
 
-    expect($manager->resolve($this->starter, Plan::INTERVAL_MONTHLY)->name()->value)
+    expect($manager->resolve($this->standard, Plan::INTERVAL_MONTHLY)->name()->value)
         ->toBe('lemonsqueezy');
 });
 
 it('falls back to PayMongo when the plan has no LemonSqueezy variant', function () {
     $manager = app(BillingGatewayManager::class);
 
-    expect($manager->resolve($this->starter, Plan::INTERVAL_MONTHLY)->name()->value)
+    expect($manager->resolve($this->standard, Plan::INTERVAL_MONTHLY)->name()->value)
         ->toBe('paymongo');
 });
 
 it('uses PayMongo when it is the configured default even if variants exist', function () {
     config(['billing.default_gateway' => 'paymongo']);
-    $this->starter->update(['lemonsqueezy_variant_id' => 123]);
+    $this->standard->update(['lemonsqueezy_variant_id' => 123]);
 
     $manager = app(BillingGatewayManager::class);
 
-    expect($manager->resolve($this->starter, Plan::INTERVAL_MONTHLY)->name()->value)
+    expect($manager->resolve($this->standard, Plan::INTERVAL_MONTHLY)->name()->value)
         ->toBe('paymongo');
 });
 
@@ -126,11 +126,11 @@ it('falls back to PayMongo at the API level when the plan has no LemonSqueezy va
 });
 
 it('changes plan through LemonSqueezy', function () {
-    $this->starter->update(['lemonsqueezy_variant_id' => 100]);
+    $this->standard->update(['lemonsqueezy_variant_id' => 100]);
     $this->pro->update(['lemonsqueezy_variant_id' => 200]);
 
     Subscription::factory()->for($this->user)->create([
-        'plan_id' => $this->starter->id,
+        'plan_id' => $this->standard->id,
         'interval' => Plan::INTERVAL_MONTHLY,
         'gateway' => 'lemonsqueezy',
         'lemonsqueezy_subscription_id' => 'ls_sub_123',
@@ -172,7 +172,7 @@ it('cancels a LemonSqueezy subscription', function () {
 });
 
 it('creates and activates a subscription from a LemonSqueezy webhook', function () {
-    $this->starter->update(['lemonsqueezy_variant_id' => 123]);
+    $this->standard->update(['lemonsqueezy_variant_id' => 123]);
 
     config(['lemonsqueezy.webhook_secret' => 'test-secret']);
 
@@ -201,7 +201,7 @@ it('creates and activates a subscription from a LemonSqueezy webhook', function 
 
     $this->assertDatabaseHas('subscriptions', [
         'user_id' => $this->user->id,
-        'plan_id' => $this->starter->id,
+        'plan_id' => $this->standard->id,
         'interval' => Plan::INTERVAL_MONTHLY,
         'gateway' => 'lemonsqueezy',
         'lemonsqueezy_subscription_id' => 'ls_sub_123',
@@ -215,7 +215,7 @@ it('creates and activates a subscription from a LemonSqueezy webhook', function 
 });
 
 it('maps an annual variant to an annual subscription on webhook', function () {
-    $this->starter->update(['lemonsqueezy_variant_id_annual' => 124]);
+    $this->standard->update(['lemonsqueezy_variant_id_annual' => 124]);
 
     config(['lemonsqueezy.webhook_secret' => 'test-secret']);
 
@@ -243,17 +243,17 @@ it('maps an annual variant to an annual subscription on webhook', function () {
 
     $this->assertDatabaseHas('subscriptions', [
         'user_id' => $this->user->id,
-        'plan_id' => $this->starter->id,
+        'plan_id' => $this->standard->id,
         'interval' => Plan::INTERVAL_ANNUAL,
         'status' => Subscription::STATUS_ACTIVE,
     ]);
 });
 
 it('syncs a cancelled LemonSqueezy subscription', function () {
-    $this->starter->update(['lemonsqueezy_variant_id' => 123]);
+    $this->standard->update(['lemonsqueezy_variant_id' => 123]);
 
     Subscription::factory()->for($this->user)->create([
-        'plan_id' => $this->starter->id,
+        'plan_id' => $this->standard->id,
         'gateway' => 'lemonsqueezy',
         'lemonsqueezy_subscription_id' => 'ls_sub_123',
     ]);
