@@ -1,9 +1,11 @@
 <?php
 
+use App\Enums\MessageRole;
 use App\Models\Conversation;
 use App\Models\Document;
 use App\Models\Invitation;
 use App\Models\LegalCase;
+use App\Models\Message;
 use App\Models\Organization;
 use App\Models\Plan;
 use App\Models\Subscription;
@@ -150,6 +152,85 @@ it('shows an assignee the documents attached to the case', function () {
 
     expect($ids)->toContain($onCase->id)
         ->and($ids)->not->toContain($private->id);
+});
+
+it('shows an assignee the case documents in their unscoped library', function () {
+    $this->case->assignees()->attach($this->colleague->id);
+
+    $onCase = Document::factory()->for($this->owner)->create(['case_id' => $this->case->id]);
+    $private = Document::factory()->for($this->owner)->create(['case_id' => null]);
+    $own = Document::factory()->for($this->colleague)->create(['case_id' => null]);
+
+    $ids = $this->signInAs($this->colleague)
+        ->getJson('/api/documents')
+        ->assertOk()
+        ->json('data.*.id');
+
+    expect($ids)->toContain($onCase->id)
+        ->and($ids)->toContain($own->id)
+        ->and($ids)->not->toContain($private->id);
+});
+
+it('keeps a case document out of an outsider\'s library', function () {
+    $onCase = Document::factory()->for($this->owner)->create(['case_id' => $this->case->id]);
+
+    $ids = $this->signInAs(subscribedUser($this->plan))
+        ->getJson('/api/documents')
+        ->assertOk()
+        ->json('data.*.id');
+
+    expect($ids)->not->toContain($onCase->id);
+});
+
+it('lets an assignee delete a document filed into the case', function () {
+    $this->case->assignees()->attach($this->colleague->id);
+
+    $onCase = Document::factory()->for($this->owner)->create(['case_id' => $this->case->id]);
+
+    $this->signInAs($this->colleague)
+        ->deleteJson("/api/documents/{$onCase->id}")
+        ->assertNoContent();
+
+    $this->assertDatabaseMissing('documents', ['id' => $onCase->id]);
+});
+
+it('does not let an outsider delete a document filed into the case', function () {
+    $onCase = Document::factory()->for($this->owner)->create(['case_id' => $this->case->id]);
+
+    $this->signInAs(subscribedUser($this->plan))
+        ->deleteJson("/api/documents/{$onCase->id}")
+        ->assertForbidden();
+
+    $this->assertDatabaseHas('documents', ['id' => $onCase->id]);
+});
+
+it('shows an assignee the drafts generated on the case by a colleague', function () {
+    $this->case->assignees()->attach($this->colleague->id);
+
+    // The owner's thread on the shared case, and a private thread of theirs
+    // that hangs off no case at all.
+    $onCase = Conversation::factory()->for($this->owner)->create(['case_id' => $this->case->id]);
+    $private = Conversation::factory()->for($this->owner)->create(['case_id' => null]);
+
+    $shared = Message::factory()->create([
+        'conversation_id' => $onCase->id,
+        'role' => MessageRole::Assistant,
+        'content' => "COMPLAINT\n\n[Download as Word](/api/messages/abc/export/word)",
+    ]);
+
+    $hidden = Message::factory()->create([
+        'conversation_id' => $private->id,
+        'role' => MessageRole::Assistant,
+        'content' => "AFFIDAVIT\n\n[Download as PDF](/api/messages/def/export/pdf)",
+    ]);
+
+    $ids = $this->signInAs($this->colleague)
+        ->getJson('/api/generated-documents')
+        ->assertOk()
+        ->json('data.*.id');
+
+    expect($ids)->toContain($shared->id)
+        ->and($ids)->not->toContain($hidden->id);
 });
 
 it('refuses to assign someone from another organization', function () {

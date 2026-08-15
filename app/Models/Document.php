@@ -6,6 +6,7 @@ use App\Enums\DocumentStatus;
 use App\Models\Concerns\HasLabels;
 use Database\Factories\DocumentFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -85,16 +86,32 @@ class Document extends Model
     }
 
     /**
-     * Whether the user may delete this document. Narrower than reading it:
-     * the uploader, or the owner of the case it was filed into. An assignee
-     * cannot delete a colleague's evidence out from under them.
+     * Whether the user may delete this document. The same question as reading
+     * it: everyone on a case works the same file shelf, so a colleague who can
+     * open a document can also take it off the shelf. Filing is shared work,
+     * and a document nobody but the uploader can remove is one the rest of the
+     * team has to work around.
      */
     public function isDeletableBy(User $user): bool
     {
-        if ($this->user_id === $user->id) {
-            return true;
-        }
+        return $this->isAccessibleBy($user);
+    }
 
-        return $this->case !== null && $this->case->user_id === $user->id;
+    /**
+     * Scope to the documents a user may open: the ones they uploaded, plus
+     * everything filed into a case they are on.
+     *
+     * The mirror of `isAccessibleBy` for listings. Without it the document
+     * library answers only with what the caller uploaded, so an assignee sees
+     * an empty shelf for a matter that is full of their colleague's evidence.
+     *
+     * @param  Builder<Document>  $query
+     */
+    public function scopeVisibleTo($query, User $user): void
+    {
+        $query->where(function ($scoped) use ($user) {
+            $scoped->where('documents.user_id', $user->id)
+                ->orWhereHas('case', fn ($case) => $case->visibleTo($user));
+        });
     }
 }

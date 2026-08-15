@@ -21,6 +21,10 @@ class DocumentResource extends JsonResource
         return [
             'id' => $this->id,
             'user_id' => $this->user_id,
+            // The library now carries case documents a colleague uploaded, so
+            // the shelf has to say whose file it is. Absent when the relation
+            // was not loaded — the caller's own uploads need no attribution.
+            'uploaded_by' => $this->whenLoaded('user', fn () => $this->user->name),
             'case_id' => $this->case_id,
             'title' => $this->title,
             'original_filename' => $this->original_filename,

@@ -34,8 +34,9 @@ class DocumentController extends Controller
     }
 
     /**
-     * List the authenticated user's uploaded documents, optionally scoped to a
-     * case and filtered by the case-file categories they are filed under.
+     * List the documents the caller may open — their own uploads plus the file
+     * shelves of the cases they are on — optionally scoped to a single case and
+     * filtered by the case-file categories they are filed under.
      *
      * A document may sit in several categories at once, so `match` decides how
      * a multi-category filter reads: `any` widens the net, `all` narrows to the
@@ -52,7 +53,7 @@ class DocumentController extends Controller
             'uncategorized' => ['nullable', 'boolean'],
         ]);
 
-        $query = Document::query()->withCount('chunks')->with('labels');
+        $query = Document::query()->withCount('chunks')->with(['labels', 'user:id,name']);
 
         if (isset($validated['case_id'])) {
             $case = LegalCase::findOrFail($validated['case_id']);
@@ -63,8 +64,11 @@ class DocumentController extends Controller
             // attached. The policy check above is what makes this safe.
             $query->where('case_id', $case->id);
         } else {
-            // No case in play, so this is the user's own document library.
-            $query->where('user_id', $request->user()->id);
+            // No case in play, so this is the library: what the caller
+            // uploaded, plus the shelves of every case they are on. Scoping it
+            // to `user_id` alone left an assignee looking at an empty library
+            // for a matter their colleague had already filled with evidence.
+            $query->visibleTo($request->user());
         }
 
         $categoryIds = $validated['category_id'] ?? [];
@@ -158,7 +162,7 @@ class DocumentController extends Controller
         ProcessDocumentUpload::dispatch($document)
             ->onQueue(config('saligan.documents.queue'));
 
-        return (new DocumentResource($document->load('labels')))->response()->setStatusCode(201);
+        return (new DocumentResource($document->load(['labels', 'user:id,name'])))->response()->setStatusCode(201);
     }
 
     /**
@@ -168,7 +172,7 @@ class DocumentController extends Controller
     {
         abort_unless($document->isAccessibleBy($request->user()), 403);
 
-        return new DocumentResource($document->load('labels')->loadCount('chunks'));
+        return new DocumentResource($document->load(['labels', 'user:id,name'])->loadCount('chunks'));
     }
 
     /**
@@ -199,16 +203,20 @@ class DocumentController extends Controller
             );
         }
 
-        return new DocumentResource($document->load('labels')->loadCount('chunks'));
+        return new DocumentResource($document->load(['labels', 'user:id,name'])->loadCount('chunks'));
     }
 
     /**
-     * Attach an existing document to one of the authenticated user's cases so
-     * it becomes retrievable within that case's conversations.
+     * Attach a document the caller can open to one of their cases so it becomes
+     * retrievable within that case's conversations.
+     *
+     * Refiling is shared work like the rest of the shelf, so an assignee may
+     * move a colleague's document too — the `update` check on the destination
+     * case is what keeps it from landing somewhere they do not belong.
      */
     public function attach(Request $request, Document $document): DocumentResource
     {
-        abort_unless($document->user_id === $request->user()->id, 403);
+        abort_unless($document->isAccessibleBy($request->user()), 403);
 
         $validated = $request->validate([
             'case_id' => ['required', 'uuid', 'exists:cases,id'],
@@ -244,7 +252,7 @@ class DocumentController extends Controller
         ProcessDocumentUpload::dispatch($document)
             ->onQueue(config('saligan.documents.queue'));
 
-        return new DocumentResource($document->load('labels')->loadCount('chunks'));
+        return new DocumentResource($document->load(['labels', 'user:id,name'])->loadCount('chunks'));
     }
 
     /**

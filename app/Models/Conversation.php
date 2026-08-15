@@ -6,6 +6,7 @@ use App\Enums\ChatProvider;
 use App\Models\Concerns\HasLabels;
 use Database\Factories\ConversationFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -74,6 +75,25 @@ class Conversation extends Model
         }
 
         return $this->case !== null && $this->case->isAccessibleBy($user);
+    }
+
+    /**
+     * Scope to the threads a user may open: the ones they started, plus every
+     * thread hanging off a case they are on.
+     *
+     * The listing mirror of `isAccessibleBy`, for the same reason the document
+     * one exists: a draft lives on the thread that produced it, so scoping a
+     * draft listing to the caller's own threads hides the case's drafts from
+     * everyone but whoever happened to generate them.
+     *
+     * @param  Builder<Conversation>  $query
+     */
+    public function scopeVisibleTo($query, User $user): void
+    {
+        $query->where(function ($scoped) use ($user) {
+            $scoped->where('conversations.user_id', $user->id)
+                ->orWhereHas('case', fn ($case) => $case->visibleTo($user));
+        });
     }
 
     public function messages(): HasMany
