@@ -56,7 +56,18 @@ return [
             'url' => env('AWS_URL'),
             'endpoint' => env('AWS_ENDPOINT'),
             'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
-            'throw' => false,
+
+            // Everything on this disk is a client's legal document. Objects are
+            // private and served only through the application's own authorized
+            // endpoints; the bucket should also carry a public-access block, as
+            // this setting alone does not stop a misconfigured bucket policy.
+            'visibility' => 'private',
+
+            // Unlike the local disk, a write here can fail for reasons the
+            // application must not paper over — credentials, throttling, a
+            // missing bucket. Silently returning false would record a document
+            // row pointing at an object that was never stored.
+            'throw' => true,
             'report' => false,
         ],
 

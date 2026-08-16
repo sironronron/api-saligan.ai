@@ -56,7 +56,7 @@ class LegalDocumentController extends Controller
         $originalFilename = $file->getClientOriginalName();
 
         $storagePath = 'legal-uploads/'.Str::uuid().'.'.($file->getClientOriginalExtension() ?: 'bin');
-        $file->storeAs(dirname($storagePath), basename($storagePath), 'local');
+        $file->storeAs(dirname($storagePath), basename($storagePath));
 
         $page = CrawledPage::create([
             'kind' => CrawledPage::KIND_UPLOADED,
@@ -82,7 +82,7 @@ class LegalDocumentController extends Controller
     public function file(Request $request, CrawledPage $crawledPage): StreamedResponse
     {
         abort_unless($crawledPage->isUploaded(), 404);
-        abort_unless($crawledPage->storage_path !== null && Storage::disk('local')->exists($crawledPage->storage_path), 404, 'The file is no longer available.');
+        abort_unless($crawledPage->storage_path !== null && Storage::exists($crawledPage->storage_path), 404, 'The file is no longer available.');
 
         // Mapped from the stored extension rather than taken from `mime_type`,
         // which is whatever the uploading client claimed. Serving that back
@@ -96,7 +96,7 @@ class LegalDocumentController extends Controller
             default => 'application/octet-stream',
         };
 
-        return Storage::disk('local')->response(
+        return Storage::response(
             $crawledPage->storage_path,
             $crawledPage->original_filename,
             [
@@ -116,7 +116,7 @@ class LegalDocumentController extends Controller
         abort_unless($crawledPage->isUploaded(), 404);
 
         if ($crawledPage->storage_path !== null) {
-            Storage::disk('local')->delete($crawledPage->storage_path);
+            Storage::delete($crawledPage->storage_path);
         }
 
         $crawledPage->delete();

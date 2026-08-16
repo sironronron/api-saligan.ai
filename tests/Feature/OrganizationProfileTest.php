@@ -83,7 +83,7 @@ it('does not let a plain member edit the organization', function () {
 });
 
 it('stores a logo and hands back a link an img tag can use', function () {
-    Storage::fake(OrganizationService::LOGO_DISK);
+    Storage::fake(OrganizationService::logoDisk());
 
     $url = $this->signInAs($this->owner)
         ->postJson('/api/organizations/logo', [
@@ -95,7 +95,7 @@ it('stores a logo and hands back a link an img tag can use', function () {
     $path = $this->organization->fresh()->logo_path;
 
     expect($path)->not->toBeNull();
-    Storage::disk(OrganizationService::LOGO_DISK)->assertExists($path);
+    Storage::disk(OrganizationService::logoDisk())->assertExists($path);
 
     // Signed rather than bearer-authenticated: the whole point is that an
     // <img src> can fetch it without setting a header.
@@ -105,7 +105,7 @@ it('stores a logo and hands back a link an img tag can use', function () {
 });
 
 it('refuses the logo route without a valid signature', function () {
-    Storage::fake(OrganizationService::LOGO_DISK);
+    Storage::fake(OrganizationService::logoDisk());
 
     $this->signInAs($this->owner)
         ->postJson('/api/organizations/logo', ['logo' => UploadedFile::fake()->image('firm.png')])
@@ -116,7 +116,7 @@ it('refuses the logo route without a valid signature', function () {
 });
 
 it('replaces the old logo file rather than piling them up', function () {
-    Storage::fake(OrganizationService::LOGO_DISK);
+    Storage::fake(OrganizationService::logoDisk());
 
     $this->signInAs($this->owner)
         ->postJson('/api/organizations/logo', ['logo' => UploadedFile::fake()->image('first.png')])
@@ -131,12 +131,12 @@ it('replaces the old logo file rather than piling them up', function () {
     $second = $this->organization->fresh()->logo_path;
 
     expect($second)->not->toBe($first);
-    Storage::disk(OrganizationService::LOGO_DISK)->assertMissing($first);
-    Storage::disk(OrganizationService::LOGO_DISK)->assertExists($second);
+    Storage::disk(OrganizationService::logoDisk())->assertMissing($first);
+    Storage::disk(OrganizationService::logoDisk())->assertExists($second);
 });
 
 it('removes the logo and reports no link', function () {
-    Storage::fake(OrganizationService::LOGO_DISK);
+    Storage::fake(OrganizationService::logoDisk());
 
     $this->signInAs($this->owner)
         ->postJson('/api/organizations/logo', ['logo' => UploadedFile::fake()->image('firm.png')])
@@ -149,12 +149,12 @@ it('removes the logo and reports no link', function () {
         ->assertOk()
         ->assertJsonPath('data.logo_url', null);
 
-    Storage::disk(OrganizationService::LOGO_DISK)->assertMissing($path);
+    Storage::disk(OrganizationService::logoDisk())->assertMissing($path);
     expect($this->organization->fresh()->logo_path)->toBeNull();
 });
 
 it('does not let a plain member change the logo', function () {
-    Storage::fake(OrganizationService::LOGO_DISK);
+    Storage::fake(OrganizationService::logoDisk());
 
     $this->signInAs($this->member)
         ->postJson('/api/organizations/logo', ['logo' => UploadedFile::fake()->image('firm.png')])
@@ -166,7 +166,7 @@ it('does not let a plain member change the logo', function () {
 });
 
 it('refuses a file that is not an image', function () {
-    Storage::fake(OrganizationService::LOGO_DISK);
+    Storage::fake(OrganizationService::logoDisk());
 
     $this->signInAs($this->owner)
         ->postJson('/api/organizations/logo', [

@@ -13,8 +13,15 @@ use Illuminate\Support\Str;
 
 class OrganizationService
 {
-    /** Logos live beside the other private uploads, not on a public bucket. */
-    public const LOGO_DISK = 'local';
+    /**
+     * The disk organization logos live on. The default disk, so logos follow
+     * the rest of the application's storage onto S3 rather than being stranded
+     * on a container-local filesystem that scales to exactly one instance.
+     */
+    public static function logoDisk(): string
+    {
+        return config('filesystems.default', 'local');
+    }
 
     /**
      * Create a new organization and make the given user its owner.
@@ -84,7 +91,7 @@ class OrganizationService
 
         $previous = $organization->logo_path;
 
-        $path = $file->store("organization-logos/{$organization->id}", self::LOGO_DISK);
+        $path = $file->store("organization-logos/{$organization->id}", self::logoDisk());
 
         abort_if($path === false, 500, 'The logo could not be stored. Try again.');
 
@@ -93,7 +100,7 @@ class OrganizationService
         // Only after the new path is committed: a failed write must leave the
         // organization with the logo it already had, not with none.
         if ($previous !== null) {
-            Storage::disk(self::LOGO_DISK)->delete($previous);
+            Storage::disk(self::logoDisk())->delete($previous);
         }
 
         return $organization->fresh();
@@ -107,7 +114,7 @@ class OrganizationService
         abort_unless($organization->canManage($actor), 403, 'Only organization admins can change the logo.');
 
         if ($organization->logo_path !== null) {
-            Storage::disk(self::LOGO_DISK)->delete($organization->logo_path);
+            Storage::disk(self::logoDisk())->delete($organization->logo_path);
 
             $organization->forceFill(['logo_path' => null])->save();
         }

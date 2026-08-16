@@ -9,8 +9,8 @@ use App\Models\DocumentChunk;
 use App\Services\Ai\EmbeddingService;
 use App\Services\Documents\DocumentChunker;
 use App\Services\Documents\DocumentClassifier;
-use App\Services\Documents\DocumentEncryptor;
 use App\Services\Documents\ImageOcrExtractor;
+use App\Services\Documents\StoredFiles;
 use App\Services\Documents\TextExtractor;
 use App\Support\PlanFeatures;
 use Illuminate\Bus\Queueable;
@@ -19,7 +19,6 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\Storage;
 use Throwable;
 
 class ProcessDocumentUpload implements ShouldQueue
@@ -62,7 +61,7 @@ class ProcessDocumentUpload implements ShouldQueue
         ImageOcrExtractor $ocr,
         DocumentChunker $chunker,
         EmbeddingService $embeddings,
-        DocumentEncryptor $encryptor,
+        StoredFiles $files,
         DocumentClassifier $classifier,
     ): void {
         $document = $this->document;
@@ -88,27 +87,25 @@ class ProcessDocumentUpload implements ShouldQueue
         $readsScans = $document->user !== null
             && PlanFeatures::has($document->user, PlanFeatures::DOCUMENT_INTELLIGENCE);
 
-        // Encrypted documents are decrypted to a temporary local file for
-        // extraction and removed again as soon as extraction completes, so
-        // plaintext never persists on disk.
-        $decryptedPath = $encryptor->decryptToTemp($document->storage_path);
-        $path = $decryptedPath ?? Storage::path($document->storage_path);
+        // The extractors need a real local path. Encrypted documents are
+        // decrypted, and documents on an object store downloaded, into a
+        // temporary file that is removed as soon as extraction completes, so
+        // plaintext never lingers on disk.
+        $copy = $files->localCopy($document->storage_path);
 
         try {
             $text = $this->isImage($mimeType) && $readsScans
-                ? $ocr->extract($path, $mimeType)
-                : $extractor->extract($path, $mimeType);
+                ? $ocr->extract($copy->path, $mimeType)
+                : $extractor->extract($copy->path, $mimeType);
 
             // A scanned PDF has no text layer, so the parser returns nothing.
             // The pages are images, which is exactly what the OCR model reads,
             // so fall through to it rather than rejecting the upload.
             if ($readsScans && trim($this->sanitizeText($text)) === '' && ImageOcrExtractor::handles($mimeType) && ! $this->isImage($mimeType)) {
-                $text = $ocr->extract($path, $mimeType);
+                $text = $ocr->extract($copy->path, $mimeType);
             }
         } finally {
-            if ($decryptedPath !== null) {
-                @unlink($decryptedPath);
-            }
+            $copy->discard();
         }
 
         // Extracted text (especially OCR output from photos) can carry invalid

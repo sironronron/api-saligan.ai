@@ -10,6 +10,7 @@ use App\Services\Ai\EmbeddingService;
 use App\Services\Crawler\LegalDigestService;
 use App\Services\Documents\DocumentChunker;
 use App\Services\Documents\ImageOcrExtractor;
+use App\Services\Documents\StoredFiles;
 use App\Services\Documents\TextExtractor;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -63,6 +64,7 @@ class ProcessLegalDocumentUpload implements ShouldQueue
         DocumentChunker $chunker,
         EmbeddingService $embeddings,
         LegalDigestService $digests,
+        StoredFiles $files,
     ): void {
         $page = $this->page;
 
@@ -75,26 +77,26 @@ class ProcessLegalDocumentUpload implements ShouldQueue
             'last_error' => null,
         ]);
 
-        if ($page->storage_path === null || ! Storage::disk('local')->exists($page->storage_path)) {
+        if ($page->storage_path === null || ! Storage::exists($page->storage_path)) {
             throw new DocumentProcessingException('The uploaded file is no longer available.');
         }
 
         // Clear any chunks from a previous partial attempt.
         $page->chunks()->delete();
 
-        $path = Storage::disk('local')->path($page->storage_path);
+        $copy = $files->plaintextCopy($page->storage_path);
         $mimeType = $page->mime_type ?? '';
 
         try {
             $text = $this->isImage($mimeType)
-                ? $ocr->extract($path, $mimeType)
-                : $extractor->extract($path, $mimeType);
+                ? $ocr->extract($copy->path, $mimeType)
+                : $extractor->extract($copy->path, $mimeType);
 
             // A scanned PDF has no text layer, so the parser returns nothing.
             // The pages are images, which is exactly what the OCR model reads,
             // so fall through to it rather than rejecting the upload.
             if (trim($this->sanitizeText($text)) === '' && ImageOcrExtractor::handles($mimeType) && ! $this->isImage($mimeType)) {
-                $text = $ocr->extract($path, $mimeType);
+                $text = $ocr->extract($copy->path, $mimeType);
             }
         } catch (DocumentProcessingException $exception) {
             throw $exception;
@@ -102,6 +104,8 @@ class ProcessLegalDocumentUpload implements ShouldQueue
             report($exception);
 
             throw new DocumentProcessingException('This file could not be read. Upload a text-based PDF, DOCX, or TXT copy instead.');
+        } finally {
+            $copy->discard();
         }
 
         $text = $this->sanitizeText($text);

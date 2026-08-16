@@ -13,6 +13,7 @@ use App\Services\Documents\DocumentChunker;
 use App\Services\Documents\DocumentClassifier;
 use App\Services\Documents\DocumentEncryptor;
 use App\Services\Documents\ImageOcrExtractor;
+use App\Services\Documents\StoredFiles;
 use App\Services\Documents\TextExtractor;
 use Illuminate\Http\Client\Request;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
@@ -71,7 +72,7 @@ it('extracts, chunks, embeds, and stores chunks for a text document', function (
         app(ImageOcrExtractor::class),
         app(DocumentChunker::class),
         app(EmbeddingService::class),
-        app(DocumentEncryptor::class),
+        app(StoredFiles::class),
         app(DocumentClassifier::class),
     );
 
@@ -97,7 +98,7 @@ it('stores a single chunk for a short text document', function () {
         app(ImageOcrExtractor::class),
         app(DocumentChunker::class),
         app(EmbeddingService::class),
-        app(DocumentEncryptor::class),
+        app(StoredFiles::class),
         app(DocumentClassifier::class),
     );
 
@@ -127,7 +128,7 @@ it('extracts text from an encrypted stored document', function () {
         app(ImageOcrExtractor::class),
         app(DocumentChunker::class),
         app(EmbeddingService::class),
-        app(DocumentEncryptor::class),
+        app(StoredFiles::class),
         app(DocumentClassifier::class),
     );
 
@@ -158,7 +159,7 @@ it('marks a document as failed when no text can be extracted', function () {
             app(ImageOcrExtractor::class),
             app(DocumentChunker::class),
             app(EmbeddingService::class),
-            app(DocumentEncryptor::class),
+            app(StoredFiles::class),
             app(DocumentClassifier::class),
         );
         $this->fail('Expected an exception for empty text.');
@@ -193,7 +194,7 @@ Deed of Absolute Sale');
         $ocr,
         app(DocumentChunker::class),
         app(EmbeddingService::class),
-        app(DocumentEncryptor::class),
+        app(StoredFiles::class),
         app(DocumentClassifier::class),
     );
 
@@ -225,7 +226,7 @@ it('marks an image as failed when OCR returns no text', function () {
             $ocr,
             app(DocumentChunker::class),
             app(EmbeddingService::class),
-            app(DocumentEncryptor::class),
+            app(StoredFiles::class),
             app(DocumentClassifier::class),
         );
         $this->fail('Expected an exception for empty OCR output.');
@@ -255,7 +256,7 @@ it('sanitizes invalid UTF-8 so extracted text never breaks downstream requests',
         app(ImageOcrExtractor::class),
         app(DocumentChunker::class),
         app(EmbeddingService::class),
-        app(DocumentEncryptor::class),
+        app(StoredFiles::class),
         app(DocumentClassifier::class),
     );
 
@@ -285,7 +286,7 @@ it('strips null bytes that Postgres would otherwise reject', function () {
         app(ImageOcrExtractor::class),
         app(DocumentChunker::class),
         app(EmbeddingService::class),
-        app(DocumentEncryptor::class),
+        app(StoredFiles::class),
         app(DocumentClassifier::class),
     );
 
@@ -315,7 +316,7 @@ it('fails loudly when the embedding count does not match the chunk count', funct
             app(ImageOcrExtractor::class),
             app(DocumentChunker::class),
             $embeddings,
-            app(DocumentEncryptor::class),
+            app(StoredFiles::class),
             app(DocumentClassifier::class),
         );
         $this->fail('Expected a RuntimeException for the vector/chunk mismatch.');
@@ -395,7 +396,7 @@ it('scans a PDF with no text layer instead of rejecting it', function () {
         $ocr,
         app(DocumentChunker::class),
         app(EmbeddingService::class),
-        app(DocumentEncryptor::class),
+        app(StoredFiles::class),
         app(DocumentClassifier::class),
     );
 
@@ -426,7 +427,7 @@ it('fails a PDF only after scanning it has also come up empty', function () {
         $ocr,
         app(DocumentChunker::class),
         app(EmbeddingService::class),
-        app(DocumentEncryptor::class),
+        app(StoredFiles::class),
         app(DocumentClassifier::class),
     ))->toThrow(DocumentProcessingException::class);
 });
@@ -455,7 +456,7 @@ it('does not re-scan a DOCX that yielded no text', function () {
         $ocr,
         app(DocumentChunker::class),
         app(EmbeddingService::class),
-        app(DocumentEncryptor::class),
+        app(StoredFiles::class),
         app(DocumentClassifier::class),
     ))->toThrow(DocumentProcessingException::class);
 });

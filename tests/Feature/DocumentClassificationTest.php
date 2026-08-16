@@ -13,8 +13,8 @@ use App\Models\User;
 use App\Services\Ai\EmbeddingService;
 use App\Services\Documents\DocumentChunker;
 use App\Services\Documents\DocumentClassifier;
-use App\Services\Documents\DocumentEncryptor;
 use App\Services\Documents\ImageOcrExtractor;
+use App\Services\Documents\StoredFiles;
 use App\Services\Documents\TextExtractor;
 use Database\Seeders\LabelSeeder;
 use Illuminate\Http\Client\Request;
@@ -232,7 +232,7 @@ it('files an uploaded document as part of ingestion', function () {
         app(ImageOcrExtractor::class),
         app(DocumentChunker::class),
         app(EmbeddingService::class),
-        app(DocumentEncryptor::class),
+        app(StoredFiles::class),
         app(DocumentClassifier::class),
     );
 
@@ -268,7 +268,7 @@ it('still finishes ingestion when classification fails', function () {
         app(ImageOcrExtractor::class),
         app(DocumentChunker::class),
         app(EmbeddingService::class),
-        app(DocumentEncryptor::class),
+        app(StoredFiles::class),
         app(DocumentClassifier::class),
     );
 

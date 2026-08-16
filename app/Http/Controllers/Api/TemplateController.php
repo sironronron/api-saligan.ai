@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\TemplateResource;
 use App\Models\Template;
 use App\Models\User;
+use App\Services\Documents\StoredFiles;
 use App\Services\Documents\TextExtractor;
 use App\Services\Templates\DocxTemplateFiller;
 use App\Services\Templates\TemplatePlaceholderService;
@@ -25,6 +26,7 @@ class TemplateController extends Controller
         private readonly TextExtractor $textExtractor,
         private readonly TemplatePlaceholderService $placeholders,
         private readonly DocxTemplateFiller $filler,
+        private readonly StoredFiles $storedFiles,
     ) {
         //
     }
@@ -92,9 +94,15 @@ class TemplateController extends Controller
 
             $storagePath = $file->store('template-files');
 
+            // The uploaded file is on the default disk, which may be an object
+            // store; the extractor and the placeholder scanner both need a real
+            // local path, so work against a local copy and release it below.
+            $copy = $this->storedFiles->plaintextCopy($storagePath);
+
             try {
-                $extracted = trim($this->textExtractor->extract(Storage::path($storagePath), $mimeType));
+                $extracted = trim($this->textExtractor->extract($copy->path, $mimeType));
             } catch (\Throwable $e) {
+                $copy->discard();
                 Storage::delete($storagePath);
 
                 throw $e;
@@ -102,7 +110,12 @@ class TemplateController extends Controller
 
             if ($extension === 'docx') {
                 $autoDetectedPlaceholders = $this->placeholders->detect($extracted);
-                $unmatchable = $this->placeholders->unMatchable(Storage::path($storagePath), $autoDetectedPlaceholders);
+
+                try {
+                    $unmatchable = $this->placeholders->unMatchable($copy->path, $autoDetectedPlaceholders);
+                } finally {
+                    $copy->discard();
+                }
 
                 if ($unmatchable !== []) {
                     Storage::delete($storagePath);
@@ -123,6 +136,7 @@ class TemplateController extends Controller
                 $originalPath = $storagePath;
                 $content = $extracted;
             } else {
+                $copy->discard();
                 Storage::delete($storagePath);
 
                 if ($extracted === '') {
@@ -184,7 +198,13 @@ class TemplateController extends Controller
             fn (mixed $value): bool => $value !== null && $value !== '',
         );
 
-        $filledPath = $this->filler->fill(Storage::path($template->original_path), $values);
+        $source = $this->storedFiles->plaintextCopy($template->original_path);
+
+        try {
+            $filledPath = $this->filler->fill($source->path, $values);
+        } finally {
+            $source->discard();
+        }
 
         $filename = $this->sanitizeFilename($template->name).'.docx';
 

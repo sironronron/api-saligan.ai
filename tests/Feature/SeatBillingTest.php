@@ -67,10 +67,22 @@ it('computes the next invoice as seats purchased times price per seat', function
     expect($this->subscription->nextInvoiceAmount())->toBe(1000000);
 });
 
-it('falls back to the plan price when no per-seat price is set', function () {
+it("falls back to the plan's seat price when no per-seat price is set", function () {
     $this->subscription->update(['price_per_seat' => null, 'seats_purchased' => 3]);
 
-    expect($this->subscription->nextInvoiceAmount())->toBe($this->plan->price * 3);
+    expect($this->subscription->fresh()->nextInvoiceAmount())->toBe($this->plan->seat_price * 3);
+});
+
+it('falls back to the plan price when the plan sells no seats', function () {
+    $plan = Plan::factory()->create(['seat_price' => null]);
+
+    $this->subscription->update([
+        'plan_id' => $plan->id,
+        'price_per_seat' => null,
+        'seats_purchased' => 1,
+    ]);
+
+    expect($this->subscription->fresh()->nextInvoiceAmount())->toBe($plan->price);
 });
 
 it('blocks non-admins from changing seat counts', function () {

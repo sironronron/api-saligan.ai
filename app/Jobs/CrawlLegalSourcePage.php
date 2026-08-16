@@ -316,7 +316,7 @@ class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
         $extension = $this->isPdf($page->url ?? '', $body) ? 'pdf' : 'html';
         $path = 'crawled-pages/'.$page->id.'.'.$extension;
 
-        Storage::disk('local')->put($path, $body);
+        Storage::put($path, $body);
 
         $page->update(['raw_html_path' => $path]);
     }

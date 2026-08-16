@@ -9,6 +9,7 @@ use App\Services\Ai\EmbeddingService;
 use App\Services\Crawler\LegalDigestService;
 use App\Services\Documents\DocumentChunker;
 use App\Services\Documents\ImageOcrExtractor;
+use App\Services\Documents\StoredFiles;
 use App\Services\Documents\TextExtractor;
 use Illuminate\Http\Client\Request;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
@@ -59,6 +60,7 @@ it('extracts, chunks, embeds, and stores chunks for an uploaded document', funct
         app(DocumentChunker::class),
         app(EmbeddingService::class),
         $digests,
+        app(StoredFiles::class),
     );
 
     expect($page->fresh()->crawl_status)->toBe(CrawlStatus::Ok)
@@ -83,6 +85,7 @@ it('stores a single chunk for a short uploaded document', function () {
         app(DocumentChunker::class),
         app(EmbeddingService::class),
         app(LegalDigestService::class),
+        app(StoredFiles::class),
     );
 
     expect($page->fresh()->crawl_status)->toBe(CrawlStatus::Ok)
@@ -113,6 +116,7 @@ it('uses OCR to read a scanned PDF with no text layer', function () {
         app(DocumentChunker::class),
         app(EmbeddingService::class),
         app(LegalDigestService::class),
+        app(StoredFiles::class),
     );
 
     expect($page->fresh()->crawl_status)->toBe(CrawlStatus::Ok)
@@ -138,6 +142,7 @@ it('marks an upload as failed when no text can be read', function () {
             app(DocumentChunker::class),
             app(EmbeddingService::class),
             app(LegalDigestService::class),
+            app(StoredFiles::class),
         );
         $this->fail('Expected an exception for empty text.');
     } catch (DocumentProcessingException) {
@@ -163,6 +168,7 @@ it('marks an upload as failed when its file has been removed', function () {
         app(DocumentChunker::class),
         app(EmbeddingService::class),
         app(LegalDigestService::class),
+        app(StoredFiles::class),
     ))->toThrow(DocumentProcessingException::class, 'The uploaded file is no longer available.');
 });
 
@@ -187,6 +193,7 @@ it('fails loudly when the embedding count does not match the chunk count', funct
             app(DocumentChunker::class),
             $embeddings,
             app(LegalDigestService::class),
+            app(StoredFiles::class),
         );
         $this->fail('Expected a RuntimeException for the vector/chunk mismatch.');
     } catch (RuntimeException) {
@@ -217,6 +224,7 @@ it('sanitizes invalid UTF-8 in uploaded text', function () {
         app(DocumentChunker::class),
         app(EmbeddingService::class),
         app(LegalDigestService::class),
+        app(StoredFiles::class),
     );
 
     $content = $page->chunks()->first()->content;
@@ -239,6 +247,7 @@ it('skips documents that already succeeded', function () {
         app(DocumentChunker::class),
         app(EmbeddingService::class),
         app(LegalDigestService::class),
+        app(StoredFiles::class),
     );
 
     expect($page->fresh()->crawl_status)->toBe(CrawlStatus::Ok);

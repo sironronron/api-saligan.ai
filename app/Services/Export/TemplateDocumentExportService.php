@@ -6,8 +6,8 @@ use App\Enums\MessageRole;
 use App\Models\LegalCase;
 use App\Models\Message;
 use App\Models\Template;
+use App\Services\Documents\StoredFiles;
 use App\Services\Templates\DocxTemplateFiller;
-use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpWord\Element\AbstractContainer;
 use PhpOffice\PhpWord\Element\Image as ImageElement;
 use PhpOffice\PhpWord\Element\Text as TextElement;
@@ -36,6 +36,7 @@ class TemplateDocumentExportService
 
     public function __construct(
         private readonly DocxTemplateFiller $filler,
+        private readonly StoredFiles $storedFiles,
     ) {
         //
     }
@@ -48,7 +49,13 @@ class TemplateDocumentExportService
     {
         $values = $this->intakeValuesFor($message, $template);
 
-        return $this->filler->fill(Storage::path($template->original_path), $values);
+        $source = $this->storedFiles->plaintextCopy($template->original_path);
+
+        try {
+            return $this->filler->fill($source->path, $values);
+        } finally {
+            $source->discard();
+        }
     }
 
     /**

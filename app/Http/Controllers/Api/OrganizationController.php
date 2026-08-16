@@ -134,7 +134,7 @@ class OrganizationController extends Controller
     {
         abort_if($organization->logo_path === null, 404);
 
-        $disk = Storage::disk(OrganizationService::LOGO_DISK);
+        $disk = Storage::disk(OrganizationService::logoDisk());
 
         abort_unless($disk->exists($organization->logo_path), 404);
 

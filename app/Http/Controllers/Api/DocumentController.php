@@ -140,7 +140,7 @@ class DocumentController extends Controller
         if (config('saligan.documents.encrypt_at_rest', true)) {
             $this->encryptor->encrypt((string) ($file->getRealPath() ?: $file->getPathname()), $storagePath);
         } else {
-            $file->storeAs('documents', basename($storagePath), 'local');
+            $file->storeAs('documents', basename($storagePath));
         }
 
         $document = Document::create([

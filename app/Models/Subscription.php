@@ -154,10 +154,20 @@ class Subscription extends Model
     /**
      * The amount the next invoice should bill for, in centavos:
      * seats purchased times the per-seat price.
+     *
+     * Subscriptions written before the seat price was stamped onto the row
+     * carry no `price_per_seat`. The plan's own seat price is what a seat
+     * costs there, so it answers before the plan's full list price — falling
+     * straight through to that would bill every seat at the whole plan.
+     * The list price stays the last resort, for plans that sell no seats at
+     * all and so bill their one bundled seat at the plan rate.
      */
     public function nextInvoiceAmount(): int
     {
-        $pricePerSeat = $this->price_per_seat ?? $this->plan?->priceForInterval($this->interval ?? 'monthly') ?? 0;
+        $pricePerSeat = $this->price_per_seat
+            ?? $this->plan?->seat_price
+            ?? $this->plan?->priceForInterval($this->interval ?? 'monthly')
+            ?? 0;
 
         return $this->seats_purchased * $pricePerSeat;
     }
