@@ -227,7 +227,7 @@ it('renders the reminder email for both kinds', function () {
     foreach ([new DeadlineReminderMail($case, 2), new DeadlineReminderMail($todo, -1)] as $mail) {
         $rendered = $mail->render();
 
-        expect($rendered)->toContain('Saligan')->toContain($mail->deadline->title);
+        expect($rendered)->toContain('Batayan')->toContain($mail->deadline->title);
     }
 });
 

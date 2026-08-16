@@ -192,7 +192,7 @@ it('renders both variants of the warning email', function () {
     foreach ([TrialEndingMail::REASON_DAYS, TrialEndingMail::REASON_MESSAGES] as $reason) {
         $rendered = (new TrialEndingMail($subscription, $reason, 3))->render();
 
-        expect($rendered)->toContain('Saligan')->toContain('/pricing');
+        expect($rendered)->toContain('Batayan')->toContain('/pricing');
     }
 });
 
@@ -200,7 +200,7 @@ it('names the actual constraint in the subject line', function () {
     $subscription = trialWith($this->user, messageCap: 100);
 
     expect((new TrialEndingMail($subscription, TrialEndingMail::REASON_MESSAGES, 1))->envelope()->subject)
-        ->toBe('1 message left on your Saligan.AI trial')
+        ->toBe('1 message left on your Batayan.ai trial')
         ->and((new TrialEndingMail($subscription, TrialEndingMail::REASON_DAYS, 3))->envelope()->subject)
-        ->toBe('3 days left on your Saligan.AI trial');
+        ->toBe('3 days left on your Batayan.ai trial');
 });

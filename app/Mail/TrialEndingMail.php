@@ -36,8 +36,8 @@ class TrialEndingMail extends Mailable
     public function envelope(): Envelope
     {
         $subject = $this->reason === self::REASON_MESSAGES
-            ? "{$this->remaining} ".Str::plural('message', $this->remaining).' left on your Saligan.AI trial'
-            : "{$this->remaining} ".Str::plural('day', $this->remaining).' left on your Saligan.AI trial';
+            ? "{$this->remaining} ".Str::plural('message', $this->remaining).' left on your Batayan.ai trial'
+            : "{$this->remaining} ".Str::plural('day', $this->remaining).' left on your Batayan.ai trial';
 
         return new Envelope(subject: $subject);
     }
