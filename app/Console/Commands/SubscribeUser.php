@@ -101,17 +101,29 @@ class SubscribeUser extends Command
             'cancelled_at' => null,
             'paymongo_subscription_id' => null,
             'paymongo_customer_id' => null,
+            'price_per_seat' => $plan->seat_price ?? $plan->price,
         ];
 
         $subscription = $user->subscription;
 
         if ($subscription !== null) {
-            $subscription->update($attributes);
+            // Same rule as a self-serve plan change: the grant has to hand over
+            // the seats the plan bundles, but seats bought on top of the old
+            // plan stay bought rather than being taken away here.
+            $subscription->update([
+                ...$attributes,
+                'seats_purchased' => max($subscription->seats_purchased, $plan->included_seats ?? 1),
+            ]);
             $this->line('Updated the existing subscription.');
         } else {
-            $subscription = $user->subscriptions()->create($attributes);
+            $subscription = $user->subscriptions()->create([
+                ...$attributes,
+                'seats_purchased' => $plan->included_seats ?? 1,
+            ]);
             $this->line('Created a new subscription.');
         }
+
+        $this->line("Seats: {$subscription->seats_purchased}");
 
         return $subscription;
     }

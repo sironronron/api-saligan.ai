@@ -273,6 +273,15 @@ class SubscriptionController extends Controller
             $payload['id'] = $resourceId;
         }
 
+        // The checkout's custom fields ride on `meta`, not on the subscription
+        // attributes; they carry the id of the pending row we created when the
+        // checkout started, which is how the webhook finds it again.
+        $customData = $request->json('meta.custom_data');
+
+        if (is_array($customData) && $customData !== []) {
+            $payload['custom_data'] = $customData;
+        }
+
         match ($eventName) {
             'subscription_created' => $this->syncLemonSqueezySubscription($payload),
             'subscription_updated' => $this->syncLemonSqueezySubscription($payload),
@@ -357,8 +366,12 @@ class SubscriptionController extends Controller
     }
 
     /**
-     * Create a local subscription row from a LemonSqueezy webhook payload,
+     * Attach a LemonSqueezy webhook payload to a local subscription row,
      * matching the variant back to a plan and the email to a user.
+     *
+     * Checkout already created a pending row for this purchase, so the first
+     * thing to try is claiming that one: it holds the seats the plan bundles
+     * and the seat price, which a row invented here would not.
      */
     protected function createLemonSqueezySubscriptionFromWebhook(array $payload): ?Subscription
     {
@@ -387,6 +400,23 @@ class SubscriptionController extends Controller
             ? Plan::INTERVAL_ANNUAL
             : Plan::INTERVAL_MONTHLY;
 
+        $pending = $this->pendingLemonSqueezySubscription($user, $payload);
+
+        if ($pending !== null) {
+            $pending->update([
+                'plan_id' => $plan->id,
+                'interval' => $interval,
+                'lemonsqueezy_subscription_id' => $lsSubscriptionId,
+                'lemonsqueezy_customer_id' => $payload['customer_id'] ?? $pending->lemonsqueezy_customer_id,
+                // The pending row was priced for the plan the checkout started
+                // on; honour whatever the buyer actually paid for.
+                'price_per_seat' => $plan->seat_price ?? $plan->price,
+                'seats_purchased' => max($pending->seats_purchased, $plan->included_seats ?? 1),
+            ]);
+
+            return $pending->fresh();
+        }
+
         return Subscription::create([
             'user_id' => $user->id,
             'organization_id' => $user->organization_id,
@@ -398,7 +428,39 @@ class SubscriptionController extends Controller
             'status' => $this->mapLemonSqueezyStatus($payload['status'] ?? null) ?? Subscription::STATUS_INCOMPLETE,
             'current_period_start' => $payload['created_at'] ?? null,
             'current_period_end' => $payload['renews_at'] ?? null,
+            // A subscription that reaches us only through the webhook still has
+            // to hand over the seats its plan bundles.
+            'seats_purchased' => $plan->included_seats ?? 1,
+            'price_per_seat' => $plan->seat_price ?? $plan->price,
         ]);
+    }
+
+    /**
+     * The row `store()` created for this checkout, before LemonSqueezy told us
+     * which subscription it became. Preferred by id from the checkout's custom
+     * data; otherwise the user's newest LemonSqueezy row that never got linked.
+     */
+    protected function pendingLemonSqueezySubscription(User $user, array $payload): ?Subscription
+    {
+        $unlinked = Subscription::query()
+            ->where('user_id', $user->id)
+            ->where('gateway', Subscription::GATEWAY_LEMONSQUEEZY)
+            ->whereNull('lemonsqueezy_subscription_id');
+
+        $pendingId = data_get($payload, 'custom_data.subscription_id');
+
+        if (is_string($pendingId) && $pendingId !== '') {
+            $claimed = (clone $unlinked)->whereKey($pendingId)->first();
+
+            if ($claimed !== null) {
+                return $claimed;
+            }
+        }
+
+        return $unlinked
+            ->where('status', Subscription::STATUS_INCOMPLETE)
+            ->latest('created_at')
+            ->first();
     }
 
     /**

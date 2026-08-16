@@ -77,6 +77,49 @@ it('moves an existing subscription to the new plan', function () {
         ->and($user->subscription->cancelled_at)->toBeNull();
 });
 
+it('grants the seats the plan bundles', function () {
+    $user = User::factory()->create();
+    $firm = Plan::factory()->firm()->create();
+
+    $this->artisan('subscribe:user', [
+        'user' => $user->email,
+        '--plan' => Plan::SLUG_FIRM,
+    ])->assertExitCode(0);
+
+    expect($user->subscription->seats_purchased)->toBe(3)
+        ->and($user->subscription->price_per_seat)->toBe($firm->seat_price);
+});
+
+it('raises an existing subscription to the new plan seats without dropping extras', function () {
+    $user = User::factory()->create();
+    $pro = Plan::factory()->pro()->create();
+    Plan::factory()->firm()->create();
+
+    $user->subscriptions()->create([
+        'plan_id' => $pro->id,
+        'interval' => Plan::INTERVAL_MONTHLY,
+        'status' => Subscription::STATUS_ACTIVE,
+        'seats_purchased' => 1,
+    ]);
+
+    $this->artisan('subscribe:user', [
+        'user' => $user->email,
+        '--plan' => Plan::SLUG_FIRM,
+    ])->assertExitCode(0);
+
+    expect($user->subscription->seats_purchased)->toBe(3);
+
+    // Seats bought on top of the plan survive a later grant.
+    $user->subscription->update(['seats_purchased' => 5]);
+
+    $this->artisan('subscribe:user', [
+        'user' => $user->email,
+        '--plan' => Plan::SLUG_FIRM,
+    ])->assertExitCode(0);
+
+    expect($user->fresh()->subscription->seats_purchased)->toBe(5);
+});
+
 it('fails with a non-zero exit code when the user is not found', function () {
     Plan::factory()->standard()->create();
 

@@ -286,6 +286,88 @@ it('syncs a cancelled LemonSqueezy subscription', function () {
         ->and($subscription->cancelled_at)->not->toBeNull();
 });
 
+it('claims the pending checkout row instead of creating a second subscription', function () {
+    $firm = Plan::factory()->firm()->create(['lemonsqueezy_variant_id' => 789]);
+
+    config(['lemonsqueezy.webhook_secret' => 'test-secret']);
+
+    $pending = Subscription::factory()->for($this->user)->create([
+        'plan_id' => $firm->id,
+        'gateway' => 'lemonsqueezy',
+        'status' => Subscription::STATUS_INCOMPLETE,
+        'lemonsqueezy_subscription_id' => null,
+        'seats_purchased' => $firm->included_seats,
+        'price_per_seat' => $firm->seat_price,
+    ]);
+
+    $payload = [
+        'meta' => [
+            'event_name' => 'subscription_activated',
+            'custom_data' => ['subscription_id' => $pending->id],
+        ],
+        'data' => [
+            'type' => 'subscriptions',
+            'id' => 'ls_sub_firm',
+            'attributes' => [
+                'customer_id' => 77,
+                'variant_id' => 789,
+                'status' => 'active',
+                'user_email' => $this->user->email,
+                'created_at' => '2026-08-07 00:00:00',
+                'renews_at' => '2026-09-07 00:00:00',
+            ],
+        ],
+    ];
+
+    $signature = hash_hmac('sha256', json_encode($payload), 'test-secret');
+
+    $this->postJson('/api/subscriptions/webhook/lemonsqueezy', $payload, [
+        'X-Signature' => $signature,
+    ])->assertOk();
+
+    expect(Subscription::where('user_id', $this->user->id)->count())->toBe(1);
+
+    $subscription = $pending->fresh();
+
+    expect($subscription->lemonsqueezy_subscription_id)->toBe('ls_sub_firm')
+        ->and($subscription->status)->toBe(Subscription::STATUS_ACTIVE)
+        ->and($subscription->seats_purchased)->toBe(3)
+        ->and($subscription->price_per_seat)->toBe($firm->seat_price);
+});
+
+it('gives a webhook-created firm subscription the seats the plan bundles', function () {
+    $firm = Plan::factory()->firm()->create(['lemonsqueezy_variant_id' => 789]);
+
+    config(['lemonsqueezy.webhook_secret' => 'test-secret']);
+
+    $payload = [
+        'meta' => ['event_name' => 'subscription_activated'],
+        'data' => [
+            'type' => 'subscriptions',
+            'id' => 'ls_sub_firm',
+            'attributes' => [
+                'customer_id' => 77,
+                'variant_id' => 789,
+                'status' => 'active',
+                'user_email' => $this->user->email,
+                'created_at' => '2026-08-07 00:00:00',
+                'renews_at' => '2026-09-07 00:00:00',
+            ],
+        ],
+    ];
+
+    $signature = hash_hmac('sha256', json_encode($payload), 'test-secret');
+
+    $this->postJson('/api/subscriptions/webhook/lemonsqueezy', $payload, [
+        'X-Signature' => $signature,
+    ])->assertOk();
+
+    $subscription = Subscription::firstWhere('lemonsqueezy_subscription_id', 'ls_sub_firm');
+
+    expect($subscription->seats_purchased)->toBe(3)
+        ->and($subscription->price_per_seat)->toBe($firm->seat_price);
+});
+
 it('rejects LemonSqueezy webhooks with an invalid signature', function () {
     config(['lemonsqueezy.webhook_secret' => 'test-secret']);
 
