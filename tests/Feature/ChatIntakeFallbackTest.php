@@ -1465,3 +1465,189 @@ it('strips placeholder export labels from plain answers', function () {
         ->not->toContain('EXPORT LINKS')
         ->not->toContain('/export/');
 });
+
+it('closes the question block at the closing marker instead of the end of the reply', function () {
+    $questions = DraftingIntent::extractNeedsInfoQuestions(
+        "[[NEED_INFO]]\n"
+        ."What are the complete addresses of the three heirs?\n"
+        ."[[/NEED_INFO]]\n"
+        .'Once you answer these, I will draft the complete Deed of Extrajudicial Settlement.'
+    );
+
+    expect($questions)->toBe(['What are the complete addresses of the three heirs?']);
+});
+
+it('drops the closing prose when the model omits the closing marker', function () {
+    // The block ran to the end of the reply, so the model's sign-off used to
+    // be collected as a field the user was asked to fill in.
+    $fields = DraftingIntent::intakeFieldsFromNeedsInfo(
+        "[[NEED_INFO]]\n"
+        ."- What are the complete addresses of the three heirs?\n"
+        ."\n"
+        .'Once you answer these, I will draft the complete Deed of Extrajudicial Settlement.'
+    );
+
+    expect(array_column($fields, 'label'))
+        ->toBe(['What are the complete addresses of the three heirs?']);
+});
+
+it('turns an enumerated question into a choice with an Other escape', function () {
+    $fields = DraftingIntent::intakeFieldsFromNeedsInfo(
+        "[[NEED_INFO]]\n"
+        .'How do the four heirs want Lot 14-C divided — equal one-fourth shares each, '
+        .'adjudicated entirely to one heir with the others waiving their share, '
+        ."or some other unequal arrangement?\n"
+        .'[[/NEED_INFO]]'
+    );
+
+    expect($fields)->toHaveCount(1)
+        ->and($fields[0]['type'])->toBe('radio')
+        ->and($fields[0]['label'])->toBe('How do the four heirs want Lot 14-C divided?')
+        ->and($fields[0]['options'])->toBe([
+            'Equal one-fourth shares each',
+            'Adjudicated entirely to one heir with the others waiving their share',
+            'Other',
+        ]);
+});
+
+it('marks a question the model flagged as optional as not required', function () {
+    $fields = DraftingIntent::intakeFieldsFromNeedsInfo(
+        "[[NEED_INFO]]\n"
+        ."What is the civil status of each of the four heirs? This one is optional.\n"
+        .'[[/NEED_INFO]]'
+    );
+
+    expect($fields)->toHaveCount(1)
+        ->and($fields[0]['required'])->toBeFalse()
+        ->and($fields[0]['label'])->toBe('What is the civil status of each of the four heirs?');
+});
+
+it('never leaks the question block into a reply that streams live', function () {
+    // A non-drafting turn is not buffered, so the marker used to reach the
+    // user's chat bubble verbatim, with questions they could not answer there.
+    $reply = "I can help with that.\n\n"
+        ."[[NEED_INFO]]\n"
+        ."What is the sender's full name?\n"
+        ."What is the recipient's complete address?\n"
+        ."[[/NEED_INFO]]\n"
+        .'Once you answer these, I will draft the letter.';
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        new TextDelta(id: 'a', messageId: 'm1', delta: $reply, timestamp: 1),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
+    ]));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->signInAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'What do you need from me for the barangay letter?',
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->toContain('I can help with that.')
+        ->toContain('"name":"request_intake_form"')
+        ->toContain('"key":"sender_name"')
+        ->not->toContain('NEED_INFO')
+        ->not->toContain('Once you answer these')
+        ->toContain('event: done');
+});
+
+it('does not open a second intake form on the turn that answers the first', function () {
+    $draft = "[[DOCUMENT_START]]\nRe: Demand for Payment\n\nPay the P855,000 within 15 days.\n[[DOCUMENT_END]]";
+
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        makeToolCallEvent('request_intake_form', [
+            'document_type' => 'formal letter',
+            'fields' => [['key' => 'sender_name', 'label' => 'Your full name', 'type' => 'text', 'required' => true]],
+        ]),
+        new TextDelta(id: 'a', messageId: 'm1', delta: $draft, timestamp: 2),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 3),
+    ]));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->signInAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => "[Intake Form Submission]\nsender_name: Juan Dela Cruz\nrecipient_name: Maria Santos",
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    // The user already answered the form; re-opening it would bury the draft
+    // and re-ask for facts the submitted message carries.
+    expect($body)
+        ->not->toContain('"name":"request_intake_form"')
+        ->toContain('Pay the P855,000 within 15 days')
+        ->toContain('event: done');
+});
+
+it('collects the fields the model asked for alongside the template fields', function () {
+    $this->app->instance(ChatService::class, makeFakeChatService([
+        makeToolCallEvent('request_intake_form', [
+            'document_type' => 'deed',
+            'fields' => [
+                [
+                    'key' => 'partition_arrangement',
+                    'label' => 'How do the four heirs want Lot 14-C divided?',
+                    'type' => 'radio',
+                    'options' => ['Equal one-fourth shares each', 'Adjudicated entirely to one heir'],
+                    'required' => true,
+                ],
+            ],
+        ]),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 2), timestamp: 2),
+    ]));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->signInAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'Draft a deed of extrajudicial settlement for Lot 14-C.',
+        ]);
+
+    $response->assertOk();
+
+    $body = $response->streamedContent();
+
+    // The fact the model said it was missing is specific to this matter and no
+    // template carries it, so it must survive into the form.
+    expect($body)
+        ->toContain('"name":"request_intake_form"')
+        ->toContain('"key":"partition_arrangement"')
+        ->toContain('Equal one-fourth shares each')
+        ->toContain('event: done');
+});
+
+it('normalizes model-supplied fields onto their canonical keys', function () {
+    $fields = DraftingIntent::normalizeIntakeFields([
+        ['key' => 'Your Full Name', 'label' => 'Your full name', 'type' => 'text', 'required' => true],
+        // The same fact under a different key is collected once.
+        ['key' => 'sender_name', 'label' => 'Sender', 'type' => 'text', 'required' => true],
+        // Options without a choice type still render as a choice.
+        ['key' => 'agency_name', 'label' => 'Which office?', 'type' => 'text', 'options' => ['DAR', 'DENR'], 'required' => true],
+        // A choice type without options is not answerable as one.
+        ['key' => 'notes', 'label' => 'Notes', 'type' => 'select', 'required' => false],
+        'not an array',
+        ['label' => ''],
+    ]);
+
+    expect(array_column($fields, 'key'))->toBe(['sender_name', 'agency_name', 'notes'])
+        ->and($fields[1]['type'])->toBe('radio')
+        ->and($fields[2]['type'])->toBe('text')
+        ->and($fields[2]['required'])->toBeFalse();
+});
+
+it('strips the question block from the persisted reply', function () {
+    expect(DraftingIntent::stripNeedsInfoBlock(
+        "Here is what I have so far.\n\n[[NEED_INFO]]\nWhat is your name?\n[[/NEED_INFO]]\nOnce you answer, I will draft."
+    ))->toBe('Here is what I have so far.')
+        ->and(DraftingIntent::stripNeedsInfoBlock('A reply with no marker.'))
+        ->toBe('A reply with no marker.');
+});

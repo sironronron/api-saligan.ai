@@ -15,6 +15,19 @@ final class DraftingIntent
     public const NEED_INFO_MARKER = '[[NEED_INFO]]';
 
     /**
+     * The marker that closes the question block. Without it the block ran to
+     * the end of the reply, so the model's closing prose ("Once you answer
+     * these, I will draft the deed.") was collected as if it were a fact to
+     * fill in. Both spellings are accepted because the model produces either.
+     */
+    public const NEED_INFO_END_MARKER = '[[/NEED_INFO]]';
+
+    /**
+     * Matches either closing spelling: [[/NEED_INFO]] or [[NEED_INFO_END]].
+     */
+    private const NEED_INFO_END_PATTERN = '/\[\[\s*(?:\/\s*NEED_INFO|NEED_INFO_END)\s*\]\]/i';
+
+    /**
      * Matches a standalone TODO block marker line. The canonical form is
      * [[TODO_START]] / [[TODO_END]], but the model occasionally bolds it
      * ("**[TODO_START]**"), drops to single brackets ("[TODO_START]"), or
@@ -828,26 +841,76 @@ final class DraftingIntent
     }
 
     /**
-     * Extract the questions a model asked for after the [[NEED_INFO]] marker,
+     * The question block itself: everything between the last [[NEED_INFO]] and
+     * the closing marker, or the end of the reply when the model omitted the
+     * close. Returns an empty string when the opening marker is absent.
+     */
+    public static function needsInfoBlock(string $text): string
+    {
+        $markerIndex = strrpos($text, self::NEED_INFO_MARKER);
+
+        if ($markerIndex === false) {
+            return '';
+        }
+
+        $block = substr($text, $markerIndex + strlen(self::NEED_INFO_MARKER));
+
+        if (preg_match(self::NEED_INFO_END_PATTERN, $block, $matches, PREG_OFFSET_CAPTURE) === 1) {
+            $block = substr($block, 0, $matches[0][1]);
+        }
+
+        return $block;
+    }
+
+    /**
+     * Remove the whole question block — markers included — from a reply, so a
+     * turn that leaked the marker into the visible text is never shown to the
+     * user or persisted with the raw protocol in it. Text before the marker
+     * (the model's lead-in) is kept; text after the closing marker is dropped
+     * too, since it is the model's "once you answer these…" sign-off for
+     * questions the user is instead answering in the form.
+     */
+    public static function stripNeedsInfoBlock(string $text): string
+    {
+        $markerIndex = strrpos($text, self::NEED_INFO_MARKER);
+
+        if ($markerIndex === false) {
+            return $text;
+        }
+
+        return rtrim(substr($text, 0, $markerIndex));
+    }
+
+    /**
+     * Extract the questions a model asked for inside the [[NEED_INFO]] block,
      * one per line, stripped of bullet/prefix decorations. Returns an empty
      * array when the marker is absent or nothing readable follows it.
+     *
+     * Only lines that actually ask for a fact are kept. The model habitually
+     * ends the block with prose ("Once you answer these, I will draft the
+     * complete Deed of Extrajudicial Settlement.") and that sentence must
+     * never become a form field.
      *
      * @return array<int, string>
      */
     public static function extractNeedsInfoQuestions(string $text): array
     {
-        $markerIndex = strrpos($text, self::NEED_INFO_MARKER);
+        $block = self::needsInfoBlock($text);
 
-        if ($markerIndex === false) {
+        if ($block === '') {
             return [];
         }
 
         $questions = [];
 
-        foreach (explode("\n", substr($text, $markerIndex + strlen(self::NEED_INFO_MARKER))) as $line) {
+        foreach (explode("\n", $block) as $line) {
             $line = trim((string) preg_replace('/^[\s\->*•.\d]+\s*/u', '', $line));
 
             if ($line === '' || preg_match('/[a-z0-9]/i', $line) !== 1) {
+                continue;
+            }
+
+            if (! self::isFactRequest($line)) {
                 continue;
             }
 
@@ -858,6 +921,96 @@ final class DraftingIntent
     }
 
     /**
+     * Whether a line inside the question block is asking the user for a fact,
+     * as opposed to the model narrating what it will do next. A question mark
+     * settles it; otherwise the line must read as a direct request.
+     */
+    private static function isFactRequest(string $line): bool
+    {
+        if (str_contains($line, '?')) {
+            return true;
+        }
+
+        return preg_match(
+            '/^(?:please\s+)?(?:provide|state|indicate|give|share|specify|confirm|supply|enter|tell|list|attach|upload)\b/i',
+            $line,
+        ) === 1;
+    }
+
+    /**
+     * The choices a question offers inline, e.g. "…divided — equal one-fourth
+     * shares each, adjudicated entirely to one heir, or some other unequal
+     * arrangement?" becomes three options the user picks between instead of a
+     * blank text box they have to paraphrase the question into.
+     *
+     * Returns an empty array when the question offers no enumeration.
+     *
+     * @return array{0: string, 1: array<int, string>} the label with the
+     *                                                 enumeration trimmed off,
+     *                                                 and the options
+     */
+    public static function questionChoices(string $question): array
+    {
+        // The enumeration is introduced by a dash or colon and must contain an
+        // "or" alternative — without one it is an explanatory aside, not a
+        // list of choices.
+        if (preg_match('/^(.*?)\s*[—–:]\s*(.+?)\s*\??$/u', trim($question), $matches) !== 1) {
+            return [$question, []];
+        }
+
+        [$stem, $tail] = [trim($matches[1]), trim($matches[2])];
+
+        if ($stem === '' || ! preg_match('/,\s*or\s+/i', $tail)) {
+            return [$question, []];
+        }
+
+        $options = [];
+
+        foreach (preg_split('/,\s*(?:or\s+)?/i', $tail) ?: [] as $option) {
+            $option = trim((string) $option, " \t\n\r.;");
+
+            // An "or some other arrangement" tail is the model spelling out
+            // the escape hatch the form already offers as "Other".
+            if ($option === '' || preg_match('/^(?:some\s+)?other\b/i', $option) === 1) {
+                continue;
+            }
+
+            $options[] = ucfirst($option);
+        }
+
+        if (count($options) < 2) {
+            return [$question, []];
+        }
+
+        $options[] = 'Other';
+
+        return [rtrim($stem, " \t\n\r,;").'?', $options];
+    }
+
+    /**
+     * Whether the model marked a question as optional ("This one is optional —
+     * I can omit it if you'd rather not provide it."), and the question with
+     * that aside removed so the label stays a question.
+     *
+     * @return array{0: string, 1: bool} the trimmed label, and whether it is required
+     */
+    public static function questionRequirement(string $question): array
+    {
+        $trimmed = (string) preg_replace(
+            '/\s*(?:[—–-]\s*)?(?:this\s+(?:one\s+)?is\s+optional|optional)\b[^?]*$/iu',
+            '',
+            trim($question),
+        );
+
+        $optional = $trimmed !== trim($question)
+            || preg_match('/\b(?:optional|if\s+(?:any|available|known|applicable))\b/i', $question) === 1;
+
+        $trimmed = trim($trimmed);
+
+        return [$trimmed === '' ? trim($question) : $trimmed, ! $optional];
+    }
+
+    /**
      * Convert a model response carrying the [[NEED_INFO]] marker into intake
      * form fields, so the form collects exactly the facts the model said it
      * was missing. Questions that match a canonical concept collapse onto its
@@ -865,7 +1018,7 @@ final class DraftingIntent
      * from the question's subject. The model's own wording becomes the field
      * label.
      *
-     * @return array<int, array{key: string, label: string, type: string, section?: string, conditional?: array{field: string, values: array<int, string>}, required: bool}>
+     * @return array<int, array{key: string, label: string, type: string, options?: array<int, string>, section?: string, conditional?: array{field: string, values: array<int, string>}, required: bool}>
      */
     public static function intakeFieldsFromNeedsInfo(string $text): array
     {
@@ -877,7 +1030,10 @@ final class DraftingIntent
         $seen = [];
 
         foreach (self::extractNeedsInfoQuestions($text) as $question) {
-            $key = self::synonymFor($question) ?? Str::slug(self::questionSubject($question), '_', 'en');
+            [$question, $required] = self::questionRequirement($question);
+            [$label, $options] = self::questionChoices($question);
+
+            $key = self::synonymFor($question) ?? Str::slug(self::questionSubject($label), '_', 'en');
 
             if ($key === '' || isset($seen[$key])) {
                 continue;
@@ -889,10 +1045,18 @@ final class DraftingIntent
 
             $field = [
                 'key' => $key,
-                'label' => $question,
-                'type' => $definition['type'] ?? self::questionFieldType($question),
-                'required' => true,
+                'label' => $label,
+                // A question that spelled out its alternatives is answered by
+                // picking one, not by retyping it.
+                'type' => $options !== []
+                    ? 'radio'
+                    : ($definition['type'] ?? self::questionFieldType($question)),
+                'required' => $required,
             ];
+
+            if ($options !== []) {
+                $field['options'] = $options;
+            }
 
             if (isset($definition['section'])) {
                 $field['section'] = $definition['section'];
@@ -906,6 +1070,94 @@ final class DraftingIntent
         }
 
         return $fields;
+    }
+
+    /**
+     * Normalize the `fields` argument the model passed to request_intake_form
+     * into the shape the form renders, so what the model actually said it was
+     * missing reaches the user instead of being replaced wholesale by a
+     * server-side guess at the document's usual fields.
+     *
+     * Keys collapse onto their canonical concept so a model-invented key never
+     * duplicates a field the template already collects; the model's own label
+     * is kept, because it is phrased for the specific matter at hand. Entries
+     * without a usable key or label are dropped rather than rendered blank.
+     *
+     * @param  mixed  $fields  The raw tool-call argument, of any shape.
+     * @return array<int, array{key: string, label: string, type: string, options?: array<int, string>, required: bool}>
+     */
+    public static function normalizeIntakeFields(mixed $fields): array
+    {
+        if (! is_array($fields)) {
+            return [];
+        }
+
+        $normalized = [];
+        $seen = [];
+
+        foreach ($fields as $field) {
+            if (! is_array($field)) {
+                continue;
+            }
+
+            $label = trim((string) ($field['label'] ?? ''));
+            $rawKey = trim((string) ($field['key'] ?? ''));
+
+            if ($rawKey === '' && $label === '') {
+                continue;
+            }
+
+            $slug = $rawKey !== ''
+                ? Str::slug($rawKey, '_', 'en')
+                : Str::slug(self::questionSubject($label), '_', 'en');
+
+            $key = self::canonicalForKey($slug) ?? $slug;
+
+            if ($key === '' || isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+
+            $options = array_values(array_filter(
+                array_map(
+                    fn ($option) => trim((string) $option),
+                    is_array($field['options'] ?? null) ? $field['options'] : [],
+                ),
+                fn (string $option) => $option !== '',
+            ));
+
+            $type = strtolower(trim((string) ($field['type'] ?? '')));
+
+            if (! in_array($type, ['text', 'date', 'number', 'select', 'textarea', 'radio', 'checkbox'], true)) {
+                $type = self::CANONICAL_FIELDS[$key]['type'] ?? self::questionFieldType($label !== '' ? $label : $key);
+            }
+
+            // A model that supplied options but asked for a free-text box gets
+            // the choice widget anyway — the options are the answer set.
+            if ($options !== [] && ! in_array($type, ['select', 'radio', 'checkbox'], true)) {
+                $type = 'radio';
+            }
+
+            if ($options === [] && in_array($type, ['select', 'radio', 'checkbox'], true)) {
+                $type = 'text';
+            }
+
+            $entry = [
+                'key' => $key,
+                'label' => $label !== '' ? $label : self::canonicalLabelOf($key),
+                'type' => $type,
+                'required' => (bool) ($field['required'] ?? true),
+            ];
+
+            if ($options !== []) {
+                $entry['options'] = $options;
+            }
+
+            $normalized[] = $entry;
+        }
+
+        return $normalized;
     }
 
     /**

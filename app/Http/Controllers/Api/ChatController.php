@@ -161,6 +161,56 @@ class ChatController extends Controller
         $buffering = $isDraftingRequest && ! $isIntakeSubmission;
         $bufferedText = '';
         $draftStarted = false;
+
+        // Text held back from an unbuffered turn while it could still turn out
+        // to be the start of [[NEED_INFO]], plus the block once the marker
+        // arrives. Buffered drafting turns hold the whole reply and need none
+        // of this, but every other turn — a plain chat answer, and the intake
+        // submission itself — streams live, and the model does sometimes write
+        // the marker there. Without the gate the raw marker and its questions
+        // land in the user's chat bubble as a dead end they cannot answer.
+        $gateHeld = '';
+        $needInfoText = '';
+
+        // Emit-safe portion of a delta: everything except a trailing fragment
+        // that could still grow into the marker. Returns '' once the marker
+        // has been seen — from there the rest of the turn is the question
+        // block, which becomes the intake form instead of chat text.
+        $gate = function (string $delta) use (&$gateHeld, &$needInfoText): string {
+            if ($needInfoText !== '') {
+                $needInfoText .= $delta;
+
+                return '';
+            }
+
+            $gateHeld .= $delta;
+
+            $index = strpos($gateHeld, DraftingIntent::NEED_INFO_MARKER);
+
+            if ($index !== false) {
+                $needInfoText = substr($gateHeld, $index);
+                $released = substr($gateHeld, 0, $index);
+                $gateHeld = '';
+
+                return $released;
+            }
+
+            $keep = 0;
+            $marker = DraftingIntent::NEED_INFO_MARKER;
+
+            for ($length = min(strlen($marker) - 1, strlen($gateHeld)); $length > 0; $length--) {
+                if (substr($gateHeld, -$length) === substr($marker, 0, $length)) {
+                    $keep = $length;
+
+                    break;
+                }
+            }
+
+            $released = substr($gateHeld, 0, strlen($gateHeld) - $keep);
+            $gateHeld = $keep === 0 ? '' : substr($gateHeld, -$keep);
+
+            return $released;
+        };
         $webSeen = [];
         $webIndex = 0;
 
@@ -293,9 +343,12 @@ class ChatController extends Controller
                         $buffering = false;
 
                         // Release any buffered text that preceded the marker
-                        // (e.g. the marker itself and any preamble).
+                        // (e.g. the marker itself and any preamble). A model
+                        // that asked for facts and then drafted anyway has
+                        // answered its own question — the document stands, so
+                        // the question block is dropped rather than shown.
                         if ($bufferedText !== '') {
-                            yield $emit('delta', ['delta' => $bufferedText]);
+                            yield $emit('delta', ['delta' => DraftingIntent::stripNeedsInfoBlock($bufferedText)]);
                             $bufferedText = '';
                         }
 
@@ -308,23 +361,53 @@ class ChatController extends Controller
                     if ($buffering) {
                         $bufferedText .= $event->delta;
                     } else {
-                        yield $emit('delta', ['delta' => $event->delta]);
+                        $released = $gate($event->delta);
+
+                        if ($released !== '') {
+                            yield $emit('delta', ['delta' => $released]);
+                        }
                     }
                 }
 
                 if ($event instanceof ToolCall) {
                     if ($event->toolCall->name === 'request_intake_form') {
+                        // One form per turn, and never on the turn that
+                        // answers one. A second frame re-opens the sheet on
+                        // top of the user's answers and drops the draft the
+                        // client had already started rendering — the "form
+                        // appeared twice" bug. The tool still runs server-side
+                        // and tells the model to draft instead.
+                        if ($intakeRequested || $isIntakeSubmission) {
+                            Log::info('Suppressed a repeat request_intake_form call', [
+                                'conversation_id' => $conversation->id,
+                                'intake_submission' => $isIntakeSubmission,
+                            ]);
+
+                            continue;
+                        }
+
                         $documentType = $event->toolCall->arguments['document_type'] ?? null;
 
-                        // The form fields are authoritative server-side so
-                        // they match the selected template or the document
-                        // category instead of whatever fields the model
-                        // happened to invent. Fields the case context already
-                        // covers are dropped here (see intakeFieldsFor).
+                        // The case context covers everything this document
+                        // needs, so the tool has already answered the model
+                        // with "INTAKE FORM SUPPRESSED: draft now". Showing a
+                        // form here anyway would leave the user filling in
+                        // facts for a draft the model is writing without them.
+                        if ($this->chatService->intakeSuppressedFor($conversation, $message, $documentType)) {
+                            continue;
+                        }
+
+                        // The form is shaped server-side so it matches the
+                        // selected template, but the fields the model asked
+                        // for are carried in rather than discarded: it read
+                        // the conversation and knows what is missing. Fields
+                        // the case context already covers are dropped here
+                        // (see intakeFieldsFor).
                         $fields = $this->chatService->intakeFieldsFor(
                             $conversation,
                             $message,
                             $documentType,
+                            $event->toolCall->arguments['fields'] ?? null,
                         );
 
                         // Nothing left to ask: the case context covers every
@@ -340,26 +423,24 @@ class ChatController extends Controller
                         // that supplies only the narrative still shows the
                         // form for the party names, addresses, and amounts a
                         // description never carries.
-                        if (! $isIntakeSubmission && $fields === []) {
+                        if ($fields === []) {
                             continue;
                         }
 
                         $intakeRequested = true;
 
+                        // The stream is cut off right after the tool call,
+                        // before the tool's handle() ever runs, so the status
+                        // is reported here — the model just chose the intake
+                        // step, which is the real signal.
+                        yield $emit('status', [
+                            'status' => 'gathering_facts',
+                            'label' => ChatStatus::label('gathering_facts', $message),
+                        ]);
+
                         // Previously submitted intake values are carried over
                         // so a repeated drafting request reuses the user's
                         // original answers.
-                        if (! $isIntakeSubmission) {
-                            // The stream is cut off right after the tool
-                            // call, before the tool's handle() ever runs, so
-                            // the status is reported here — the model just
-                            // chose the intake step, which is the real signal.
-                            yield $emit('status', [
-                                'status' => 'gathering_facts',
-                                'label' => ChatStatus::label('gathering_facts', $message),
-                            ]);
-                        }
-
                         yield $emit('tool_call', [
                             'name' => 'request_intake_form',
                             'arguments' => [
@@ -374,11 +455,7 @@ class ChatController extends Controller
                         // submitted. Breaking out of the stream keeps any
                         // premature text from reaching the client and from
                         // being persisted as an assistant message.
-                        if (! $isIntakeSubmission) {
-                            break;
-                        }
-
-                        continue;
+                        break;
                     }
 
                     if ($event->toolCall->name === 'ask_user_question') {
@@ -490,32 +567,49 @@ class ChatController extends Controller
             if ($error !== null) {
                 yield $emit('error', ['message' => $error]);
             } else {
-                if ($buffering && ! $intakeRequested && ! $choiceRequested) {
-                    // The model asked for the missing facts in chat using the
-                    // [[NEED_INFO]] marker contract. Those questions become
-                    // the intake form — the user answers exactly what the
-                    // model asked for — so the reply is not delivered as a
-                    // dead-end clarification. Fields the case context already
-                    // covers are dropped, and the model's question text is
-                    // discarded rather than persisted as an assistant message.
-                    if (DraftingIntent::needsInfo($bufferedText)) {
-                        if ($bufferedText !== '') {
-                            $this->chatService->discardLastAssistantMessage();
-                        }
+                // Whatever the gate was still holding back never became the
+                // marker, so it is ordinary reply text and is released now.
+                if ($needInfoText === '' && $gateHeld !== '') {
+                    yield $emit('delta', ['delta' => $gateHeld]);
+                    $gateHeld = '';
+                }
 
-                        $asked = DraftingIntent::intakeFieldsFromNeedsInfo($bufferedText);
+                // The model asked for the missing facts in chat using the
+                // [[NEED_INFO]] marker contract. Those questions become the
+                // intake form — the user answers exactly what the model asked
+                // for — so the reply is not delivered as a dead-end
+                // clarification. The question text itself never reaches the
+                // chat: on a buffered drafting turn the whole reply is held
+                // back, and on any other turn the gate withheld everything
+                // from the marker onward.
+                $questionSource = $buffering ? $bufferedText : $needInfoText;
 
-                        // dropCaseCoveredFields is a no-op when the case
-                        // supplies nothing, so it is safe to call either way.
-                        // If dropping empties the form, the model asked ONLY
-                        // for facts the case is meant to cover — its explicit
-                        // ask wins over the heuristic, since an empty form is
-                        // a dead end the user cannot answer.
-                        $fields = $this->chatService->dropCaseCoveredFields($conversation, $asked);
+                if (! $intakeRequested && ! $choiceRequested && DraftingIntent::needsInfo($questionSource)) {
+                    // A buffered turn wrote nothing to the client, so its
+                    // persisted reply is pure question text and goes away
+                    // entirely. A gated turn already delivered the lead-in
+                    // that preceded the marker, so that message stays — the
+                    // service strips the block from it before persisting.
+                    if ($buffering && $bufferedText !== '') {
+                        $this->chatService->discardLastAssistantMessage();
+                    }
 
-                        if ($fields === []) {
-                            $fields = $asked;
-                        }
+                    $asked = DraftingIntent::intakeFieldsFromNeedsInfo($questionSource);
+
+                    // dropCaseCoveredFields is a no-op when the case
+                    // supplies nothing, so it is safe to call either way.
+                    // If dropping empties the form, the model asked ONLY
+                    // for facts the case is meant to cover — its explicit
+                    // ask wins over the heuristic, since an empty form is
+                    // a dead end the user cannot answer.
+                    $fields = $this->chatService->dropCaseCoveredFields($conversation, $asked);
+
+                    if ($fields === []) {
+                        $fields = $asked;
+                    }
+
+                    if ($fields !== []) {
+                        $intakeRequested = true;
 
                         yield $emit('tool_call', [
                             'name' => 'request_intake_form',
@@ -525,12 +619,12 @@ class ChatController extends Controller
                                 'default_values' => $this->chatService->recentIntakeValues($conversation),
                             ],
                         ]);
-                    } elseif ($bufferedText !== '') {
-                        // Any other buffered reply is the model's answer — a
-                        // legitimate direct draft (markers waived when the
-                        // case supplies the facts) or a plain chat reply.
-                        yield $emit('delta', ['delta' => $bufferedText]);
                     }
+                } elseif ($buffering && ! $intakeRequested && ! $choiceRequested && $bufferedText !== '') {
+                    // Any other buffered reply is the model's answer — a
+                    // legitimate direct draft (markers waived when the
+                    // case supplies the facts) or a plain chat reply.
+                    yield $emit('delta', ['delta' => $bufferedText]);
                 }
 
                 // A turn cut short by a question has no finished document, so

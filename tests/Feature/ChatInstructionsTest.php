@@ -20,8 +20,10 @@ use App\Support\UserProfile;
 use Illuminate\Support\Str;
 use Laravel\Ai\Enums\Lab;
 use Laravel\Ai\Responses\Data\Meta;
+use Laravel\Ai\Responses\Data\ToolCall as ToolCallData;
 use Laravel\Ai\Responses\StreamedAgentResponse;
 use Laravel\Ai\Streaming\Events\TextDelta;
+use Laravel\Ai\Streaming\Events\ToolCall as ToolCallEvent;
 
 beforeEach(function () {
     SystemPrompt::factory()->create([
@@ -65,11 +67,25 @@ beforeEach(function () {
             return $this->buildInstructions($retrieval, $provider, $exportRequested, null, null, null, null, $user);
         }
 
-        public function persistFor(Conversation $conversation, string $text, bool $appendExportLinks, bool $isIntakeSubmission = false, bool $isDraftingRequest = false): void
+        /**
+         * @param  array<int, string>  $toolCalls  Tools the model called on the
+         *                                         turn, by name.
+         */
+        public function persistFor(Conversation $conversation, string $text, bool $appendExportLinks, bool $isIntakeSubmission = false, bool $isDraftingRequest = false, array $toolCalls = []): void
         {
+            $events = collect([new TextDelta(id: 'a', messageId: 'm1', delta: $text, timestamp: 1)]);
+
+            foreach ($toolCalls as $index => $name) {
+                $events->push(new ToolCallEvent(
+                    id: 'tc-'.$index,
+                    toolCall: new ToolCallData(id: 't'.$index, name: $name, arguments: []),
+                    timestamp: 1,
+                ));
+            }
+
             $response = new StreamedAgentResponse(
                 'invocation',
-                collect([new TextDelta(id: 'a', messageId: 'm1', delta: $text, timestamp: 1)]),
+                $events,
                 new Meta(provider: 'ollama', model: 'test-model'),
             );
 
@@ -513,6 +529,67 @@ it('does not append export links to a clarifying question from an intake submiss
     expect($message->content)
         ->toContain('clarify what specific outcome')
         ->not->toContain('/export/');
+});
+
+it('does not append export links when an intake submission is answered with another form', function () {
+    $conversation = Conversation::factory()->for(User::factory())->create();
+
+    // The model answered the submitted form by requesting a second one. No
+    // document exists, so nothing here belongs on /drafts — and the reply
+    // carries no question mark and none of the clarification phrasings, so
+    // the intake-submission flag alone used to hand it export links.
+    $text = <<<'TEXT'
+    I've sent a short intake form to collect the remaining details needed for the Deed of Extrajudicial Settlement:
+
+    1. Complete addresses for Ronnel, Roen, and Rollen Ramos.
+    2. How the four heirs want Lot 14-C divided — equal fourths, adjudicated to one heir, or unequal shares.
+    3. Civil status of the heirs.
+
+    Once you submit that, I'll draft the complete deed right away.
+    TEXT;
+
+    $this->chat->persistFor($conversation, $text, false, true, true, ['request_intake_form']);
+
+    $message = Message::where('conversation_id', $conversation->id)
+        ->where('role', 'assistant')
+        ->firstOrFail();
+
+    expect($message->content)
+        ->toContain('Deed of Extrajudicial Settlement')
+        ->not->toContain('/export/');
+});
+
+it('does not append export links when the reply asks for facts with the need-info marker', function () {
+    $conversation = Conversation::factory()->for(User::factory())->create();
+
+    $text = "I need a few more facts before drafting.\n\n[[NEED_INFO]]\n- What does the Answer allege?\n[[/NEED_INFO]]";
+
+    $this->chat->persistFor($conversation, $text, true, true, true);
+
+    $message = Message::where('conversation_id', $conversation->id)
+        ->where('role', 'assistant')
+        ->firstOrFail();
+
+    expect($message->content)->not->toContain('/export/');
+});
+
+it('still appends export links when an intake submission produces a marked document', function () {
+    $conversation = Conversation::factory()->for(User::factory())->create();
+
+    // The intake call was suppressed or already-submitted, so the model was
+    // handed a directive and drafted anyway. The document it produced still
+    // has to export.
+    $text = "[[DOCUMENT_START]]\nDEED OF EXTRAJUDICIAL SETTLEMENT\n\nKNOW ALL MEN BY THESE PRESENTS:\n[[DOCUMENT_END]]";
+
+    $this->chat->persistFor($conversation, $text, false, true, true, ['request_intake_form']);
+
+    $message = Message::where('conversation_id', $conversation->id)
+        ->where('role', 'assistant')
+        ->firstOrFail();
+
+    expect($message->content)
+        ->toContain('/export/word')
+        ->toContain('/export/pdf');
 });
 
 it('does not append export links when an explicit export request is answered with a clarification', function () {

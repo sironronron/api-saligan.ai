@@ -21,10 +21,15 @@ class RequestIntakeFormTool implements Tool
      *                            the facts, so the tool does not collect a form
      *                            — it instructs the model to draft directly
      *                            from the case context instead.
+     * @param  bool  $alreadySubmitted  When true, this turn IS the answer to a
+     *                                  form the user already filled in. Opening
+     *                                  a second one would discard the draft in
+     *                                  progress and re-ask what was just given.
      */
     public function __construct(
         private readonly mixed $onStatus = null,
         private readonly bool $suppressed = false,
+        private readonly bool $alreadySubmitted = false,
     ) {}
 
     /**
@@ -52,7 +57,10 @@ class RequestIntakeFormTool implements Tool
             .'call is needed), proceed straight to drafting — never call it again for the same request unless the '
             .'user explicitly asks to add or change facts afterward. '
             .'When you do call it, include ONLY the fields whose values you do not already have — never re-request '
-            .'a fact you already know.';
+            .'a fact you already know. Each field you pass is added to the form, so label it as the question you '
+            .'would ask the user about THIS matter, and when the answer is one of a known set (how the heirs want a '
+            .'lot divided, which agency the letter goes to), pass those as options so the user picks one instead of '
+            .'typing a paraphrase.';
     }
 
     /**
@@ -60,6 +68,16 @@ class RequestIntakeFormTool implements Tool
      */
     public function handle(Request $request): string
     {
+        if ($this->alreadySubmitted) {
+            // The user just filled the form in; the values are in this turn's
+            // message. A second form is never the answer here — if a fact is
+            // still missing, the MISSING FACT LADDER covers it.
+            return 'INTAKE FORM ALREADY SUBMITTED: the user answered this form in the message you are replying to. '
+                .'Do NOT call request_intake_form again and do NOT ask for these facts in chat. '
+                .'Draft the complete document now from the submitted values, the conversation history, the case context, '
+                .'and any uploaded documents. For anything still genuinely missing, apply the MISSING FACT LADDER.';
+        }
+
         if ($this->suppressed) {
             // The case context already supplies the facts, so the form is not
             // shown. The model receives this directive as the tool result and

@@ -2,6 +2,7 @@
 
 use App\Models\Advisory;
 use App\Models\Conversation;
+use App\Models\LegalCase;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\Todo;
@@ -9,11 +10,24 @@ use App\Models\User;
 
 beforeEach(function () {
     $this->user = User::factory()->create();
-    Subscription::factory()->for($this->user)->create([
-        'plan_id' => Plan::factory()->pro()->create()->id,
-    ]);
+    $this->plan = Plan::factory()->pro()->create();
+    Subscription::factory()->for($this->user)->create(['plan_id' => $this->plan->id]);
     $this->conversation = Conversation::factory()->for($this->user)->create();
 });
+
+/**
+ * A second account carrying its own subscription. Without one the active
+ * subscription middleware answers 402 and the assertion under test never runs.
+ * Reuses the plan from beforeEach — a second Pro row collides on the slug.
+ */
+function advisoryUser(Plan $plan): User
+{
+    $user = User::factory()->create();
+
+    Subscription::factory()->for($user)->create(['plan_id' => $plan->id]);
+
+    return $user;
+}
 
 it('requires authentication', function () {
     $this->getJson('/api/advisories')->assertStatus(401);
@@ -134,4 +148,47 @@ it('dismisses an advisory', function () {
         ->assertStatus(204);
 
     $this->assertDatabaseMissing('advisories', ['id' => $advisory->id]);
+});
+
+it('lists the advisories on a case thread to the other assignees', function () {
+    $case = LegalCase::factory()->for($this->user)->create();
+    $case->assignees()->attach($colleague = advisoryUser($this->plan));
+
+    $thread = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+    $advisory = Advisory::factory()->for($thread)->create();
+
+    $response = $this->signInAs($colleague)
+        ->getJson('/api/advisories')
+        ->assertOk();
+
+    expect($response->json('data'))->toHaveCount(1)
+        ->and($response->json('data.0.id'))->toBe($advisory->id);
+});
+
+it('lets another assignee answer an advisory on a case thread', function () {
+    $case = LegalCase::factory()->for($this->user)->create();
+    $case->assignees()->attach($colleague = advisoryUser($this->plan));
+
+    $thread = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+    $advisory = Advisory::factory()->for($thread)->create();
+
+    $this->signInAs($colleague)
+        ->patchJson("/api/advisories/{$advisory->id}", ['status' => 'mitigated'])
+        ->assertOk();
+});
+
+it('hides a case thread advisory from someone not on the case', function () {
+    $case = LegalCase::factory()->for($this->user)->create();
+    $thread = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+    $advisory = Advisory::factory()->for($thread)->create();
+
+    $response = $this->signInAs($outsider = advisoryUser($this->plan))
+        ->getJson('/api/advisories')
+        ->assertOk();
+
+    expect($response->json('data'))->toHaveCount(0);
+
+    $this->signInAs($outsider)
+        ->patchJson("/api/advisories/{$advisory->id}", ['status' => 'mitigated'])
+        ->assertStatus(403);
 });

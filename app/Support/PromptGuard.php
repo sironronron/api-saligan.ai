@@ -83,7 +83,7 @@ PROMPT;
     public static function neutralizeMarkers(string $content): string
     {
         return (string) preg_replace(
-            '/\[\[\s*(UNTRUSTED\s+DATA\s+(?:START|END)|DOCUMENT_(?:START|END)|TODO_(?:START|END)|MEMORY_WRITE_(?:START|END)|NEED_INFO)\s*\]\]/i',
+            '/\[\[\s*(UNTRUSTED\s+DATA\s+(?:START|END)|DOCUMENT_(?:START|END)|TODO_(?:START|END)|MEMORY_WRITE_(?:START|END)|\/?\s*NEED_INFO(?:_END)?)\s*\]\]/i',
             '(marker removed)',
             $content,
         );

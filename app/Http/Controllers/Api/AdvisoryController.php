@@ -11,12 +11,17 @@ use Illuminate\Http\Request;
 class AdvisoryController extends Controller
 {
     /**
-     * The advisories raised on the user's conversations, newest turn first
+     * The advisories raised on the threads the user may open, newest turn first
      * within a conversation.
+     *
+     * Scoped through the conversation's own visibility rather than ownership: a
+     * case thread is created by whoever opened it, so an owner comparison hides
+     * the case's flags from every assignee but that one person.
      */
     public function index(Request $request): JsonResponse
     {
-        $query = $request->user()->advisories();
+        $query = Advisory::query()
+            ->whereHas('conversation', fn ($conversation) => $conversation->visibleTo($request->user()));
 
         if ($request->filled('conversation_id')) {
             $query->where('advisories.conversation_id', $request->input('conversation_id'));
@@ -45,7 +50,7 @@ class AdvisoryController extends Controller
      */
     public function update(Request $request, Advisory $advisory): JsonResponse
     {
-        abort_unless($advisory->conversation?->user_id === $request->user()->id, 403);
+        abort_unless((bool) $advisory->conversation?->isAccessibleBy($request->user()), 403);
 
         $validated = $request->validate([
             'status' => ['required', 'in:'.implode(',', Advisory::STATUSES)],
@@ -83,7 +88,7 @@ class AdvisoryController extends Controller
      */
     public function destroy(Request $request, Advisory $advisory): JsonResponse
     {
-        abort_unless($advisory->conversation?->user_id === $request->user()->id, 403);
+        abort_unless((bool) $advisory->conversation?->isAccessibleBy($request->user()), 403);
 
         $advisory->delete();
 

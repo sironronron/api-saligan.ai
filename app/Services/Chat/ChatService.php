@@ -213,6 +213,13 @@ class ChatService
         // keep the form frame off the wire.
         $suppressIntake = $this->intakeSuppressedFor($conversation, $question);
 
+        // This turn is the user's answer to a form they already filled in.
+        // Re-opening it would wipe the draft in progress on the client and
+        // re-ask facts the message in hand already carries, so the tool
+        // answers with a directive to draft instead of collecting again.
+        [, $intakePrompt] = DraftingIntent::extractTemplateDirective($question);
+        $intakeAlreadySubmitted = DraftingIntent::isIntakeSubmission($intakePrompt);
+
         // When a verbatim template is active (user-uploaded .docx with
         // placeholders), the AI should fill values instead of drafting a
         // new document. The fill_template_fields tool replaces the normal
@@ -220,7 +227,7 @@ class ChatService
         $isVerbatimMode = $draftingTemplate?->isVerbatimTemplate() === true;
 
         $tools = [
-            new RequestIntakeFormTool($onStatus, $suppressIntake),
+            new RequestIntakeFormTool($onStatus, $suppressIntake, $intakeAlreadySubmitted),
             new AskUserQuestionTool($onStatus),
             new CreateTodoTool($conversation->id, $onStatus),
             new FlagAdvisoriesTool($conversation->id, $onStatus),
@@ -1166,11 +1173,27 @@ supplement to the form — the form is the only channel for collecting facts.
 If you need facts and you did NOT call request_intake_form (the call failed,
 the tool is unavailable, or you have already written out your questions), do
 not leave the user with a bare question as the answer, and do not draft around
-the gap by inventing. Write the marker [[NEED_INFO]] on its own line, followed
-by one short question per line — one fact per line, nothing else on the line:
+the gap by inventing. Write the marker [[NEED_INFO]] on its own line, one short
+question per line — one fact per line, nothing else on the line — then close
+the block with [[/NEED_INFO]] on its own line:
   [[NEED_INFO]]
   - What is the recipient's complete address?
   - What amount is being demanded?
+  - How should the property be divided — equal shares among all heirs,
+    adjudicated entirely to one heir, or some other arrangement?
+  [[/NEED_INFO]]
+Rules for the block:
+  - EVERY line inside it is a question asking for one fact. Never write a
+    closing sentence such as "Once you answer these, I will draft the deed"
+    inside the block — that line would become a form field the user is asked
+    to fill in. Anything you want to say goes BEFORE the opening marker.
+  - Always write the closing [[/NEED_INFO]] marker. Without it the block has
+    no end and your following prose is collected as if it were a fact.
+  - When a question has a known set of answers, spell them out in the same
+    line after an em dash, separated by commas with "or" before the last one.
+    Those alternatives become options the user picks from instead of a blank
+    box, and an "Other" choice is added automatically — so do not add one.
+  - Mark a question the user may skip by ending it with "This one is optional."
 Those questions are turned into the intake form automatically and the user
 answers them there, so they never reach the user as a chat message. This is
 the only sanctioned way to ask for facts outside request_intake_form. NEVER
@@ -1215,9 +1238,11 @@ use plain inline questions in chat as a substitute for either channel.
 - When calling request_intake_form, always pass a document_type argument
   naming the category of document being drafted (e.g. "government transaction
   letter", "formal letter", "agreement", "deed", "complaint", "affidavit", or
-  "special power of attorney") so the right fields are collected. The server
-  supplies the authoritative field list, so keep the fields argument aligned
-  with the matching template below.
+  "special power of attorney") so the right fields are collected. The document
+  type selects the base form; the fields YOU pass are added to it, so every
+  field you list must be a fact you actually need for THIS matter — write the
+  label as the question you would ask the user, and when the answer is one of
+  a known set, pass those as `options` so the user picks instead of typing.
 
 === THE MISSING FACT LADDER — NEVER INVENT ===
 A fact you do not have is never supplied by you. When a fact is missing at
@@ -1876,16 +1901,26 @@ PROMPT;
     }
 
     /**
-     * The authoritative intake fields for a drafting request. When a template
-     * is selected (explicit directive, name reference, or the case default),
-     * the form is built from the template's placeholder fields so it only
-     * collects what that template actually needs; otherwise the generic
-     * default fields apply.
+     * The intake fields for a drafting request. When a template is selected
+     * (explicit directive, name reference, or the case default), the form is
+     * built from the template's placeholder fields so it collects what that
+     * template actually needs, and the questions the model said it was missing
+     * are appended on top — the template shapes the form, but a fact the model
+     * asked for is never silently dropped.
      *
+     * With no template resolved, the model's own fields ARE the form: it read
+     * the conversation and knows what is missing, which is strictly better
+     * than the generic per-category defaults. Those defaults only apply when
+     * the model supplied nothing usable.
+     *
+     * @param  mixed  $modelFields  The `fields` argument from the model's
+     *                              request_intake_form call, of any shape.
      * @return array<int, array{key: string, label: string, type: string, options?: array<int, string>, required: bool}>
      */
-    public function intakeFieldsFor(Conversation $conversation, string $question, ?string $documentType = null): array
+    public function intakeFieldsFor(Conversation $conversation, string $question, ?string $documentType = null, mixed $modelFields = null): array
     {
+        $asked = DraftingIntent::normalizeIntakeFields($modelFields);
+
         $template = $this->resolveTemplate($conversation, $question);
 
         $legalTemplate = $this->legalTemplateForIntake($template, $question, $documentType);
@@ -1893,7 +1928,7 @@ PROMPT;
         if ($legalTemplate !== null) {
             return $this->dropCaseCoveredFields(
                 $conversation,
-                LegalTemplateLibrary::intakeFields($legalTemplate),
+                DraftingIntent::mergeIntakeFields(LegalTemplateLibrary::intakeFields($legalTemplate), $asked),
             );
         }
 
@@ -1905,13 +1940,16 @@ PROMPT;
             $fields = $this->fieldsFromTemplate($template);
 
             if ($fields !== []) {
-                return $this->dropCaseCoveredFields($conversation, $fields);
+                return $this->dropCaseCoveredFields(
+                    $conversation,
+                    DraftingIntent::mergeIntakeFields($fields, $asked),
+                );
             }
         }
 
         return $this->dropCaseCoveredFields(
             $conversation,
-            DraftingIntent::fieldsForDocumentType($documentType),
+            $asked !== [] ? $asked : DraftingIntent::fieldsForDocumentType($documentType),
         );
     }
 
@@ -2153,6 +2191,19 @@ PROMPT;
     ): void {
         $text = trim((string) $response->text);
 
+        // The [[NEED_INFO]] block is a protocol between the model and the
+        // controller, which turns it into the intake form. It is never part of
+        // the conversation: leaving it in would persist the raw marker and a
+        // list of questions the user is answering in the form instead, and
+        // they would reappear as chat text on the next reload.
+        //
+        // Whether the block was there is read first: stripping it removes the
+        // evidence that this turn asked for facts, which the draft test below
+        // still needs.
+        $wroteNeedsInfo = DraftingIntent::needsInfo($text);
+
+        $text = trim(DraftingIntent::stripNeedsInfoBlock($text));
+
         // A verbatim-template turn is instructed to answer with the
         // fill_template_fields call and no prose at all, so an empty reply is
         // the expected shape there — not an empty turn. Bailing out would drop
@@ -2212,13 +2263,29 @@ PROMPT;
         // check only applies to marker-less replies.
         $isClarification = ! $hasDocumentMarkers && DraftingIntent::isClarification($text);
 
+        // The turn asked for facts instead of producing a document: the model
+        // called request_intake_form, or wrote the [[NEED_INFO]] block that
+        // becomes the same form. Either way the reply is "I've sent you a
+        // form", which is not a draft even on an intake submission — and left
+        // unchecked it takes export links, which is the only thing /drafts
+        // looks for, so a form request lands on the drafts list as a document.
+        //
+        // A reply that actually carries a document is exempt: the model
+        // sometimes drafts and asks in the same turn, and a suppressed or
+        // already-submitted call returns a directive the model answers by
+        // drafting anyway. Markers or document shape settle it — what is
+        // being excluded here is the reply that asked and produced nothing.
+        $askedForFacts = ! $hasDocumentMarkers
+            && ! DraftingIntent::isSubstantiveDraft($text)
+            && ($this->requestedIntakeForm($response) || $wroteNeedsInfo);
+
         // A filled verbatim template is always a draft: the document exists in
         // the user's own .docx rather than in the reply text, so none of the
         // text-shape heuristics below can recognize it, and without this the
         // reply would get no export links and no template_id to export with.
         $isDraft = $filledTemplate
             || $hasDocumentMarkers
-            || (! $isClarification
+            || (! $isClarification && ! $askedForFacts
                 && ($appendExportLinks || $isIntakeSubmission
                     || ($isDraftingRequest && DraftingIntent::isSubstantiveDraft($text))));
 
@@ -2351,6 +2418,26 @@ PROMPT;
         // cannot identify, and urls the capture job cannot recognize as an
         // official source.
         return WebSourceResolver::resolve(array_values(WebCitationParser::merge($items)));
+    }
+
+    /**
+     * Whether the model called request_intake_form on this turn — the signal
+     * that it stopped to collect facts rather than finishing a document.
+     *
+     * Read off the completed response rather than tracked on the tool, because
+     * the tool's handle() does not always run: on a suppressed or
+     * already-submitted call it returns a directive, and the controller cuts
+     * the stream on the first call of a non-submission turn.
+     */
+    protected function requestedIntakeForm(StreamedAgentResponse $response): bool
+    {
+        foreach ($response->toolCalls as $toolCall) {
+            if ($toolCall->name === 'request_intake_form') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
