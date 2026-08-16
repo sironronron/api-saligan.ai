@@ -83,6 +83,52 @@ it('fails loudly when the account can neither be created nor found', function ()
     app(SupabaseAdminClient::class)->ensureUser('nobody@example.com', 'password');
 })->throws(RuntimeException::class);
 
+it('generates a signup confirmation link without delivering an email', function () {
+    Http::fake([
+        '*/auth/v1/admin/generate_link' => Http::response([
+            'action_link' => 'https://test.supabase.co/auth/v1/verify?token=abc',
+        ], 200),
+    ]);
+
+    $link = app(SupabaseAdminClient::class)->generateSignupLink(
+        'test@example.com',
+        'password',
+        ['full_name' => 'Test User'],
+        'https://app.batayan.ai/login',
+    );
+
+    expect($link)->toBe('https://test.supabase.co/auth/v1/verify?token=abc');
+
+    Http::assertSent(function ($request) {
+        return $request->url() === 'https://test.supabase.co/auth/v1/admin/generate_link'
+            && $request['type'] === 'signup'
+            && $request['email'] === 'test@example.com'
+            && $request['data']['full_name'] === 'Test User'
+            && $request['redirect_to'] === 'https://app.batayan.ai/login';
+    });
+});
+
+it('returns null when the address is already registered', function () {
+    Http::fake([
+        '*/auth/v1/admin/generate_link' => Http::response([
+            'code' => 'user_already_exists',
+            'msg' => 'A user with this email address has already been registered',
+        ], 422),
+    ]);
+
+    $link = app(SupabaseAdminClient::class)->generateSignupLink('taken@example.com', 'password');
+
+    expect($link)->toBeNull();
+});
+
+it('fails loudly when link generation fails for another reason', function () {
+    Http::fake([
+        '*/auth/v1/admin/generate_link' => Http::response(['msg' => 'boom'], 500),
+    ]);
+
+    app(SupabaseAdminClient::class)->generateSignupLink('nobody@example.com', 'password');
+})->throws(RuntimeException::class);
+
 it('refuses admin calls when the project is not configured', function () {
     config()->set('supabase.secret_key', null);
 

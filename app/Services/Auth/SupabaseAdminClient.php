@@ -3,6 +3,7 @@
 namespace App\Services\Auth;
 
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
@@ -121,6 +122,64 @@ class SupabaseAdminClient
     public function deleteUser(string $uid): void
     {
         $this->request()->delete('/auth/v1/admin/users/'.$uid);
+    }
+
+    /**
+     * The signup confirmation link for an email address, creating the account
+     * when it does not exist yet. Unlike the client-side `signUp` flow this
+     * performs no delivery: the link is handed back so the caller can send it
+     * through its own mail provider (the app emails it via Laravel's mailer).
+     *
+     * A link is only produced for a brand-new address. When the address already
+     * has an account, null is returned rather than an error, so the caller can
+     * answer identically either way and the endpoint never leaks which emails
+     * are registered.
+     *
+     * @param  array<string, mixed>  $metadata  Written to `user_metadata`; the
+     *                                          API reads `full_name` from it.
+     */
+    public function generateSignupLink(string $email, string $password, array $metadata = [], ?string $redirectTo = null): ?string
+    {
+        $email = strtolower(trim($email));
+
+        $response = $this->request()->post('/auth/v1/admin/generate_link', [
+            'type' => 'signup',
+            'email' => $email,
+            'password' => $password,
+            'data' => $metadata,
+            'redirect_to' => $redirectTo,
+        ]);
+
+        if ($response->successful()) {
+            $link = $response->json('action_link');
+
+            if (is_string($link) && $link !== '') {
+                return $link;
+            }
+
+            throw new RuntimeException("Supabase generated a signup link for {$email} but returned none.");
+        }
+
+        if ($this->alreadyRegistered($response)) {
+            return null;
+        }
+
+        throw new RuntimeException(
+            "Could not generate a signup link for {$email} (HTTP {$response->status()}): ".$response->body()
+        );
+    }
+
+    /**
+     * Whether a failed admin response simply reports that the address already
+     * has an account. GoTrue answers that with an HTTP 422 (or 400 on older
+     * versions) and a message mentioning an existing registration.
+     */
+    private function alreadyRegistered(Response $response): bool
+    {
+        $body = strtolower((string) $response->body());
+
+        return $response->clientError()
+            && (str_contains($body, 'already') || str_contains($body, 'registered'));
     }
 
     protected function request(): PendingRequest

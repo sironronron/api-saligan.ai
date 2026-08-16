@@ -88,14 +88,8 @@ it('requires both a uid and an email in the token', function () {
         ->assertStatus(401);
 });
 
-it('removes the legacy password endpoints', function () {
+it('removes the legacy password login endpoint', function () {
     $this->postJson('/api/login', [
-        'email' => 'jane@example.com',
-        'password' => 'password123',
-    ])->assertNotFound();
-
-    $this->postJson('/api/register', [
-        'name' => 'Jane Doe',
         'email' => 'jane@example.com',
         'password' => 'password123',
     ])->assertNotFound();

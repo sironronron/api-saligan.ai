@@ -56,5 +56,17 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('last-used-lookup', function (Request $request) {
             return Limit::perMinute(10)->by('last-used.ip.'.$request->ip());
         });
+
+        // Registration. Per-IP guard so a single client cannot create many
+        // accounts, and a per-email guard so one address cannot be hammered
+        // with confirmation links. The response never reveals whether the
+        // address is already registered, so the limiter is the backstop that
+        // keeps the endpoint from being walked.
+        RateLimiter::for('registration', function (Request $request) {
+            return [
+                Limit::perHour(20)->by('registration.ip.'.$request->ip()),
+                Limit::perDay(10)->by('registration.email.'.strtolower((string) $request->input('email', ''))),
+            ];
+        });
     }
 }

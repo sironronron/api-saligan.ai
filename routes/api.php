@@ -45,6 +45,12 @@ Route::post('/demo-requests', [DemoRequestController::class, 'store'])
 Route::get('/auth/last-used', [AuthController::class, 'lastUsed'])
     ->middleware('throttle:last-used-lookup');
 
+// Creates the account and emails the confirmation link through Laravel's
+// mailer. Answered identically for new and existing addresses so it cannot be
+// used to probe registrations; throttled in case of abuse.
+Route::post('/auth/register', [AuthController::class, 'register'])
+    ->middleware('throttle:registration');
+
 // The published Terms of Service / Privacy Policy is public content; the
 // /legal/terms page links it from the register form, which logged-out
 // visitors can open. Acceptance and status are per-user and stay protected.
