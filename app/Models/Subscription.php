@@ -152,24 +152,32 @@ class Subscription extends Model
     }
 
     /**
-     * The amount the next invoice should bill for, in centavos:
-     * seats purchased times the per-seat price.
+     * The amount the next invoice should bill for, in centavos: the plan's
+     * list price, plus the seats bought on top of the ones it bundles.
+     *
+     * The list price already covers `included_seats` — Firm is ₱11,000 for
+     * three people — so those seats are not billed again. Only the extras
+     * carry the per-seat rate, and a subscription sitting on its bundled
+     * seats invoices the plan price flat.
      *
      * Subscriptions written before the seat price was stamped onto the row
-     * carry no `price_per_seat`. The plan's own seat price is what a seat
-     * costs there, so it answers before the plan's full list price — falling
-     * straight through to that would bill every seat at the whole plan.
-     * The list price stays the last resort, for plans that sell no seats at
-     * all and so bill their one bundled seat at the plan rate.
+     * carry no `price_per_seat`; the plan's own `seat_price` is what an extra
+     * seat costs there, so it stands in.
      */
     public function nextInvoiceAmount(): int
     {
-        $pricePerSeat = $this->price_per_seat
-            ?? $this->plan?->seat_price
-            ?? $this->plan?->priceForInterval($this->interval ?? 'monthly')
-            ?? 0;
+        $plan = $this->plan;
 
-        return $this->seats_purchased * $pricePerSeat;
+        // Without a plan there is no list price to start from, so the seats
+        // are all this subscription can be billed on.
+        if ($plan === null) {
+            return $this->seats_purchased * ($this->price_per_seat ?? 0);
+        }
+
+        $extraSeats = max(0, $this->seats_purchased - ($plan->included_seats ?? 1));
+        $pricePerSeat = $this->price_per_seat ?? $plan->seat_price ?? 0;
+
+        return $plan->priceForInterval($this->interval ?? 'monthly') + $extraSeats * $pricePerSeat;
     }
 
     /**

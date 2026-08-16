@@ -21,9 +21,10 @@ it('purchases additional seats and logs a billing event', function () {
     $this->signInAs($this->owner)
         ->postJson('/api/subscription/seats', ['quantity' => 2])
         ->assertOk()
+        // 4 seats on a plan bundling 3: the list price plus one extra seat.
         ->assertJsonPath('data.seats.purchased', 4)
-        ->assertJsonPath('data.seats.next_invoice_amount', 800000)
-        ->assertJsonPath('data.seats.next_invoice_pesos', 8000);
+        ->assertJsonPath('data.seats.next_invoice_amount', 1300000)
+        ->assertJsonPath('data.seats.next_invoice_pesos', 13000);
 
     expect($this->subscription->fresh()->seats_purchased)->toBe(4);
 
@@ -38,8 +39,9 @@ it('removes purchased seats and logs a billing event', function () {
     $this->signInAs($this->owner)
         ->deleteJson('/api/subscription/seats', ['quantity' => 1])
         ->assertOk()
+        // Back under the bundled three, so the invoice is the plan price flat.
         ->assertJsonPath('data.seats.purchased', 1)
-        ->assertJsonPath('data.seats.next_invoice_amount', 200000);
+        ->assertJsonPath('data.seats.next_invoice_amount', 1100000);
 
     $event = BillingEvent::firstWhere('subscription_id', $this->subscription->id);
     expect($event->event_type)->toBe(BillingEvent::EVENT_SEAT_REMOVED)
@@ -59,18 +61,20 @@ it('blocks reducing seats below the active member count', function () {
     expect($this->subscription->fresh()->seats_purchased)->toBe(2);
 });
 
-it('computes the next invoice as seats purchased times price per seat', function () {
-    expect($this->subscription->nextInvoiceAmount())->toBe(400000);
+it('computes the next invoice as the plan price plus the seats beyond the bundled ones', function () {
+    // 2 seats on a plan bundling 3 — nothing extra to charge for.
+    expect($this->subscription->nextInvoiceAmount())->toBe(1100000);
 
     $this->subscription->update(['seats_purchased' => 5]);
 
-    expect($this->subscription->nextInvoiceAmount())->toBe(1000000);
+    expect($this->subscription->fresh()->nextInvoiceAmount())->toBe(1100000 + 2 * 200000);
 });
 
 it("falls back to the plan's seat price when no per-seat price is set", function () {
-    $this->subscription->update(['price_per_seat' => null, 'seats_purchased' => 3]);
+    $this->subscription->update(['price_per_seat' => null, 'seats_purchased' => 5]);
 
-    expect($this->subscription->fresh()->nextInvoiceAmount())->toBe($this->plan->seat_price * 3);
+    expect($this->subscription->fresh()->nextInvoiceAmount())
+        ->toBe($this->plan->price + 2 * $this->plan->seat_price);
 });
 
 it('falls back to the plan price when the plan sells no seats', function () {
@@ -127,5 +131,5 @@ it('exposes seat fields on the subscription resource', function () {
         ->assertOk()
         ->assertJsonPath('data.seats.purchased', 2)
         ->assertJsonPath('data.seats.price_per_seat', 200000)
-        ->assertJsonPath('data.seats.next_invoice_amount', 400000);
+        ->assertJsonPath('data.seats.next_invoice_amount', 1100000);
 });
