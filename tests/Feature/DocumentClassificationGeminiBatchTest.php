@@ -115,6 +115,11 @@ it('submits the queued documents as one Gemini batch', function () {
                 $config['response_schema']['properties']['categories']['items']['properties']['slug']['enum'],
                 true,
             )
+            // Gemini's Schema proto has no `additionalProperties` keyword — the
+            // shared classification schema carries it for Anthropic's sake, and
+            // this client must not hand it to an API that rejects it.
+            && ! array_key_exists('additionalProperties', $config['response_schema'])
+            && ! array_key_exists('additionalProperties', $config['response_schema']['properties']['categories']['items'])
             && $sent->header('x-goog-api-key')[0] === 'gemini-test-key';
     });
 });

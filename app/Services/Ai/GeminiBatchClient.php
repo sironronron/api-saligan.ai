@@ -73,7 +73,7 @@ class GeminiBatchClient implements BatchClient
                                         // would only wrap them in quotes.
                                         ($request['schema'] ?? null) === null ? [] : [
                                             'response_mime_type' => 'application/json',
-                                            'response_schema' => $request['schema'],
+                                            'response_schema' => $this->schemaFor($request['schema']),
                                         ],
                                     ),
                                 ],
@@ -95,6 +95,37 @@ class GeminiBatchClient implements BatchClient
         }
 
         return $name;
+    }
+
+    /**
+     * The output schema as Gemini accepts it.
+     *
+     * Gemini's structured-output schema is a subset of OpenAPI 3.0: keywords
+     * like `additionalProperties` are not fields in its Schema proto, and a
+     * batch carrying one is rejected before any request runs. The shared
+     * classification schema uses it because Anthropic's JSON-schema accepts
+     * it, so it is stripped wherever it appears — the answers are read by key
+     * anyway, and the keyword only tightens validation that never happens.
+     *
+     * @param  array<string, mixed>  $schema
+     * @return array<string, mixed>
+     */
+    protected function schemaFor(array $schema): array
+    {
+        if (isset($schema['items']) && is_array($schema['items'])) {
+            $schema['items'] = $this->schemaFor($schema['items']);
+        }
+
+        if (isset($schema['properties']) && is_array($schema['properties'])) {
+            $schema['properties'] = array_map(
+                fn (mixed $value): mixed => is_array($value) ? $this->schemaFor($value) : $value,
+                $schema['properties'],
+            );
+        }
+
+        unset($schema['additionalProperties']);
+
+        return $schema;
     }
 
     /**
