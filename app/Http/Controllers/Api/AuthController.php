@@ -35,7 +35,7 @@ class AuthController extends Controller
             'password' => ['required', 'string', 'min:8'],
         ]);
 
-        $redirectTo = rtrim((string) config('app.frontend_url'), '/').'/login';
+        $redirectTo = rtrim((string) config('app.frontend_url'), '/').'/auth/verified';
 
         try {
             $confirmationUrl = $this->supabaseAdmin->generateSignupLink(

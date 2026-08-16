@@ -31,7 +31,7 @@ it('registers a new account and emails the confirmation link through Laravel', f
             && $request['type'] === 'signup'
             && $request['email'] === 'jane@example.com'
             && $request['data']['full_name'] === 'Jane Doe'
-            && $request['redirect_to'] === 'https://app.batayan.ai/login';
+            && $request['redirect_to'] === 'https://app.batayan.ai/auth/verified';
     });
 
     Mail::assertSent(ConfirmEmailMail::class, function (ConfirmEmailMail $mail) {

@@ -94,7 +94,7 @@ it('generates a signup confirmation link without delivering an email', function 
         'test@example.com',
         'password',
         ['full_name' => 'Test User'],
-        'https://app.batayan.ai/login',
+        'https://app.batayan.ai/auth/verified',
     );
 
     expect($link)->toBe('https://test.supabase.co/auth/v1/verify?token=abc');
@@ -104,7 +104,7 @@ it('generates a signup confirmation link without delivering an email', function 
             && $request['type'] === 'signup'
             && $request['email'] === 'test@example.com'
             && $request['data']['full_name'] === 'Test User'
-            && $request['redirect_to'] === 'https://app.batayan.ai/login';
+            && $request['redirect_to'] === 'https://app.batayan.ai/auth/verified';
     });
 });
 
