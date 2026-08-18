@@ -93,3 +93,51 @@ it('filters generated documents by case', function () {
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.id', $draft->id);
 });
+
+it('shows a single generated document to its owner', function () {
+    $case = LegalCase::factory()->for($this->user)->create(['title' => 'Dela Cruz vs. Santos']);
+    $conversation = Conversation::factory()->for($this->user)->create(['title' => 'Eviction case', 'case_id' => $case->id]);
+
+    $draft = Message::factory()->create([
+        'conversation_id' => $conversation->id,
+        'role' => MessageRole::Assistant,
+        'content' => "DEMAND LETTER\n\nFor value received.\n\n[Download as Word](/api/messages/abc/export/word)\n[Download as PDF](/api/messages/abc/export/pdf)",
+    ]);
+
+    $this->signInAs($this->user)
+        ->getJson('/api/generated-documents/'.$draft->id)
+        ->assertOk()
+        ->assertJsonPath('data.id', $draft->id)
+        ->assertJsonPath('data.title', 'DEMAND LETTER')
+        ->assertJsonPath('data.conversation_title', 'Eviction case')
+        ->assertJsonPath('data.case_title', 'Dela Cruz vs. Santos')
+        ->assertJsonPath('data.content', $draft->content);
+});
+
+it('does not show a generated document the caller cannot open', function () {
+    $conversation = Conversation::factory()->for(User::factory())->create();
+
+    $draft = Message::factory()->create([
+        'conversation_id' => $conversation->id,
+        'role' => MessageRole::Assistant,
+        'content' => "COMPLAINT\n\n[Download as Word](/api/messages/abc/export/word)",
+    ]);
+
+    $this->signInAs($this->user)
+        ->getJson('/api/generated-documents/'.$draft->id)
+        ->assertStatus(403);
+});
+
+it('only exposes assistant messages with an export marker as generated documents', function () {
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $plain = Message::factory()->create([
+        'conversation_id' => $conversation->id,
+        'role' => MessageRole::Assistant,
+        'content' => 'Under RA 6657, agrarian reform covers private agricultural lands.',
+    ]);
+
+    $this->signInAs($this->user)
+        ->getJson('/api/generated-documents/'.$plain->id)
+        ->assertStatus(404);
+});

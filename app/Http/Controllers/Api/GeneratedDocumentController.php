@@ -9,6 +9,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Http\Resources\Json\JsonResource;
 
 class GeneratedDocumentController extends Controller
 {
@@ -42,5 +43,18 @@ class GeneratedDocumentController extends Controller
             ->values();
 
         return GeneratedDocumentResource::collection($documents);
+    }
+
+    /**
+     * Fetch a single generated document by id, so a draft can be handed to the
+     * vetting/notarization flow without re-fetching the whole list.
+     */
+    public function show(Request $request, Message $message): JsonResource
+    {
+        abort_unless($message->role === MessageRole::Assistant, 404);
+        abort_unless(str_contains($message->content, '/export/'), 404);
+        abort_unless($message->conversation?->isAccessibleBy($request->user()), 403);
+
+        return new GeneratedDocumentResource($message->load(['conversation.case']));
     }
 }

@@ -50,4 +50,19 @@ return [
     */
 
     'base_url' => env('PAYMONGO_BASE_URL', 'https://api.paymongo.com'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Processing Fee Pass-Through
+    |--------------------------------------------------------------------------
+    |
+    | The fee PayMongo charges the merchant for each successful payment is
+    | passed on to the buyer: the amount authorized is grossed up so the
+    | platform nets the requested service fee after PayMongo takes its cut.
+    |
+    */
+
+    'processing_fee_percent' => (float) env('PAYMONGO_PROCESSING_FEE_PERCENT', 3.5),
+
+    'processing_fee_fixed' => (int) env('PAYMONGO_PROCESSING_FEE_FIXED', 1500),
 ];

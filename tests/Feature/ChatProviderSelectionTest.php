@@ -30,36 +30,46 @@ it('derives the default provider from configuration', function () {
     expect(ChatProvider::fromConfig())->toBe(ChatProvider::Ollama);
 });
 
-it('resolves Ollama for conversations stored as Ollama', function () {
+it('derives Anthropic as the default provider from configuration', function () {
+    config()->set('saligan.chat.provider', 'anthropic');
+    expect(ChatProvider::fromConfig())->toBe(ChatProvider::Anthropic);
+});
+
+it('derives Meta as the default provider from configuration', function () {
+    config()->set('saligan.chat.provider', 'meta');
+    expect(ChatProvider::fromConfig())->toBe(ChatProvider::Meta);
+});
+
+it('resolves the configured default to Ollama when the provider is unknown', function () {
+    config()->set('saligan.chat.provider', 'unknown');
+
+    $conversation = Conversation::factory()->create();
+
+    expect($this->chat->resolveFor($conversation))->toBe([
+        Lab::Ollama,
+        config('saligan.chat.ollama_model'),
+    ]);
+});
+
+it('uses the configured default rather than the provider stored on the conversation', function () {
+    config()->set('saligan.chat.provider', 'meta');
+    config()->set('ai.providers.meta.key', 'test-key');
+
     $conversation = Conversation::factory()->create([
         'provider' => ChatProvider::Ollama,
     ]);
 
     expect($this->chat->resolveFor($conversation))->toBe([
-        Lab::Ollama,
-        config('saligan.chat.ollama_model'),
+        'meta',
+        config('saligan.chat.meta_model'),
     ]);
 });
 
-it('falls back to Ollama when Gemini is stored but no API key is configured', function () {
-    config()->set('ai.providers.gemini.key', '');
-
-    $conversation = Conversation::factory()->create([
-        'provider' => ChatProvider::Gemini,
-    ]);
-
-    expect($this->chat->resolveFor($conversation))->toBe([
-        Lab::Ollama,
-        config('saligan.chat.ollama_model'),
-    ]);
-});
-
-it('uses Gemini when Gemini is stored and an API key is configured', function () {
+it('uses Gemini when Gemini is the configured default and an API key is set', function () {
+    config()->set('saligan.chat.provider', 'gemini');
     config()->set('ai.providers.gemini.key', 'test-key');
 
-    $conversation = Conversation::factory()->create([
-        'provider' => ChatProvider::Gemini,
-    ]);
+    $conversation = Conversation::factory()->create();
 
     expect($this->chat->resolveFor($conversation))->toBe([
         Lab::Gemini,
@@ -67,12 +77,11 @@ it('uses Gemini when Gemini is stored and an API key is configured', function ()
     ]);
 });
 
-it('falls back to Ollama when OpenAI is stored but no API key is configured', function () {
-    config()->set('ai.providers.openai.key', '');
+it('falls back to Ollama when Gemini is the configured default but no API key is set', function () {
+    config()->set('saligan.chat.provider', 'gemini');
+    config()->set('ai.providers.gemini.key', '');
 
-    $conversation = Conversation::factory()->create([
-        'provider' => ChatProvider::OpenAI,
-    ]);
+    $conversation = Conversation::factory()->create();
 
     expect($this->chat->resolveFor($conversation))->toBe([
         Lab::Ollama,
@@ -80,12 +89,11 @@ it('falls back to Ollama when OpenAI is stored but no API key is configured', fu
     ]);
 });
 
-it('uses OpenAI when OpenAI is stored and an API key is configured', function () {
+it('uses OpenAI when OpenAI is the configured default and an API key is set', function () {
+    config()->set('saligan.chat.provider', 'openai');
     config()->set('ai.providers.openai.key', 'test-key');
 
-    $conversation = Conversation::factory()->create([
-        'provider' => ChatProvider::OpenAI,
-    ]);
+    $conversation = Conversation::factory()->create();
 
     expect($this->chat->resolveFor($conversation))->toBe([
         Lab::OpenAI,
@@ -93,12 +101,47 @@ it('uses OpenAI when OpenAI is stored and an API key is configured', function ()
     ]);
 });
 
-it('falls back to Gemini when Anthropic is stored but no API key is configured', function () {
+it('falls back to Ollama when OpenAI is the configured default but no API key is set', function () {
+    config()->set('saligan.chat.provider', 'openai');
+    config()->set('ai.providers.openai.key', '');
+
+    $conversation = Conversation::factory()->create();
+
+    expect($this->chat->resolveFor($conversation))->toBe([
+        Lab::Ollama,
+        config('saligan.chat.ollama_model'),
+    ]);
+});
+
+it('uses Meta when Meta is the configured default and an API key is set', function () {
+    config()->set('saligan.chat.provider', 'meta');
+    config()->set('ai.providers.meta.key', 'test-key');
+
+    $conversation = Conversation::factory()->create();
+
+    expect($this->chat->resolveFor($conversation))->toBe([
+        'meta',
+        config('saligan.chat.meta_model'),
+    ]);
+});
+
+it('falls back to Ollama when Meta is the configured default but no API key is set', function () {
+    config()->set('saligan.chat.provider', 'meta');
+    config()->set('ai.providers.meta.key', '');
+
+    $conversation = Conversation::factory()->create();
+
+    expect($this->chat->resolveFor($conversation))->toBe([
+        Lab::Ollama,
+        config('saligan.chat.ollama_model'),
+    ]);
+});
+
+it('falls back to Gemini when Anthropic is the configured default but no API key is set', function () {
+    config()->set('saligan.chat.provider', 'anthropic');
     config()->set('ai.providers.anthropic.key', '');
 
-    $conversation = Conversation::factory()->create([
-        'provider' => ChatProvider::Anthropic,
-    ]);
+    $conversation = Conversation::factory()->create();
 
     expect($this->chat->resolveFor($conversation))->toBe([
         Lab::Gemini,
@@ -106,7 +149,8 @@ it('falls back to Gemini when Anthropic is stored but no API key is configured',
     ]);
 });
 
-it('uses Anthropic when Anthropic is stored and an API key is configured', function () {
+it('uses Anthropic when Anthropic is the configured default and an API key is set', function () {
+    config()->set('saligan.chat.provider', 'anthropic');
     config()->set('ai.providers.anthropic.key', 'test-key');
 
     // On a plan that carries the frontier model, so this asserts the provider
@@ -120,11 +164,6 @@ it('uses Anthropic when Anthropic is stored and an API key is configured', funct
         Lab::Anthropic,
         config('saligan.chat.anthropic_model'),
     ]);
-});
-
-it('derives Anthropic as the default provider from configuration', function () {
-    config()->set('saligan.chat.provider', 'anthropic');
-    expect(ChatProvider::fromConfig())->toBe(ChatProvider::Anthropic);
 });
 
 /**
@@ -155,6 +194,7 @@ function anthropicConversationFor(array $subscription, ?array $features = null):
  * access: both models answer from the same retrieved sources.
  */
 it('serves the base model to a plan without the frontier model feature', function () {
+    config()->set('saligan.chat.provider', 'anthropic');
     config()->set('ai.providers.anthropic.key', 'test-key');
 
     $conversation = anthropicConversationFor(
@@ -173,6 +213,7 @@ it('serves the base model to a plan without the frontier model feature', functio
  * carry the feature, and it lands on the base model for that reason alone.
  */
 it('serves the base model to an organization still inside its trial', function () {
+    config()->set('saligan.chat.provider', 'anthropic');
     config()->set('ai.providers.anthropic.key', 'test-key');
 
     $conversation = anthropicConversationFor([
@@ -188,6 +229,7 @@ it('serves the base model to an organization still inside its trial', function (
 });
 
 it('serves the frontier model to a plan that carries it', function () {
+    config()->set('saligan.chat.provider', 'anthropic');
     config()->set('ai.providers.anthropic.key', 'test-key');
 
     $conversation = anthropicConversationFor([
@@ -207,6 +249,7 @@ it('serves the frontier model to a plan that carries it', function () {
  * rather than the status of the row.
  */
 it('follows the plan once the trial has lapsed', function () {
+    config()->set('saligan.chat.provider', 'anthropic');
     config()->set('ai.providers.anthropic.key', 'test-key');
 
     $conversation = anthropicConversationFor([
@@ -222,6 +265,7 @@ it('follows the plan once the trial has lapsed', function () {
 });
 
 it('serves the frontier model to everyone when no base model is configured', function () {
+    config()->set('saligan.chat.provider', 'anthropic');
     config()->set('ai.providers.anthropic.key', 'test-key');
     config()->set('saligan.chat.anthropic_base_model', null);
 

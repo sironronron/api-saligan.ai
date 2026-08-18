@@ -49,7 +49,7 @@ class DeadlineReminder extends Notification
 
         return [
             'kind' => $isCase ? 'case' : 'task',
-            'title' => $this->subject->title,
+            'title' => $isCase ? $this->subject->title : 'Task due date is coming',
             'due_date' => $this->subject->due_date?->toDateString(),
             'days' => $this->days,
             'overdue' => $this->days < 0,

@@ -1,7 +1,6 @@
 <?php
 
 use App\Ai\LegalChatAgent;
-use App\Enums\ChatProvider;
 use App\Models\Conversation;
 use App\Models\Plan;
 use App\Models\Subscription;
@@ -47,6 +46,8 @@ function geminiRequests(): Collection
 }
 
 it('creates a Gemini context cache when streaming on the Gemini provider', function () {
+    config(['saligan.chat.provider' => 'gemini']);
+
     Http::fake([
         '*/api/embed' => Http::response(['embeddings' => [array_fill(0, 768, 1.0)]], 200),
         'generativelanguage.googleapis.com/*' => Http::response([
@@ -54,9 +55,7 @@ it('creates a Gemini context cache when streaming on the Gemini provider', funct
         ]),
     ]);
 
-    $conversation = Conversation::factory()->for($this->user)->create([
-        'provider' => ChatProvider::Gemini,
-    ]);
+    $conversation = Conversation::factory()->for($this->user)->create();
 
     $stream = app(ChatService::class)->stream($conversation, 'What is RA 6657?');
 
@@ -80,9 +79,7 @@ it('does not create a context cache when streaming on Ollama', function () {
         ]),
     ]);
 
-    $conversation = Conversation::factory()->for($this->user)->create([
-        'provider' => ChatProvider::Ollama,
-    ]);
+    $conversation = Conversation::factory()->for($this->user)->create();
 
     $stream = app(ChatService::class)->stream($conversation, 'What is RA 6657?');
 

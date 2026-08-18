@@ -149,6 +149,20 @@ it('updates a todo title and description', function () {
         ->assertJsonPath('data.description', 'A note');
 });
 
+it('records an activity when a todo is updated', function () {
+    $todo = Todo::factory()->for($this->conversation)->create(['title' => 'Old title']);
+
+    $this->signInAs($this->user)
+        ->patchJson("/api/todos/{$todo->id}", ['status' => 'on-going'])
+        ->assertOk();
+
+    $this->assertDatabaseHas('task_activities', [
+        'todo_id' => $todo->id,
+        'user_id' => $this->user->id,
+        'type' => 'todo_updated',
+    ]);
+});
+
 it('persists a new manual order', function () {
     $first = Todo::factory()->for($this->conversation)->create(['order' => 1]);
     $second = Todo::factory()->for($this->conversation)->create(['order' => 2]);

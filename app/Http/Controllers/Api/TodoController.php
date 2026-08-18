@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Conversation;
+use App\Models\TaskActivity;
 use App\Models\Todo;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -55,6 +56,13 @@ class TodoController extends Controller
 
         $todo = Todo::create($validated);
 
+        TaskActivity::create([
+            'todo_id' => $todo->id,
+            'user_id' => $request->user()->id,
+            'type' => 'todo_created',
+            'description' => "created task \"{$todo->title}\"",
+        ]);
+
         return response()->json(['data' => $todo], 201);
     }
 
@@ -77,6 +85,13 @@ class TodoController extends Controller
         ]);
 
         $todo->update($validated);
+
+        TaskActivity::create([
+            'todo_id' => $todo->id,
+            'user_id' => $request->user()->id,
+            'type' => 'todo_updated',
+            'description' => "updated task \"{$todo->title}\"",
+        ]);
 
         return response()->json(['data' => $todo]);
     }

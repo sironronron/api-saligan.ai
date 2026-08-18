@@ -13,11 +13,11 @@ return [
     |
     */
 
-    'default' => 'openai',
+    'default' => 'meta',
     'default_for_images' => 'gemini',
-    'default_for_audio' => 'openai',
-    'default_for_transcription' => 'openai',
-    'default_for_embeddings' => 'openai',
+    'default_for_audio' => 'gemini',
+    'default_for_transcription' => 'gemini',
+    'default_for_embeddings' => 'gemini',
     'default_for_reranking' => 'cohere',
 
     /*
@@ -112,6 +112,12 @@ return [
         'jina' => [
             'driver' => 'jina',
             'key' => env('JINA_API_KEY'),
+        ],
+
+        'meta' => [
+            'driver' => 'openai-compatible',
+            'key' => env('META_API_KEY'),
+            'url' => env('META_API_URL', 'https://api.meta.ai/v1'),
         ],
 
         'mistral' => [

@@ -70,6 +70,17 @@ class LabelController extends Controller
         $this->ensureSlugIsAvailable($request, $kind, $slug);
         $this->ensureCustomLabelQuotaRemains($request, $kind);
 
+        // Appended after the caller's existing custom terms, so a fresh label
+        // never collides with the positions a reorder has already assigned.
+        $maxPosition = Label::query()
+            ->where('kind', $kind)
+            ->when(
+                $user->hasActiveMembership(),
+                fn ($query) => $query->where('organization_id', $user->organization_id),
+                fn ($query) => $query->whereNull('organization_id')->where('user_id', $user->id),
+            )
+            ->max('position');
+
         $label = Label::create([
             'kind' => $kind,
             'organization_id' => $user->hasActiveMembership() ? $user->organization_id : null,
@@ -78,7 +89,7 @@ class LabelController extends Controller
             'name' => $validated['name'],
             'description' => $validated['description'] ?? null,
             'color' => $validated['color'] ?? null,
-            'position' => 1000,
+            'position' => (int) ($maxPosition ?? 999) + 1,
         ]);
 
         return (new LabelResource($label))->response()->setStatusCode(201);
@@ -117,6 +128,49 @@ class LabelController extends Controller
         $label->delete();
 
         return response()->json(null, 204);
+    }
+
+    /**
+     * Persist a new manual ordering for the caller's custom document
+     * categories.
+     *
+     * Only labels the caller may manage move — their own personal terms and,
+     * for an owner or admin, their organization's shared terms. The seeded
+     * system vocabulary keeps its fixed order and any label the client
+     * omitted is appended behind the given ones, so a stale list never leaves
+     * the vocabulary half-ordered.
+     */
+    public function reorder(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ordered_ids' => ['required', 'array'],
+            'ordered_ids.*' => ['required', 'uuid', 'distinct'],
+        ]);
+
+        $labels = Label::query()
+            ->where('kind', LabelKind::DocumentCategory)
+            ->get()
+            ->filter(fn (Label $label) => $label->manageableBy($request->user()))
+            ->keyBy(fn (Label $label) => $label->id);
+
+        $position = 1000;
+
+        foreach ($validated['ordered_ids'] as $labelId) {
+            $label = $labels->get($labelId);
+
+            if ($label === null) {
+                continue;
+            }
+
+            $label->update(['position' => $position++]);
+            $labels->forget($labelId);
+        }
+
+        foreach ($labels as $label) {
+            $label->update(['position' => $position++]);
+        }
+
+        return response()->json(['message' => 'Order updated']);
     }
 
     /**

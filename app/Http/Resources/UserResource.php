@@ -46,6 +46,24 @@ class UserResource extends JsonResource
             'terms_current_version' => LegalDocument::currentVersion(),
             'marketing_opt_in' => $this->marketing_opt_in,
             'created_at' => $this->created_at,
+            // A lightweight summary so the client can route lawyers (register,
+            // pending, workspace) without an extra round trip. The full profile
+            // and the selectable options come from /lawyer/profile.
+            'lawyer_profile' => $this->whenLoaded('lawyerProfile', function (): ?array {
+                if ($this->lawyerProfile === null) {
+                    return null;
+                }
+
+                return [
+                    'id' => $this->lawyerProfile->id,
+                    'full_name' => $this->lawyerProfile->full_name,
+                    'verification_status' => $this->lawyerProfile->verification_status->value,
+                    'is_notary' => $this->lawyerProfile->is_notary,
+                    'available' => $this->lawyerProfile->available,
+                    'practice_areas' => $this->lawyerProfile->practice_areas ?? [],
+                    'region' => $this->lawyerProfile->region,
+                ];
+            }),
         ];
     }
 }

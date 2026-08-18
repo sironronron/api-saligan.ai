@@ -28,15 +28,18 @@ class DeadlineReminderMail extends Mailable
      */
     public function envelope(): Envelope
     {
-        $noun = $this->kind() === 'case' ? 'Case' : 'Task';
         $title = Str::limit($this->deadline->title, 60);
-        $days = abs($this->days);
 
-        $subject = match (true) {
-            $this->days < 0 => "{$noun} \"{$title}\" is {$days} ".Str::plural('day', $days).' overdue',
-            $this->days === 0 => "{$noun} \"{$title}\" is due today",
-            default => "{$noun} \"{$title}\" is due in {$this->days} ".Str::plural('day', $this->days),
-        };
+        if ($this->kind() === 'case') {
+            $days = abs($this->days);
+            $subject = match (true) {
+                $this->days < 0 => "Case \"{$title}\" is {$days} ".Str::plural('day', $days).' overdue',
+                $this->days === 0 => "Case \"{$title}\" is due today",
+                default => "Case \"{$title}\" is due in {$this->days} ".Str::plural('day', $this->days),
+            };
+        } else {
+            $subject = 'Task due date is coming';
+        }
 
         return new Envelope(subject: $subject);
     }

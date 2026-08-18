@@ -13,6 +13,7 @@
         .email-padding { padding: 24px 20px !important; }
         .email-header-padding { padding: 28px 20px !important; }
         .email-button { width: 100% !important; }
+        .email-button a { display: block !important; width: 100% !important; box-sizing: border-box; text-align: center; }
         .email-copy { font-size: 16px !important; }
     }
 </style>
@@ -60,8 +61,8 @@
     <!-- CTA button -->
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin: 0 0 32px 0;">
         <tr>
-            <td class="email-button" align="center" style="background-color: #1D4533; border-radius: 10px; box-shadow: 0 4px 12px rgba(29, 69, 51, 0.25);">
-                <a href="{{ $confirmationUrl }}" target="_blank" rel="noopener" style="display: inline-block; padding: 16px 40px; font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif; font-size: 16px; font-weight: 700; color: #F7EAE0; text-decoration: none; letter-spacing: 0.3px;">Confirm email address</a>
+            <td class="email-button" align="center">
+                <a href="{{ $confirmationUrl }}" target="_blank" rel="noopener" style="display: inline-block; background-color: #1D4533; border-radius: 10px; box-shadow: 0 4px 12px rgba(29, 69, 51, 0.25); padding: 16px 40px; font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif; font-size: 16px; font-weight: 700; color: #F7EAE0; text-decoration: none; letter-spacing: 0.3px;">Confirm email address</a>
             </td>
         </tr>
     </table>

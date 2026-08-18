@@ -7,16 +7,26 @@ use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Support\Str;
 use PhpOffice\PhpWord\IOFactory;
 use PhpOffice\PhpWord\PhpWord;
+use PhpOffice\PhpWord\Settings;
 use PhpOffice\PhpWord\SimpleType\NumberFormat;
 
 class DocumentExportService
 {
     /**
      * Generate a Word document from markdown content.
+     *
+     * @param  array<int, array{title: string, content: string}>  $annexes
      */
-    public function toWord(string $markdown, string $title): string
+    public function toWord(string $markdown, string $title, array $annexes = []): string
     {
         $markdown = $this->extractDocument($markdown);
+        $markdown = $this->appendAnnexes($markdown, $annexes);
+
+        // PhpWord writes text nodes raw by default, so an ampersand (or <, >)
+        // in the drafted body would reach word/document.xml unescaped and make
+        // the whole document invalid XML. Escaping keeps every text run
+        // well-formed no matter what the model put in the letter.
+        Settings::setOutputEscapingEnabled(true);
 
         $phpWord = new PhpWord;
 
@@ -78,10 +88,12 @@ class DocumentExportService
 
     /**
      * Generate a PDF from markdown content.
+     *
+     * @param  array<int, array{title: string, content: string}>  $annexes
      */
-    public function toPdf(string $markdown, string $title): string
+    public function toPdf(string $markdown, string $title, array $annexes = []): string
     {
-        $pdf = Pdf::loadHTML($this->toPdfHtml($markdown, $title));
+        $pdf = Pdf::loadHTML($this->toPdfHtml($markdown, $title, $annexes));
         $pdf->setPaper('a4');
 
         $tempFile = tempnam(sys_get_temp_dir(), 'saligan_pdf_');
@@ -92,10 +104,13 @@ class DocumentExportService
 
     /**
      * The full HTML document sent to the PDF renderer.
+     *
+     * @param  array<int, array{title: string, content: string}>  $annexes
      */
-    public function toPdfHtml(string $markdown, string $title): string
+    public function toPdfHtml(string $markdown, string $title, array $annexes = []): string
     {
         $markdown = $this->extractDocument($markdown);
+        $markdown = $this->appendAnnexes($markdown, $annexes);
 
         $html = $this->markdownToHtml($markdown);
 
@@ -124,6 +139,48 @@ class DocumentExportService
 </body>
 </html>
 HTML;
+    }
+
+    /**
+     * Append the cited evidence documents as annexes after the extracted
+     * document body. Each annex is headed by its original filename and carries
+     * the full extracted text of the document, so the exported Word/PDF
+     * contains the evidence the letter relied on rather than only a reference
+     * to it. Annexes are joined to the letter by a horizontal rule and are not
+     * part of the marked document itself.
+     *
+     * @param  array<int, array{title: string, content: string}>  $annexes
+     */
+    protected function appendAnnexes(string $body, array $annexes): string
+    {
+        if ($annexes === []) {
+            return $body;
+        }
+
+        $blocks = [];
+
+        foreach ($annexes as $index => $annex) {
+            $title = trim((string) ($annex['title'] ?? ''));
+            $content = trim((string) ($annex['content'] ?? ''));
+
+            if ($content === '') {
+                continue;
+            }
+
+            $letter = chr(65 + ($index % 26));
+            $label = $letter.(intdiv($index, 26) > 0 ? (string) (intdiv($index, 26) + 1) : '');
+
+            $blocks[] = "### ANNEX {$label} — ".($title === '' ? "Annex {$label}" : $title)
+                ."\n\n".$content;
+        }
+
+        if ($blocks === []) {
+            return $body;
+        }
+
+        return trim($body)
+            ."\n\nx--------x\n\n"
+            .implode("\n\nx--------x\n\n", $blocks);
     }
 
     /**
@@ -259,6 +316,7 @@ HTML;
         $cleaned = $this->stripPreamble((string) $cleaned);
         $cleaned = $this->normalizeDatePlaceholders((string) $cleaned);
         $cleaned = $this->stripBracketPlaceholderLines((string) $cleaned);
+        $cleaned = $this->stripCitationTokens((string) $cleaned);
         $cleaned = $this->stripTrailingMarkdownArtifacts((string) $cleaned);
         $cleaned = self::normalizeCurrency((string) $cleaned);
         $cleaned = preg_replace('/\n{3,}/', "\n\n", (string) $cleaned);
@@ -545,6 +603,27 @@ HTML;
         }
 
         return implode("\n", $out);
+    }
+
+    /**
+     * Remove inline citation tokens from the exported body: [SRC K3F9],
+     * [DOC 197M], [Web 2], and the legacy [Source N] / [User Doc N] markers.
+     * They are chat-layer references — the app renders them as badges and
+     * source cards — and have no place inside a downloaded Word or PDF letter,
+     * where they would print as raw codes the reader cannot resolve.
+     *
+     * Whitespace is handled by context so the surrounding sentence stays
+     * intact: a token sandwiched between two words keeps one space ("a
+     * [DOC X] b" → "a b"), while a token against punctuation or a boundary
+     * takes its gap with it ("a [DOC X]." → "a.", "[DOC X]b" → "b").
+     */
+    protected function stripCitationTokens(string $body): string
+    {
+        return (string) preg_replace_callback(
+            '/([ \t]?)\[(SRC|DOC|Web|Source|User\s+Doc)\s+[A-Z0-9]+\]([ \t]*)/i',
+            fn (array $match): string => $match[1] !== '' && $match[3] !== '' ? ' ' : '',
+            $body,
+        );
     }
 
     /**

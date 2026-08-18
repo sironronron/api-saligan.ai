@@ -1,9 +1,13 @@
 <?php
 
 use App\Http\Controllers\Api\Admin\CrawledPageController;
+use App\Http\Controllers\Api\Admin\LawyerController;
+use App\Http\Controllers\Api\Admin\LawyerPayoutController;
 use App\Http\Controllers\Api\Admin\LegalDocumentController;
 use App\Http\Controllers\Api\Admin\LegalSourceController;
 use App\Http\Controllers\Api\Admin\SystemPromptController;
+use App\Http\Controllers\Api\Admin\VettingReportsController;
+use App\Http\Controllers\Api\Admin\VettingSettingsController;
 use App\Http\Controllers\Api\AdvisoryController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CaseAssigneeController;
@@ -17,21 +21,32 @@ use App\Http\Controllers\Api\FeedbackController;
 use App\Http\Controllers\Api\GeneratedDocumentController;
 use App\Http\Controllers\Api\KycController;
 use App\Http\Controllers\Api\LabelController;
+use App\Http\Controllers\Api\LawyerProfileController;
+use App\Http\Controllers\Api\LawyerVettingRequestController;
 use App\Http\Controllers\Api\LegalCaseController;
 use App\Http\Controllers\Api\LegalPageController;
+use App\Http\Controllers\Api\NotarialJournalController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\OrganizationController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\SubscriptionController;
+use App\Http\Controllers\Api\SubtaskController;
+use App\Http\Controllers\Api\TaskActivityController;
+use App\Http\Controllers\Api\TaskAttachmentController;
+use App\Http\Controllers\Api\TaskCommentController;
 use App\Http\Controllers\Api\TemplateController;
 use App\Http\Controllers\Api\TermsController;
 use App\Http\Controllers\Api\TodoController;
 use App\Http\Controllers\Api\TourController;
 use App\Http\Controllers\Api\TrialCodeController;
+use App\Http\Controllers\Api\VettingRequestController;
+use App\Http\Controllers\Api\VettingWebhookController;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/subscriptions/webhook', [SubscriptionController::class, 'webhook']);
 Route::post('/subscriptions/webhook/lemonsqueezy', [SubscriptionController::class, 'lemonsqueezyWebhook']);
+
+Route::post('/vetting/webhook', [VettingWebhookController::class, 'payments']);
 
 Route::get('/plans', [PlanController::class, 'index']);
 
@@ -125,7 +140,34 @@ Route::middleware(['auth:supabase', 'track_last_used', 'not_suspended'])->group(
     Route::get('/invitations/pending', [OrganizationController::class, 'pendingInvitations']);
     Route::post('/invitations/{invitation}/accept', [OrganizationController::class, 'acceptInvitation']);
 
+    // The lawyer side of the platform lives outside active_subscription: a
+    // lawyer serves requests on a verified profile, not on a plan.
+    Route::get('/lawyer/profile', [LawyerProfileController::class, 'show']);
+    Route::post('/lawyer/profile', [LawyerProfileController::class, 'store']);
+    Route::patch('/lawyer/profile', [LawyerProfileController::class, 'update']);
+    Route::patch('/lawyer/profile/availability', [LawyerProfileController::class, 'availability']);
+
+    Route::get('/lawyer/vetting-requests', [LawyerVettingRequestController::class, 'index']);
+    Route::get('/lawyer/vetting-requests/{vettingRequest}', [LawyerVettingRequestController::class, 'show']);
+    Route::post('/lawyer/vetting-requests/{vettingRequest}/accept', [LawyerVettingRequestController::class, 'accept']);
+    Route::post('/lawyer/vetting-requests/{vettingRequest}/decline', [LawyerVettingRequestController::class, 'decline']);
+    Route::patch('/lawyer/vetting-requests/{vettingRequest}/status', [LawyerVettingRequestController::class, 'markStatus']);
+    Route::post('/lawyer/vetting-requests/{vettingRequest}/schedule', [LawyerVettingRequestController::class, 'schedule']);
+    Route::post('/lawyer/vetting-requests/{vettingRequest}/notarize', [LawyerVettingRequestController::class, 'notarize']);
+
+    // The notarial journal is the lawyer's own legal register; admins may read
+    // any lawyer's entries for audit.
+    Route::get('/lawyer/journal', [NotarialJournalController::class, 'index']);
+
+    // The clarification thread and the full document are shared between the
+    // submitter and the lawyer who holds the request, so both are reachable
+    // without an active plan.
+    Route::get('/vetting-requests/{vettingRequest}/messages', [VettingRequestController::class, 'messages']);
+    Route::post('/vetting-requests/{vettingRequest}/messages', [VettingRequestController::class, 'sendMessage']);
+    Route::get('/vetting-requests/{vettingRequest}/file', [VettingRequestController::class, 'file']);
+
     Route::middleware(['active_subscription', 'terms.accepted'])->group(function (): void {
+        Route::post('/labels/reorder', [LabelController::class, 'reorder']);
         Route::apiResource('labels', LabelController::class)->only(['index', 'store', 'update', 'destroy']);
 
         Route::apiResource('documents', DocumentController::class);
@@ -135,6 +177,7 @@ Route::middleware(['auth:supabase', 'track_last_used', 'not_suspended'])->group(
         Route::get('/documents/{document}/content', [DocumentController::class, 'content']);
 
         Route::get('/generated-documents', [GeneratedDocumentController::class, 'index']);
+        Route::get('/generated-documents/{message}', [GeneratedDocumentController::class, 'show']);
 
         Route::apiResource('conversations', ConversationController::class);
         Route::post('/conversations/{conversation}/messages', [ChatController::class, 'store']);
@@ -146,6 +189,11 @@ Route::middleware(['auth:supabase', 'track_last_used', 'not_suspended'])->group(
 
         Route::apiResource('todos', TodoController::class)->only(['index', 'store', 'update', 'destroy']);
         Route::post('/todos/reorder', [TodoController::class, 'reorder']);
+
+        Route::apiResource('todos.subtasks', SubtaskController::class)->except(['show']);
+        Route::apiResource('todos.comments', TaskCommentController::class)->except(['show', 'update']);
+        Route::get('/todos/{todo}/activities', [TaskActivityController::class, 'index']);
+        Route::apiResource('todos.attachments', TaskAttachmentController::class)->only(['index', 'store', 'destroy']);
 
         Route::apiResource('advisories', AdvisoryController::class)->only(['index', 'update', 'destroy']);
 
@@ -169,6 +217,15 @@ Route::middleware(['auth:supabase', 'track_last_used', 'not_suspended'])->group(
         Route::get('/cases/{case}/assignees/candidates', [CaseAssigneeController::class, 'candidates']);
         Route::post('/cases/{case}/assignees', [CaseAssigneeController::class, 'store']);
         Route::delete('/cases/{case}/assignees/{user}', [CaseAssigneeController::class, 'destroy']);
+
+        // The submitter-facing vetting flow. Creating a request requires an
+        // active plan; the summary/document of a created request stays
+        // readable here, and cancellation only works while unassigned.
+        Route::post('/vetting-requests', [VettingRequestController::class, 'store']);
+        Route::get('/vetting-requests', [VettingRequestController::class, 'index']);
+        Route::get('/vetting-requests/{vettingRequest}', [VettingRequestController::class, 'show']);
+        Route::post('/vetting-requests/{vettingRequest}/cancel', [VettingRequestController::class, 'cancel']);
+        Route::post('/vetting-requests/{vettingRequest}/retry', [VettingRequestController::class, 'retry']);
     });
 
     Route::prefix('admin')->middleware('is_admin')->group(function (): void {
@@ -182,5 +239,24 @@ Route::middleware(['auth:supabase', 'track_last_used', 'not_suspended'])->group(
         Route::get('/system-prompts', [SystemPromptController::class, 'index']);
         Route::post('/system-prompts', [SystemPromptController::class, 'store']);
         Route::post('/system-prompts/{systemPrompt}/activate', [SystemPromptController::class, 'activate']);
+
+        // The lawyer verification queue and the vetting marketplace controls.
+        Route::get('/lawyers', [LawyerController::class, 'index']);
+        Route::get('/lawyers/{lawyerProfile}', [LawyerController::class, 'show']);
+        Route::post('/lawyers/{lawyerProfile}/approve', [LawyerController::class, 'approve']);
+        Route::post('/lawyers/{lawyerProfile}/reject', [LawyerController::class, 'reject']);
+        Route::post('/lawyers/{lawyerProfile}/suspend', [LawyerController::class, 'suspend']);
+        Route::post('/lawyers/{lawyerProfile}/revoke', [LawyerController::class, 'revoke']);
+        Route::post('/lawyers/{lawyerProfile}/reopen', [LawyerController::class, 'reopen']);
+        Route::get('/lawyers/{lawyerProfile}/document/{kind}', [LawyerController::class, 'document']);
+
+        Route::get('/vetting/settings', [VettingSettingsController::class, 'show']);
+        Route::put('/vetting/settings', [VettingSettingsController::class, 'update']);
+
+        Route::get('/vetting/reports/summary', [VettingReportsController::class, 'summary']);
+        Route::get('/vetting/reports/lawyers', [VettingReportsController::class, 'lawyers']);
+
+        Route::get('/lawyer-payouts', [LawyerPayoutController::class, 'index']);
+        Route::post('/lawyer-payouts/{lawyerPayout}/mark-paid', [LawyerPayoutController::class, 'markPaid']);
     });
 });

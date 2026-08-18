@@ -115,4 +115,22 @@ return [
         'name' => env('MAIL_FROM_NAME', env('APP_NAME', 'Laravel')),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Markdown Mail Settings
+    |--------------------------------------------------------------------------
+    |
+    | The theme used when rendering notification emails through Laravel's
+    | markdown mail system. The theme is published at
+    | `resources/views/vendor/mail/html/themes/{theme}.css`.
+    |
+    */
+
+    'markdown' => [
+        'theme' => 'batayan',
+        'paths' => [
+            resource_path('views/vendor/mail'),
+        ],
+    ],
+
 ];

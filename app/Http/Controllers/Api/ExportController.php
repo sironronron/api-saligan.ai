@@ -3,10 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Document;
 use App\Models\Message;
 use App\Models\Template;
 use App\Services\Export\DocumentExportService;
 use App\Services\Export\TemplateDocumentExportService;
+use App\Support\MessageSources;
 use App\Support\PlanFeatures;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -43,7 +45,7 @@ class ExportController extends Controller
             return $this->streamFile($tempFile, $filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
         }
 
-        $tempFile = $this->exportService->toWord($message->content, $title);
+        $tempFile = $this->exportService->toWord($message->content, $title, $this->citedDocumentAnnexes($message));
         $filename = $this->sanitizeFilename($title).'.docx';
 
         return $this->streamFile($tempFile, $filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
@@ -72,7 +74,7 @@ class ExportController extends Controller
             return $this->streamFile($tempFile, $filename, 'application/pdf');
         }
 
-        $tempFile = $this->exportService->toPdf($message->content, $title);
+        $tempFile = $this->exportService->toPdf($message->content, $title, $this->citedDocumentAnnexes($message));
         $filename = $this->sanitizeFilename($title).'.pdf';
 
         return $this->streamFile($tempFile, $filename, 'application/pdf');
@@ -99,6 +101,51 @@ class ExportController extends Controller
     protected function deriveTitle(Message $message): string
     {
         return $this->exportService->deriveTitle((string) $message->content);
+    }
+
+    /**
+     * The full text of the uploaded documents the drafted letter actually
+     * cited with a [DOC <token>] marker, ready to be annexed to the exported
+     * file. Only the documents the model grounded the letter in are attached;
+     * the rest of the retrieved set is context, not evidence. Each annex is
+     * titled with the document's original filename so the reader can match it
+     * to the letter's reference.
+     *
+     * @return array<int, array{title: string, content: string}>
+     */
+    protected function citedDocumentAnnexes(Message $message): array
+    {
+        $documentIds = collect(MessageSources::for($message))
+            ->filter(fn (array $source): bool => ($source['type'] ?? null) === 'document')
+            ->pluck('document_id')
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($documentIds === []) {
+            return [];
+        }
+
+        $annexes = [];
+
+        foreach (Document::query()
+            ->whereIn('id', $documentIds)
+            ->with(['chunks' => fn ($query) => $query->orderBy('chunk_index')])
+            ->get() as $document) {
+            $content = $document->chunks->pluck('content')->implode("\n\n");
+
+            if (trim($content) === '') {
+                continue;
+            }
+
+            $annexes[] = [
+                'title' => $document->original_filename ?: ($document->title ?: 'Annex'),
+                'content' => $content,
+            ];
+        }
+
+        return $annexes;
     }
 
     protected function sanitizeFilename(string $name): string

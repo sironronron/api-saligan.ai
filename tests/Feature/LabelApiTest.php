@@ -218,3 +218,46 @@ it('rejects a name that produces no slug', function () {
         ->assertStatus(422)
         ->assertJsonValidationErrors('name');
 });
+
+it('reorders the owner\'s custom labels behind the system vocabulary', function () {
+    (new LabelSeeder)->run();
+
+    $first = Label::factory()->forOrganization($this->organization, $this->owner)->create(['name' => 'Alpha']);
+    $second = Label::factory()->forOrganization($this->organization, $this->owner)->create(['name' => 'Beta']);
+    $third = Label::factory()->forOrganization($this->organization, $this->owner)->create(['name' => 'Gamma']);
+
+    $this->signInAs($this->owner)
+        ->postJson('/api/labels/reorder', [
+            'ordered_ids' => [$third->id, $first->id, $second->id],
+        ])
+        ->assertOk();
+
+    $systemIds = Label::query()
+        ->where('kind', LabelKind::DocumentCategory)
+        ->whereNull('organization_id')
+        ->whereNull('user_id')
+        ->orderBy('position')
+        ->pluck('id')
+        ->all();
+
+    $order = Label::query()
+        ->where('kind', LabelKind::DocumentCategory)
+        ->orderBy('position')
+        ->pluck('id')
+        ->all();
+
+    expect($order)->toBe([...$systemIds, $third->id, $first->id, $second->id]);
+});
+
+it('leaves shared labels in place when a member tries to reorder them', function () {
+    $first = Label::factory()->forOrganization($this->organization, $this->owner)->create(['name' => 'Alpha']);
+    $second = Label::factory()->forOrganization($this->organization, $this->owner)->create(['name' => 'Beta']);
+
+    $this->signInAs($this->member)
+        ->postJson('/api/labels/reorder', [
+            'ordered_ids' => [$second->id, $first->id],
+        ])
+        ->assertOk();
+
+    expect($first->fresh()->position)->toBe($second->fresh()->position);
+});

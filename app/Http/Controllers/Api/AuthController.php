@@ -74,7 +74,7 @@ class AuthController extends Controller
      */
     public function user(Request $request): JsonResource
     {
-        return new UserResource($request->user());
+        return new UserResource($request->user()->loadMissing('lawyerProfile'));
     }
 
     /**

@@ -104,6 +104,7 @@ return [
         'gemini_model' => env('GEMINI_CHAT_MODEL', 'gemini-3.6-flash'),
         'openai_model' => env('OPENAI_CHAT_MODEL', 'gpt-4o'),
         'anthropic_model' => env('ANTHROPIC_CHAT_MODEL', 'claude-sonnet-5'),
+        'meta_model' => env('META_CHAT_MODEL', 'muse-spark-1.1'),
 
         /*
          * The Anthropic model served to plans without the `frontier_model`
@@ -327,7 +328,7 @@ return [
 
         'ocr' => [
             'provider' => env('DOCUMENT_OCR_PROVIDER', 'gemini'),
-            'model' => env('DOCUMENT_OCR_MODEL', env('GEMINI_CHAT_MODEL', 'gemini-3.6-flash')),
+            'model' => env('DOCUMENT_OCR_MODEL', env('GEMINI_CHAT_MODEL', 'gemini-3.7-flash')),
         ],
 
         /*

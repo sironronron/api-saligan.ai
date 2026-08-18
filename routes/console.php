@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Foundation\Inspiring;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
 
@@ -66,5 +67,13 @@ Schedule::command('saligan:digest-collect')
 // cannot cross the lead window more than once unless it is moved.
 Schedule::command('deadlines:remind')
     ->dailyAt('01:00')
+    ->withoutOverlapping()
+    ->onOneServer();
+
+// Weekly notarization payouts aggregate the previous week's captured fees into
+// per-lawyer payout rows for the admin to disburse. Monday 06:00 UTC (14:00
+// Manila) leaves the weekend's notarizations captured and in the same batch.
+Schedule::command('vetting:payouts-generate')
+    ->weeklyOn(Carbon::MONDAY, '06:00')
     ->withoutOverlapping()
     ->onOneServer();

@@ -194,7 +194,7 @@ class ChatService
             'conversation_id' => $conversation->id,
             'case_id' => $case?->id,
             'template' => $template?->id,
-            'provider' => $provider->value,
+            'provider' => $provider instanceof Lab ? $provider->value : $provider,
             'model' => $model,
             'retrieval_empty' => $retrieval->isEmpty(),
             'uses_web_search' => $usesWebSearch,
@@ -298,7 +298,7 @@ class ChatService
         Conversation $conversation,
         StreamedAgentResponse $response,
         RetrievalResult $retrieval,
-        Lab $provider,
+        Lab|string $provider,
         string $assistantMessageId,
         bool $exportRequested,
         string $prompt,
@@ -548,7 +548,7 @@ PROMPT;
      *                                    land before the closing guard, which
      *                                    must stay the last line of the prompt.
      */
-    protected function buildInstructions(RetrievalResult $retrieval, Lab $provider, bool $exportRequested, ?LegalCase $case = null, ?Template $template = null, ?array $legalTemplate = null, ?string $staticInstructions = null, ?User $user = null, ?Template $verbatimTemplate = null, ?string $turnNotices = null): string
+    protected function buildInstructions(RetrievalResult $retrieval, Lab|string $provider, bool $exportRequested, ?LegalCase $case = null, ?Template $template = null, ?array $legalTemplate = null, ?string $staticInstructions = null, ?User $user = null, ?Template $verbatimTemplate = null, ?string $turnNotices = null): string
     {
         $instructions = ($staticInstructions ?? $this->staticInstructions())
             ."\n\n".$this->exportInstructions($exportRequested)
@@ -1651,7 +1651,7 @@ PROMPT;
      * web search natively; all three map the shared WebSearch tool, so the
      * same tool is offered for each.
      */
-    protected function supportsWebSearch(Lab $provider): bool
+    protected function supportsWebSearch(Lab|string $provider): bool
     {
         return in_array($provider, [Lab::Gemini, Lab::OpenAI, Lab::Anthropic], true);
     }
@@ -1668,7 +1668,7 @@ PROMPT;
      * to stay in step: a model told it can search but given no tool to search
      * with says it is searching and then answers from nothing.
      */
-    protected function offersWebSearch(Lab $provider, ?User $user = null): bool
+    protected function offersWebSearch(Lab|string $provider, ?User $user = null): bool
     {
         if ($user !== null && ! PlanFeatures::has($user, PlanFeatures::WEB_SEARCH)) {
             return false;
@@ -1743,11 +1743,21 @@ PROMPT;
     }
 
     /**
-     * @return array{0: Lab, 1: string}
+     * The provider and model to answer a chat turn with.
+     *
+     * Driven by the deployment default (AI_CHAT_PROVIDER), never by the value
+     * stored on the conversation row. The stored provider is a record of the
+     * provider the conversation was originally served by — useful for labeling
+     * past messages, but it must not silently pin a conversation to a provider
+     * the deployment no longer uses (rows created before a provider existed
+     * fell back to Ollama). Following the config default keeps an existing
+     * conversation on the provider actually configured to serve it.
+     *
+     * @return array{0: Lab|string, 1: string}
      */
     protected function resolveProvider(Conversation $conversation): array
     {
-        return match ($conversation->provider) {
+        return match (ChatProvider::fromConfig()) {
             ChatProvider::Anthropic => $this->anthropicConfigured()
                 ? [Lab::Anthropic, $this->anthropicModelFor($conversation)]
                 : [Lab::Gemini, config('saligan.chat.gemini_model')],
@@ -1756,6 +1766,9 @@ PROMPT;
                 : [Lab::Ollama, config('saligan.chat.ollama_model')],
             ChatProvider::OpenAI => $this->openaiConfigured()
                 ? [Lab::OpenAI, config('saligan.chat.openai_model')]
+                : [Lab::Ollama, config('saligan.chat.ollama_model')],
+            ChatProvider::Meta => $this->metaConfigured()
+                ? ['meta', config('saligan.chat.meta_model')]
                 : [Lab::Ollama, config('saligan.chat.ollama_model')],
             default => [Lab::Ollama, config('saligan.chat.ollama_model')],
         };
@@ -1834,6 +1847,15 @@ PROMPT;
     protected function openaiConfigured(): bool
     {
         return filled(config('ai.providers.openai.key'));
+    }
+
+    /**
+     * Whether a Meta Model API key is configured; conversations stored as Meta
+     * gracefully fall back to Ollama when it is not.
+     */
+    protected function metaConfigured(): bool
+    {
+        return filled(config('ai.providers.meta.key'));
     }
 
     /**
@@ -2182,7 +2204,7 @@ PROMPT;
         Conversation $conversation,
         StreamedAgentResponse $response,
         RetrievalResult $retrieval,
-        Lab $provider,
+        Lab|string $provider,
         string $assistantMessageId,
         bool $appendExportLinks = false,
         bool $isIntakeSubmission = false,
@@ -2335,6 +2357,7 @@ PROMPT;
                 Lab::Gemini => ChatProvider::Gemini,
                 Lab::OpenAI => ChatProvider::OpenAI,
                 Lab::Anthropic => ChatProvider::Anthropic,
+                'meta' => ChatProvider::Meta,
                 default => ChatProvider::Ollama,
             },
             'cited_chunk_ids' => $retrieval->documentChunkIds(),

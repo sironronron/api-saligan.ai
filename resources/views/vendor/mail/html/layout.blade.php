@@ -8,35 +8,36 @@
 <meta name="supported-color-schemes" content="light">
 <style>
 @media only screen and (max-width: 600px) {
-.inner-body {
-width: 100% !important;
+    .content { width: 100% !important; }
+    .inner-body { width: 100% !important; }
+    .footer { width: 100% !important; }
+    .content-cell { padding: 24px 20px !important; }
+    .header { padding: 28px 20px !important; }
 }
-
-.footer {
-width: 100% !important;
-}
-}
-
 @media only screen and (max-width: 500px) {
-.button {
-width: 100% !important;
-}
+    .button { width: 100% !important; }
 }
 </style>
 {!! $head ?? '' !!}
 </head>
-<body>
+<body style="margin: 0; padding: 0; background-color: #F7EAE0;">
 
-<table class="wrapper" width="100%" cellpadding="0" cellspacing="0" role="presentation">
+<table class="wrapper" width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background-color: #F7EAE0; padding: 32px 0;">
 <tr>
 <td align="center">
-<table class="content" width="100%" cellpadding="0" cellspacing="0" role="presentation">
+
+<table class="content" width="600" cellpadding="0" cellspacing="0" role="presentation" style="width: 600px; max-width: 600px; border-collapse: collapse;">
 {!! $header ?? '' !!}
 
-<!-- Email Body -->
+<!-- Peach accent bar -->
 <tr>
-<td class="body" width="100%" cellpadding="0" cellspacing="0" style="border: hidden !important;">
-<table class="inner-body" align="center" width="570" cellpadding="0" cellspacing="0" role="presentation">
+<td style="background-color: #F9D2BA; height: 6px; font-size: 0; line-height: 0;">&nbsp;</td>
+</tr>
+
+<!-- Body card -->
+<tr>
+<td class="body" width="100%" cellpadding="0" cellspacing="0" style="background-color: #FCEADE; border-left: 1px solid #E5BA9A; border-right: 1px solid #E5BA9A;">
+<table class="inner-body" align="center" width="570" cellpadding="0" cellspacing="0" role="presentation" style="width: 570px; max-width: 570px; background-color: #FCEADE;">
 <!-- Body content -->
 <tr>
 <td class="content-cell">

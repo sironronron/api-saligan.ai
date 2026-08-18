@@ -245,5 +245,5 @@ it('names the deadline and its state in the subject line', function () {
 
     expect((new DeadlineReminderMail($case, 3))->envelope()->subject)->toBe('Case "Doe v. Santos" is due in 3 days')
         ->and((new DeadlineReminderMail($case, 0))->envelope()->subject)->toBe('Case "Doe v. Santos" is due today')
-        ->and((new DeadlineReminderMail($todo, -2))->envelope()->subject)->toBe('Task "File the complaint" is 2 days overdue');
+        ->and((new DeadlineReminderMail($todo, -2))->envelope()->subject)->toBe('Task due date is coming');
 });

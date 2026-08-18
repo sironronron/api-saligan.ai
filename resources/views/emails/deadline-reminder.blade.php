@@ -45,7 +45,9 @@
 <div style="padding: 40px 40px 8px 40px;">
 
     <h1 style="margin: 0 0 16px 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-size: 26px; font-weight: 700; color: #1D4533; line-height: 1.3;">
-        @if ($overdue)
+        @if ($kind === 'task')
+            Task due date is coming
+        @elseif ($overdue)
             <span style="color: #5E3122;">"{{ $title }}"</span> is {{ $absDays }} {{ Str::plural('day', $absDays) }} overdue
         @elseif ($days === 0)
             <span style="color: #5E3122;">"{{ $title }}"</span> is due today
@@ -55,15 +57,16 @@
     </h1>
 
     <p class="email-copy" style="margin: 0 0 16px 0; font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif; font-size: 16px; line-height: 1.65; color: #5E3122;">
-        @if ($kind === 'case')
+        @if ($kind === 'task')
+            Your task <strong style="color: #1D4533;">{{ $title }}</strong>
+            is due on <strong style="color: #1D4533;">{{ $dueDate?->format('j F Y') }}</strong>.
+        @else
             Your case <strong style="color: #1D4533;">"{{ $title }}"</strong>
-        @else
-            Your task <strong style="color: #1D4533;">"{{ $title }}"</strong>
-        @endif
-        @if ($overdue)
-            had a deadline of <strong style="color: #1D4533;">{{ $dueDate?->format('j F Y') }}</strong>, which has passed.
-        @else
-            has a deadline of <strong style="color: #1D4533;">{{ $dueDate?->format('j F Y') }}</strong>.
+            @if ($overdue)
+                had a deadline of <strong style="color: #1D4533;">{{ $dueDate?->format('j F Y') }}</strong>, which has passed.
+            @else
+                has a deadline of <strong style="color: #1D4533;">{{ $dueDate?->format('j F Y') }}</strong>.
+            @endif
         @endif
     </p>
 

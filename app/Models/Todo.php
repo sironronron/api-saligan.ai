@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Todo extends Model
 {
@@ -54,5 +55,25 @@ class Todo extends Model
     public function conversation(): BelongsTo
     {
         return $this->belongsTo(Conversation::class);
+    }
+
+    public function subtasks(): HasMany
+    {
+        return $this->hasMany(Subtask::class)->orderBy('order');
+    }
+
+    public function comments(): HasMany
+    {
+        return $this->hasMany(TaskComment::class)->latest();
+    }
+
+    public function activities(): HasMany
+    {
+        return $this->hasMany(TaskActivity::class)->latest();
+    }
+
+    public function attachments(): HasMany
+    {
+        return $this->hasMany(TaskAttachment::class);
     }
 }

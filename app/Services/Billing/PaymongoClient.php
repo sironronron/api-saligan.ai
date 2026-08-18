@@ -171,6 +171,18 @@ class PaymongoClient
     }
 
     /**
+     * Retrieve a payment by its PayMongo id (e.g. `pay_...`).
+     *
+     * @see https://docs.paymongo.com/reference/retrieve-a-payment
+     */
+    public function retrievePayment(string $paymentId): array
+    {
+        $response = $this->client()->get("/v1/payments/{$paymentId}");
+
+        return $response->throw()->json('data');
+    }
+
+    /**
      * Retrieve a payment intent (used to reflect the first-payment status).
      */
     public function retrievePaymentIntent(string $paymentIntentId): array
@@ -218,6 +230,104 @@ class PaymongoClient
         ]);
 
         return $response->throw()->json('data');
+    }
+
+    /**
+     * Create a single-use Payment Intent for a one-off charge.
+     *
+     * `captureType` controls when funds move. `manual` only authorizes the
+     * amount when the buyer pays; the merchant captures it later — the model
+     * used for notarization, where the lawyer is not paid for a session that
+     * never happens. `automatic` captures immediately.
+     *
+     * @see https://docs.paymongo.com/reference/create-a-payment-intent
+     */
+    public function createPaymentIntent(
+        int $amount,
+        string $description,
+        array $metadata = [],
+        string $captureType = 'manual',
+        array $paymentMethodAllowed = ['card', 'paymaya'],
+    ): array {
+        $response = $this->client()->post('/v1/payment_intents', [
+            'data' => [
+                'attributes' => [
+                    'amount' => $amount,
+                    'currency' => 'PHP',
+                    'description' => $description,
+                    'statement_descriptor' => 'BATAYAN',
+                    'payment_method_allowed' => $paymentMethodAllowed,
+                    'capture_type' => $captureType,
+                    'metadata' => $metadata,
+                ],
+            ],
+        ]);
+
+        return $response->throw()->json('data');
+    }
+
+    /**
+     * Capture a manually-authorized payment intent, moving the held funds.
+     *
+     * PayMongo rejects a capture whose `attributes` object is empty (the
+     * amount is required), so the caller must supply the amount to capture.
+     * Passing the intent's own amount performs a full capture.
+     *
+     * @see https://docs.paymongo.com/reference/capture-a-payment-intent
+     */
+    public function capturePaymentIntent(string $paymentIntentId, int $amount): array
+    {
+        $response = $this->client()->post("/v1/payment_intents/{$paymentIntentId}/capture", [
+            'data' => [
+                'attributes' => ['amount' => $amount],
+            ],
+        ]);
+
+        return $response->throw()->json('data');
+    }
+
+    /**
+     * Refund a captured payment intent. The amount defaults to the full
+     * payment when omitted.
+     *
+     * @see https://docs.paymongo.com/reference/refund-a-payment-intent
+     */
+    public function refundPaymentIntent(string $paymentIntentId, ?int $amount = null, ?string $reason = null): array
+    {
+        $attributes = [
+            'amount' => $amount ?? $this->paymentIntentAmount($paymentIntentId),
+            'reason' => $reason ?? 'requested_by_customer',
+        ];
+
+        $response = $this->client()->post("/v1/payment_intents/{$paymentIntentId}/refunds", [
+            'data' => [
+                'attributes' => $attributes,
+            ],
+        ]);
+
+        return $response->throw()->json('data');
+    }
+
+    /**
+     * Cancel a payment intent that was never captured, releasing the hold.
+     *
+     * @see https://docs.paymongo.com/reference/cancel-a-payment-intent
+     */
+    public function cancelPaymentIntent(string $paymentIntentId): array
+    {
+        $response = $this->client()->post("/v1/payment_intents/{$paymentIntentId}/cancel");
+
+        return $response->throw()->json('data');
+    }
+
+    /**
+     * The total amount of a payment intent, in centavos.
+     */
+    public function paymentIntentAmount(string $paymentIntentId): int
+    {
+        $intent = $this->retrievePaymentIntent($paymentIntentId);
+
+        return (int) ($intent['attributes']['amount'] ?? 0);
     }
 
     /**
