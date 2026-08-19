@@ -90,7 +90,11 @@ class ProcessLegalDocumentUpload implements ShouldQueue
         try {
             $text = $this->isImage($mimeType)
                 ? $ocr->extract($copy->path, $mimeType)
-                : $extractor->extract($copy->path, $mimeType);
+                // Markdown, not flat text: these chunks are what the citation
+                // reader shows, and a source is far easier to read — and to
+                // find a cited passage in — with its own headings and lists
+                // intact.
+                : $extractor->extractMarkdown($copy->path, $mimeType);
 
             // A scanned PDF has no text layer, so the parser returns nothing.
             // The pages are images, which is exactly what the OCR model reads,

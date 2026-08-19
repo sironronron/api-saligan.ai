@@ -6,6 +6,7 @@ use App\Ai\WebResearchAgent;
 use App\Support\ChatStatus;
 use App\Support\WebCitationParser;
 use App\Support\WebSearchCollector;
+use App\Support\WebSearchTrail;
 use App\Support\WebSourceResolver;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\JsonSchema\Types\Type;
@@ -40,6 +41,20 @@ class WebSearchTool implements Tool
     protected int $searches = 0;
 
     /**
+     * Results already produced this turn, keyed by the provider's tool-call id
+     * and, separately, by the query itself.
+     *
+     * A search is a billed grounding request and several seconds of the user's
+     * wait. A provider retrying a call it thinks timed out, or a model
+     * re-issuing a query it already ran, must not pay for either again — and
+     * re-running a query mid-turn also renumbers nothing but does re-emit the
+     * trail, so the UI shows the same sites being read twice.
+     *
+     * @var array<string, string>
+     */
+    protected array $served = [];
+
+    /**
      * @param  WebSearchCollector  $citations  Per-turn record of the sources
      *                                         found, shared with the streaming
      *                                         and persistence paths.
@@ -47,6 +62,10 @@ class WebSearchTool implements Tool
      *                                                            model calls this tool, so
      *                                                            status reflects actual tool
      *                                                            execution.
+     * @param  (callable(array<string, mixed>): void)|null  $onTrail  Fired with each phase of
+     *                                                                the search, so the client
+     *                                                                can show which sites are
+     *                                                                being read while it runs.
      */
     public function __construct(
         private readonly WebSearchCollector $citations,
@@ -56,6 +75,7 @@ class WebSearchTool implements Tool
          * from the user's plan. Null falls back to the configured cap.
          */
         private readonly ?int $maxSearches = null,
+        private readonly mixed $onTrail = null,
     ) {}
 
     /**
@@ -93,10 +113,24 @@ class WebSearchTool implements Tool
      */
     public function handle(Request $request): string
     {
+        $callId = $request->toolCallId();
+
+        if ($callId !== null && isset($this->served[$callId])) {
+            return $this->served[$callId];
+        }
+
         $query = trim((string) $request->string('query'));
 
         if ($query === '') {
             return $this->respond(null, 'No query was given. Call this tool again with a specific legal question.');
+        }
+
+        // Same question, already answered this turn. The description forbids
+        // repeating a search; this is what makes it true.
+        $repeat = 'q:'.mb_strtolower((string) preg_replace('/\s+/u', ' ', $query));
+
+        if (isset($this->served[$repeat])) {
+            return $this->served[$repeat];
         }
 
         // Each search is a separate billed grounding request and a separate
@@ -110,6 +144,7 @@ class WebSearchTool implements Tool
         $this->searches++;
 
         $this->onStatus?->__invoke('searching_web', ChatStatus::label('searching_web', $query));
+        $this->trail(WebSearchTrail::start($query));
 
         try {
             $response = (new WebResearchAgent($this->maxResults()))->prompt(
@@ -127,6 +162,11 @@ class WebSearchTool implements Tool
                 'exception' => $e->getMessage(),
             ]);
 
+            // The trail must close on the failure path too: a list of sites
+            // left on screen under a finished answer reads as sources that
+            // were consulted, which is the opposite of what happened.
+            $this->trail(WebSearchTrail::failed('unavailable'));
+
             return $this->respond($query, 'The web search could not be completed. Answer from the retrieved context '
                 .'and say plainly that the web could not be checked.');
         }
@@ -137,6 +177,11 @@ class WebSearchTool implements Tool
             $this->maxResults(),
         );
 
+        // The hosts grounding came back with, before any of them has been
+        // fetched. This is the live half of the trail — the UI lists them as
+        // they arrive, then fills each row in below once it is identified.
+        $this->trail(WebSearchTrail::reading($found));
+
         // Grounding reports a redirect titled with a bare domain, which names
         // the publisher and not the authority. Resolving each source to the
         // page itself is what lets the model tell one result from another —
@@ -144,6 +189,9 @@ class WebSearchTool implements Tool
         // writing about, rather than that case.
         $sources = $this->citations->record(WebSourceResolver::resolve($found));
         $findings = trim((string) $response->text);
+
+        $this->trail(WebSearchTrail::read($sources));
+        $this->trail(WebSearchTrail::done(count($sources)));
 
         Log::info('Delegated web search completed', [
             'query' => $query,
@@ -154,12 +202,12 @@ class WebSearchTool implements Tool
         ]);
 
         if ($sources === []) {
-            return $this->respond($query, $findings === ''
+            return $this->remember($callId, $repeat, $this->respond($query, $findings === ''
                 ? 'The web search returned no usable sources. Do not cite the web for this point.'
-                : $findings.' — no citable source was returned, so do not cite the web for this point.');
+                : $findings.' — no citable source was returned, so do not cite the web for this point.'));
         }
 
-        return $this->encode([
+        return $this->remember($callId, $repeat, $this->encode([
             'query' => $query,
             'findings' => $findings,
             'sources' => array_map(fn (array $source): array => [
@@ -167,7 +215,30 @@ class WebSearchTool implements Tool
                 'title' => $source['title'],
                 'url' => $source['url'],
             ], $sources),
-        ]);
+        ]));
+    }
+
+    /**
+     * Cache a search's result against both its tool-call id and its query, so
+     * neither a provider retry nor a repeated query runs a second search.
+     */
+    protected function remember(?string $callId, string $repeatKey, string $result): string
+    {
+        if ($callId !== null) {
+            $this->served[$callId] = $result;
+        }
+
+        $this->served[$repeatKey] = $result;
+
+        return $result;
+    }
+
+    /**
+     * Report one phase of the search to the caller, when it asked to be told.
+     */
+    protected function trail(array $frame): void
+    {
+        $this->onTrail?->__invoke($frame);
     }
 
     /**

@@ -44,6 +44,7 @@ use Illuminate\Support\Collection;
     'cancelled_at',
     'cancellation_reason',
     'metadata',
+    'letter_draft_message_id',
 ])]
 class VettingRequest extends Model
 {
@@ -97,6 +98,16 @@ class VettingRequest extends Model
     public function document(): BelongsTo
     {
         return $this->belongsTo(Document::class);
+    }
+
+    /**
+     * The letter draft this request was started from, when the submitter sent a
+     * Batayan-generated letter straight into vetting or notarization. Lets the
+     * same people who can open the request also comment on that draft.
+     */
+    public function letterDraftMessage(): BelongsTo
+    {
+        return $this->belongsTo(Message::class, 'letter_draft_message_id');
     }
 
     /**

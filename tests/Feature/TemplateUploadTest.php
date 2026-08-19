@@ -4,6 +4,8 @@ use App\Models\Organization;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\Template;
+use App\Services\Documents\DocumentEncryptor;
+use App\Services\Documents\StoredFiles;
 use App\Models\User;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
@@ -113,9 +115,17 @@ it('stores an uploaded docx verbatim and keeps the bracketed placeholders', func
         ->and($template->placeholder_fields)->toBe(['[Client Name]', '[Amount Due]'])
         ->and($template->mime_type)->toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 
-    // The stored file is byte-for-byte the original upload: never converted
-    // to markdown or plain text.
-    expect(Storage::get($template->original_path))->toBe(file_get_contents($path));
+    // The stored file is byte-for-byte the original upload once decrypted:
+    // never converted to markdown or plain text. The bytes on disk are
+    // ciphertext, which is the point — a template carries client particulars
+    // like any other upload.
+    expect(app(DocumentEncryptor::class)->isEncrypted($template->original_path))->toBeTrue();
+
+    $copy = app(StoredFiles::class)->localCopy($template->original_path);
+
+    expect(file_get_contents($copy->path))->toBe(file_get_contents($path));
+
+    $copy->discard();
 
     @unlink($path);
 });

@@ -39,7 +39,7 @@ function fakeChatServiceRecordingAttachments(): ChatService
 
         public function __construct() {}
 
-        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = []): StreamableAgentResponse
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = [], ?callable $onWebSearch = null): StreamableAgentResponse
         {
             self::$received = $attachmentIds;
 

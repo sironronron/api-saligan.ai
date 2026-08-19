@@ -140,6 +140,7 @@ class LegalCaseController extends Controller
             ->withCount('messages')
             ->withMax('messages as last_message_at', 'created_at')
             ->with('labels')
+            ->orderedByPinned()
             ->get();
 
         $activeConversation = $conversations

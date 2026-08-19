@@ -123,6 +123,7 @@ class PlanFactory extends Factory
                 PlanFeatures::FRONTIER_MODEL,
                 PlanFeatures::DEEP_RESEARCH,
                 PlanFeatures::DOCUMENT_INTELLIGENCE,
+                PlanFeatures::INTEGRATIONS,
             ],
         ]);
     }
@@ -153,6 +154,7 @@ class PlanFactory extends Factory
                 PlanFeatures::FRONTIER_MODEL,
                 PlanFeatures::DEEP_RESEARCH,
                 PlanFeatures::DOCUMENT_INTELLIGENCE,
+                PlanFeatures::INTEGRATIONS,
                 PlanFeatures::TEAMS,
                 PlanFeatures::SUPPORT_24_7,
             ],
@@ -187,6 +189,7 @@ class PlanFactory extends Factory
                 PlanFeatures::FRONTIER_MODEL,
                 PlanFeatures::DEEP_RESEARCH,
                 PlanFeatures::DOCUMENT_INTELLIGENCE,
+                PlanFeatures::INTEGRATIONS,
                 PlanFeatures::TEAMS,
                 PlanFeatures::GUIDED_SETUP,
                 PlanFeatures::TEAM_TRAINING,

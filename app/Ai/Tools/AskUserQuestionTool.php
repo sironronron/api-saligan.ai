@@ -2,6 +2,8 @@
 
 namespace App\Ai\Tools;
 
+use App\Support\ChoicePrompt;
+use App\Support\ToolResult;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\JsonSchema\Types\Type;
 use Laravel\Ai\Contracts\Tool;
@@ -78,16 +80,30 @@ class AskUserQuestionTool implements Tool
     {
         $this->onStatus?->__invoke('awaiting_choice');
 
-        $questions = $request->array('questions') ?? [];
+        // Normalized through the same code the client renders from, so the
+        // model reads back the question the user is actually looking at. A
+        // one-option "choice", a duplicated label, or a model-authored "Other"
+        // never reaches the screen — and a model told its raw arguments were
+        // accepted would write its next turn expecting options that were
+        // dropped on the way out.
+        $questions = ChoicePrompt::normalize($request->array('questions'));
 
-        return json_encode([
+        if ($questions === []) {
+            return ToolResult::none(
+                'No answerable question survived: a choice needs at least two distinct options, and "Other" is '
+                    .'always offered by the app rather than by you.',
+                'Nothing was put to the user. Do not wait for an answer. Either proceed with the course of action '
+                    .'you judge best and say why, or ask the question in your reply as plain prose.',
+            );
+        }
+
+        return ToolResult::ok([
             'status' => 'awaiting_user_choice',
+            'accepted' => count($questions),
             'questions' => $questions,
-            'directive' => 'The question has been put to the user and their answer is not available yet. '
-                .'Stop here — do not answer on their behalf, do not guess which option they will pick, and do not '
-                .'call this tool again. The user\'s selection arrives as the next message, prefixed '
-                .'"[Choice Selection]".',
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        ], directive: 'The question has been put to the user and their answer is not available yet. Stop here — '
+            .'do not answer on their behalf, do not guess which option they will pick, and do not call this tool '
+            .'again. The user\'s selection arrives as the next message, prefixed "[Choice Selection]".');
     }
 
     /**

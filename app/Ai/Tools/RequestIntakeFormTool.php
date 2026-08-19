@@ -2,6 +2,8 @@
 
 namespace App\Ai\Tools;
 
+use App\Support\DraftingIntent;
+use App\Support\ToolResult;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\JsonSchema\Types\Type;
 use Laravel\Ai\Contracts\Tool;
@@ -90,13 +92,29 @@ class RequestIntakeFormTool implements Tool
 
         $this->onStatus?->__invoke('gathering_facts');
 
-        $documentType = $request->string('document_type') ?? null;
-        $fields = $request->array('fields') ?? [];
+        $documentType = trim((string) $request->string('document_type')) ?: null;
 
-        return json_encode([
+        // Normalized before it goes anywhere. The controller shapes the form it
+        // actually renders, but this result is what the model reads back, and a
+        // model told its malformed field list was accepted verbatim will write
+        // the reply as though the user is about to be asked for it.
+        $fields = DraftingIntent::normalizeIntakeFields($request->array('fields'));
+
+        if ($fields === []) {
+            return ToolResult::none(
+                'No usable fields were supplied, so no form was opened.',
+                'No form was shown to the user. Do not tell them to fill anything in. Either draft from what you '
+                    .'already know, or ask for the specific missing facts in your reply.',
+            );
+        }
+
+        return ToolResult::ok([
             'document_type' => $documentType,
+            'accepted' => count($fields),
             'fields' => $fields,
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        ], directive: 'The form is open with these '.count($fields).' field(s). Stop here and wait — the user\'s '
+            .'answers arrive as the next message, prefixed "[Intake Form Submission]". Do not draft, do not guess '
+            .'the answers, and do not call this tool again.');
     }
 
     /**

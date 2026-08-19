@@ -14,14 +14,40 @@ use Illuminate\Support\Facades\URL;
     'name',
     'description',
     'website',
+    'integrations_connection_mode',
+    'integration_capability_policies',
 ])]
 class Organization extends Model
 {
     /** @use HasFactory<OrganizationFactory> */
     use HasFactory;
 
+    /** Each member connects their own add-on account. */
+    public const INTEGRATIONS_MODE_PER_SEAT = 'per_seat';
+
+    /** An admin connects once on behalf of the whole firm. */
+    public const INTEGRATIONS_MODE_FIRM_WIDE = 'firm_wide';
+
+    /** Org policy: the capability is always on for every member. */
+    public const CAPABILITY_POLICY_FORCED_ON = 'forced_on';
+
+    /** Org policy: the capability is off for every member. */
+    public const CAPABILITY_POLICY_FORCED_OFF = 'forced_off';
+
     /** How long a logo link stays good for. Long enough to survive a session. */
     public const LOGO_URL_TTL_DAYS = 7;
+
+    /**
+     * Get the attributes that should be cast.
+     *
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'integration_capability_policies' => 'array',
+        ];
+    }
 
     /**
      * A link the browser can put straight in an `<img src>`.
@@ -142,5 +168,51 @@ class Organization extends Model
     public function hasFreeSeat(): bool
     {
         return $this->freeSeats() > 0;
+    }
+
+    /**
+     * The firm-wide add-on connections an admin made on the organization's
+     * behalf, keyed by provider value.
+     *
+     * @return HasMany<Integration, $this>
+     */
+    public function integrations(): HasMany
+    {
+        return $this->hasMany(Integration::class);
+    }
+
+    /**
+     * Whether add-on connections are made once for the whole firm instead of
+     * per seat.
+     */
+    public function usesFirmWideIntegrations(): bool
+    {
+        return $this->integrations_connection_mode === self::INTEGRATIONS_MODE_FIRM_WIDE;
+    }
+
+    /**
+     * The org-wide policy for a capability, or null when each member chooses.
+     */
+    public function capabilityPolicy(string $capability): ?string
+    {
+        $policies = $this->integration_capability_policies ?? [];
+
+        return $policies[$capability] ?? null;
+    }
+
+    /**
+     * Whether the org forces a capability on for every member.
+     */
+    public function capabilityForcedOn(string $capability): bool
+    {
+        return $this->capabilityPolicy($capability) === self::CAPABILITY_POLICY_FORCED_ON;
+    }
+
+    /**
+     * Whether the org blocks a capability for every member.
+     */
+    public function capabilityForcedOff(string $capability): bool
+    {
+        return $this->capabilityPolicy($capability) === self::CAPABILITY_POLICY_FORCED_OFF;
     }
 }

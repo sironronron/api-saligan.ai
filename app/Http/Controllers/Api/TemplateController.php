@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\TemplateResource;
 use App\Models\Template;
 use App\Models\User;
+use App\Services\Documents\DocumentEncryptor;
 use App\Services\Documents\StoredFiles;
 use App\Services\Documents\TextExtractor;
 use App\Services\Templates\DocxTemplateFiller;
@@ -27,6 +28,7 @@ class TemplateController extends Controller
         private readonly TemplatePlaceholderService $placeholders,
         private readonly DocxTemplateFiller $filler,
         private readonly StoredFiles $storedFiles,
+        private readonly DocumentEncryptor $encryptor,
     ) {
         //
     }
@@ -92,12 +94,23 @@ class TemplateController extends Controller
                 default => 'text/plain',
             };
 
-            $storagePath = $file->store('template-files');
+            // Encrypted at rest like every other upload. A template is a
+            // document a user handed us: the ones people upload are their own
+            // pleadings and contracts with the particulars swapped for
+            // placeholders, so storing them in the clear while every other
+            // upload is encrypted was a hole in the same promise.
+            $storagePath = 'template-files/'.Str::uuid().'.'.($extension ?: 'bin');
+
+            if (config('saligan.documents.encrypt_at_rest', true)) {
+                $this->encryptor->encrypt((string) ($file->getRealPath() ?: $file->getPathname()), $storagePath);
+            } else {
+                $file->storeAs(dirname($storagePath), basename($storagePath));
+            }
 
             // The uploaded file is on the default disk, which may be an object
             // store; the extractor and the placeholder scanner both need a real
             // local path, so work against a local copy and release it below.
-            $copy = $this->storedFiles->plaintextCopy($storagePath);
+            $copy = $this->storedFiles->localCopy($storagePath);
 
             try {
                 $extracted = trim($this->textExtractor->extract($copy->path, $mimeType));
@@ -198,7 +211,7 @@ class TemplateController extends Controller
             fn (mixed $value): bool => $value !== null && $value !== '',
         );
 
-        $source = $this->storedFiles->plaintextCopy($template->original_path);
+        $source = $this->storedFiles->localCopy($template->original_path);
 
         try {
             $filledPath = $this->filler->fill($source->path, $values);

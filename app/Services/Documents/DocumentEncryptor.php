@@ -102,6 +102,42 @@ class DocumentEncryptor
     }
 
     /**
+     * Whether a legacy v1 read is currently permitted despite the deployment
+     * refusing that format. See {@see readingLegacy()}.
+     */
+    private bool $legacyReadAllowed = false;
+
+    /**
+     * Run a callback with the refusal of the unauthenticated v1 format lifted.
+     *
+     * The guard exists to stop v1 files being *served*, not to stop them being
+     * retired: `saligan:reencrypt-documents` has to read a v1 file in order to
+     * rewrite it as v2. Without this, turning the flag on before migrating
+     * strands every legacy document — unreadable, and unrepairable by the one
+     * command whose whole purpose is to repair it, which is exactly what the
+     * refusal message tells the operator to run.
+     *
+     * Scoped to a callback, and restored on the way out even if it throws, so
+     * no ordinary read path can ever leave the exemption switched on.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $callback
+     * @return T
+     */
+    public function readingLegacy(callable $callback): mixed
+    {
+        $previous = $this->legacyReadAllowed;
+        $this->legacyReadAllowed = true;
+
+        try {
+            return $callback();
+        } finally {
+            $this->legacyReadAllowed = $previous;
+        }
+    }
+
+    /**
      * Encrypt the file at the given absolute source path into the given
      * storage path on the default disk.
      */
@@ -637,6 +673,10 @@ class DocumentEncryptor
      */
     protected function requiresAuthentication(): bool
     {
+        if ($this->legacyReadAllowed) {
+            return false;
+        }
+
         return (bool) config('saligan.documents.require_authenticated_encryption', false);
     }
 

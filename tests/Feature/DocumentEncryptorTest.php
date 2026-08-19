@@ -119,6 +119,11 @@ function encryptLegacyV1(string $path, string $content): void
 }
 
 it('still reads documents written in the legacy unauthenticated format', function () {
+    // Pinned rather than inherited: .env may already refuse the legacy format,
+    // and this test is about the behaviour of a deployment that has not
+    // finished migrating yet.
+    config()->set('saligan.documents.require_authenticated_encryption', false);
+
     encryptLegacyV1('documents/legacy.txt', 'written before the tag existed');
 
     expect(app(DocumentEncryptor::class)->formatVersion('documents/legacy.txt'))->toBe(1);
@@ -142,6 +147,29 @@ it('refuses the legacy format once authentication is required', function () {
     encryptTo('documents/authenticated.txt', 'authenticated contents');
 
     expect(app(DocumentEncryptor::class)->decryptToTemp('documents/authenticated.txt'))->not->toBeNull();
+});
+
+it('lets the re-encryption path read a legacy file the deployment refuses', function () {
+    // The refusal is meant to stop v1 files being served, never to strand
+    // them: the command that retires the format has to be able to read it.
+    config()->set('saligan.documents.require_authenticated_encryption', true);
+
+    encryptLegacyV1('documents/legacy-upgrade.txt', 'contents to carry across');
+
+    $encryptor = app(DocumentEncryptor::class);
+
+    expect(fn () => $encryptor->decryptToTemp('documents/legacy-upgrade.txt'))
+        ->toThrow(RuntimeException::class);
+
+    $path = $encryptor->readingLegacy(fn () => $encryptor->decryptToTemp('documents/legacy-upgrade.txt'));
+    $content = file_get_contents((string) $path);
+    @unlink((string) $path);
+
+    expect($content)->toBe('contents to carry across');
+
+    // And the exemption is gone the moment the callback returns.
+    expect(fn () => $encryptor->decryptToTemp('documents/legacy-upgrade.txt'))
+        ->toThrow(RuntimeException::class);
 });
 
 it('detects a single flipped bit in the ciphertext', function () {

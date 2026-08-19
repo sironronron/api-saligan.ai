@@ -41,7 +41,13 @@ it('summarizes the whole progress of a case', function () {
     Message::factory()->for($general)->create(['role' => 'assistant', 'content' => 'Here is the answer.']);
     Message::factory()->for($letter)->create([
         'role' => 'assistant',
-        'content' => "Demand Letter\n\nDownload: /export/word",
+        'content' => 'Demand Letter',
+        'metadata' => [
+            'letter_draft' => [
+                'content' => ['type' => 'doc', 'content' => []],
+                'title' => 'Demand Letter',
+            ],
+        ],
     ]);
 
     Todo::factory()->for($general)->create(['title' => 'File the complaint', 'status' => 'completed']);

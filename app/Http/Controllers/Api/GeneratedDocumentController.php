@@ -14,7 +14,7 @@ use Illuminate\Http\Resources\Json\JsonResource;
 class GeneratedDocumentController extends Controller
 {
     /**
-     * List the AI-generated documents the user can download again, optionally
+     * List the letters the user drafted in the letter editor, optionally
      * scoped to a single case via the `case_id` query parameter.
      */
     public function index(Request $request): AnonymousResourceCollection
@@ -32,7 +32,7 @@ class GeneratedDocumentController extends Controller
             ->with([
                 'messages' => fn ($query) => $query
                     ->where('role', MessageRole::Assistant)
-                    ->where('content', 'like', '%/export/%')
+                    ->whereNotNull('metadata->letter_draft')
                     ->latest(),
                 'messages.conversation.case',
             ])
@@ -52,8 +52,36 @@ class GeneratedDocumentController extends Controller
     public function show(Request $request, Message $message): JsonResource
     {
         abort_unless($message->role === MessageRole::Assistant, 404);
-        abort_unless(str_contains($message->content, '/export/'), 404);
+        abort_unless(isset($message->metadata['letter_draft']), 404);
         abort_unless($message->conversation?->isAccessibleBy($request->user()), 403);
+
+        return new GeneratedDocumentResource($message->load(['conversation.case']));
+    }
+
+    /**
+     * Save edits made to a letter in the editor back onto the assistant
+     * message that produced it. The letter body lives in the message metadata
+     * as Tiptap JSON, so editing never creates a new message.
+     */
+    public function saveLetterDraft(Request $request, Message $message): JsonResource
+    {
+        abort_unless($message->role === MessageRole::Assistant, 404);
+        abort_unless($message->conversation?->isAccessibleBy($request->user()), 403);
+
+        $validated = $request->validate([
+            'content' => ['required', 'array'],
+            'title' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $metadata = $message->metadata ?? [];
+
+        $metadata['letter_draft'] = [
+            'content' => $validated['content'],
+            'title' => $validated['title'] ?? ($metadata['letter_draft']['title'] ?? null),
+            'raw' => $metadata['letter_draft']['raw'] ?? null,
+        ];
+
+        $message->update(['metadata' => $metadata]);
 
         return new GeneratedDocumentResource($message->load(['conversation.case']));
     }

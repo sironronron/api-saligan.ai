@@ -383,7 +383,7 @@ it('scans a PDF with no text layer instead of rejecting it', function () {
     ]);
 
     $extractor = Mockery::mock(TextExtractor::class);
-    $extractor->shouldReceive('extract')->once()->andReturn('   ');
+    $extractor->shouldReceive('extractMarkdown')->once()->andReturn('   ');
 
     $ocr = Mockery::mock(ImageOcrExtractor::class);
     $ocr->shouldReceive('extract')
@@ -417,7 +417,7 @@ it('fails a PDF only after scanning it has also come up empty', function () {
     ]);
 
     $extractor = Mockery::mock(TextExtractor::class);
-    $extractor->shouldReceive('extract')->once()->andReturn('');
+    $extractor->shouldReceive('extractMarkdown')->once()->andReturn('');
 
     $ocr = Mockery::mock(ImageOcrExtractor::class);
     $ocr->shouldReceive('extract')->once()->andReturn('');
@@ -446,7 +446,7 @@ it('does not re-scan a DOCX that yielded no text', function () {
     ]);
 
     $extractor = Mockery::mock(TextExtractor::class);
-    $extractor->shouldReceive('extract')->once()->andReturn('');
+    $extractor->shouldReceive('extractMarkdown')->once()->andReturn('');
 
     $ocr = Mockery::mock(ImageOcrExtractor::class);
     $ocr->shouldNotReceive('extract');

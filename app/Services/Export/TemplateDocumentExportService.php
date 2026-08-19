@@ -49,7 +49,10 @@ class TemplateDocumentExportService
     {
         $values = $this->intakeValuesFor($message, $template);
 
-        $source = $this->storedFiles->plaintextCopy($template->original_path);
+        // localCopy, not plaintextCopy: templates are encrypted at rest now,
+        // and this hands back plaintext for both the encrypted ones and the
+        // plaintext ones stored before that.
+        $source = $this->storedFiles->localCopy($template->original_path);
 
         try {
             return $this->filler->fill($source->path, $values);

@@ -106,7 +106,7 @@ it('submits the queued pages as one batch, asking for prose rather than JSON', f
         $inline = $body['input_config']['requests']['requests'][0];
 
         return $inline['metadata']['key'] === $request->customId()
-            && str_contains($inline['request']['system_instruction']['parts'][0]['text'], 'digests of Philippine legal authorities')
+            && str_contains($inline['request']['system_instruction']['parts'][0]['text'], 'case digests and rule indexes of Philippine legal authorities')
             && str_contains($inline['request']['contents'][0]['parts'][0]['text'], 'People v. Dela Cruz')
             // A digest is prose. Asking for JSON back would only wrap it in
             // quotes and escapes for the reader to undo.

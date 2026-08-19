@@ -77,3 +77,23 @@ Schedule::command('vetting:payouts-generate')
     ->weeklyOn(Carbon::MONDAY, '06:00')
     ->withoutOverlapping()
     ->onOneServer();
+
+// Add-on integrations. Tokens refresh ahead of expiry so a sync never lands
+// on a dead one; the sweep pauses connections whose plan dropped below the
+// tiers that carry add-ons and resumes ones that came back. Sync runs often
+// because push (where the provider supports it) only covers the gap between
+// scheduled reconciliations.
+Schedule::command('integrations:refresh-tokens')
+    ->hourly()
+    ->withoutOverlapping()
+    ->onOneServer();
+
+Schedule::command('integrations:sweep')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping()
+    ->onOneServer();
+
+Schedule::command('integrations:sync')
+    ->everyTenMinutes()
+    ->withoutOverlapping()
+    ->onOneServer();

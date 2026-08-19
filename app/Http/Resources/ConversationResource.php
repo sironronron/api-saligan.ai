@@ -25,6 +25,8 @@ class ConversationResource extends JsonResource
             'title' => $this->title,
             'purpose' => $this->purpose,
             'provider' => $this->provider->value,
+            'pinned_at' => $this->pinned_at,
+            'pinned' => $this->pinned_at !== null,
             'messages_count' => $this->whenCounted('messages', fn (int $count) => $count),
             'tags' => LabelResource::collection($this->whenLoaded('labels')),
             'last_message_at' => $this->last_message_at,

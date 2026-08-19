@@ -29,7 +29,7 @@ function makeFakeChatService(array $events): ChatService
     {
         public function __construct(private array $events) {}
 
-        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = []): StreamableAgentResponse
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = [], ?callable $onWebSearch = null): StreamableAgentResponse
         {
             $message = Message::create([
                 'conversation_id' => $conversation->id,
@@ -68,7 +68,7 @@ function makeFailingChatService(): ChatService
     {
         public function __construct() {}
 
-        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = []): StreamableAgentResponse
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = [], ?callable $onWebSearch = null): StreamableAgentResponse
         {
             $message = Message::create([
                 'conversation_id' => $conversation->id,
@@ -1350,50 +1350,28 @@ it('rolls back the user message when the stream fails', function () {
     $this->assertDatabaseCount('messages', 0);
 });
 
-it('rewrites fabricated export links to the persisted assistant message id', function () {
-    $service = new class extends ChatService
-    {
-        public function __construct() {}
-
-        public function links(string $text, string $id): string
-        {
-            return $this->withExportLinks($text, $id);
-        }
-    };
-
+it('strips fabricated export links from drafted replies', function () {
     $text = "Here is the draft.\n\n[Download as Word](/api/messages/fake-id/export/word)\n[Download as PDF](/api/messages/another-fake/export/pdf)";
 
-    $result = $service->links($text, '019f-real-id-0000');
+    $result = DraftingIntent::stripExportLinks($text);
 
     expect($result)
         ->toContain('Here is the draft.')
         ->not->toContain('fake-id')
         ->not->toContain('another-fake')
-        ->toContain('/api/messages/019f-real-id-0000/export/word')
-        ->toContain('/api/messages/019f-real-id-0000/export/pdf');
+        ->not->toContain('/export/');
 });
 
-it('strips fabricated example.com download links and appends the real links', function () {
-    $service = new class extends ChatService
-    {
-        public function __construct() {}
-
-        public function links(string $text, string $id): string
-        {
-            return $this->withExportLinks($text, $id);
-        }
-    };
-
+it('strips fabricated example.com download links', function () {
     $text = "Confirmed. Here is your document.\n\n[Click here to download the Word file](https://example.com/download/word_demand_letter.docx)\n[Click here to download the PDF file](https://example.com/download/pdf_demand_letter.pdf)";
 
-    $result = $service->links($text, '019f-real-id-0000');
+    $result = DraftingIntent::stripExportLinks($text);
 
     expect($result)
         ->toContain('Confirmed. Here is your document.')
         ->not->toContain('example.com')
         ->not->toContain('Click here')
-        ->toContain('/api/messages/019f-real-id-0000/export/word')
-        ->toContain('/api/messages/019f-real-id-0000/export/pdf');
+        ->not->toContain('/export/');
 });
 
 it('strips fabricated download links when no export was requested', function () {
@@ -1406,51 +1384,29 @@ it('strips fabricated download links when no export was requested', function () 
         ->not->toContain('/export/');
 });
 
-it('rewrites placeholder export labels to the persisted assistant message id', function () {
-    $service = new class extends ChatService
-    {
-        public function __construct() {}
-
-        public function links(string $text, string $id): string
-        {
-            return $this->withExportLinks($text, $id);
-        }
-    };
-
+it('strips placeholder export labels from drafted replies', function () {
     $text = "Here is your document.\n\nEXPORT LINKS: [Word Document Download Link] | [PDF Exported Version]";
 
-    $result = $service->links($text, '019f-real-id-0000');
+    $result = DraftingIntent::stripExportLinks($text);
 
     expect($result)
         ->toContain('Here is your document.')
         ->not->toContain('[Word Document Download Link]')
         ->not->toContain('[PDF Exported Version]')
         ->not->toContain('EXPORT LINKS')
-        ->toContain('/api/messages/019f-real-id-0000/export/word')
-        ->toContain('/api/messages/019f-real-id-0000/export/pdf');
+        ->not->toContain('/export/');
 });
 
-it('strips the "For Word and PDF export" placeholder when appending the real links', function () {
-    $service = new class extends ChatService
-    {
-        public function __construct() {}
-
-        public function links(string $text, string $id): string
-        {
-            return $this->withExportLinks($text, $id);
-        }
-    };
-
+it('strips the "For Word and PDF export" placeholder', function () {
     $text = "Here is your document.\n\nFor Word and PDF export: [Insert Export Links Here]";
 
-    $result = $service->links($text, '019f-real-id-0000');
+    $result = DraftingIntent::stripExportLinks($text);
 
     expect($result)
         ->toContain('Here is your document.')
         ->not->toContain('Insert Export Links')
         ->not->toContain('For Word and PDF export')
-        ->toContain('/api/messages/019f-real-id-0000/export/word')
-        ->toContain('/api/messages/019f-real-id-0000/export/pdf');
+        ->not->toContain('/export/');
 });
 
 it('strips placeholder export labels from plain answers', function () {

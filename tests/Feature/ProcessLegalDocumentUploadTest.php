@@ -102,7 +102,7 @@ it('uses OCR to read a scanned PDF with no text layer', function () {
     ]);
 
     $extractor = Mockery::mock(TextExtractor::class);
-    $extractor->shouldReceive('extract')->once()->andReturn('   ');
+    $extractor->shouldReceive('extractMarkdown')->once()->andReturn('   ');
 
     $ocr = Mockery::mock(ImageOcrExtractor::class);
     $ocr->shouldReceive('extract')
@@ -239,7 +239,7 @@ it('skips documents that already succeeded', function () {
     $page = CrawledPage::factory()->uploaded()->create();
 
     $extractor = Mockery::mock(TextExtractor::class);
-    $extractor->shouldNotReceive('extract');
+    $extractor->shouldNotReceive('extractMarkdown');
 
     (new ProcessLegalDocumentUpload($page))->handle(
         $extractor,

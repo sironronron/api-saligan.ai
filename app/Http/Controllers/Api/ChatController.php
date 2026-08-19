@@ -8,7 +8,10 @@ use App\Models\Document;
 use App\Models\Todo;
 use App\Services\Chat\AdvisoryRecorder;
 use App\Services\Chat\ChatService;
+use App\Services\Export\DocumentExportService;
+use App\Services\LetterDrafts\LetterDraftService;
 use App\Support\AdvisoryParser;
+use App\Support\ChatFrames;
 use App\Support\ChatStatus;
 use App\Support\ChoicePrompt;
 use App\Support\DraftingIntent;
@@ -142,8 +145,24 @@ class ChatController extends Controller
         // prepended to the next frame emitted from this generator.
         $pending = [];
 
+        // Every status frame is also recorded, so the finished message can
+        // carry the same account of the work the stream narrated live.
+        $activity = $this->chatService->turnActivity();
+
         $emit = function (string $event, array $data) use (&$pending): string {
             $frame = implode('', $pending).$this->sseFrame($event, $data);
+            $pending = [];
+
+            return $frame;
+        };
+
+        // Everything queued so far, with nothing of its own to append. The
+        // status and web-search frames raised inside the service used to wait
+        // for the next frame this generator happened to produce, which on a
+        // long tool call is the whole tool call away — exactly the stretch the
+        // frames exist to narrate.
+        $drain = function () use (&$pending): string {
+            $frame = implode('', $pending);
             $pending = [];
 
             return $frame;
@@ -156,6 +175,7 @@ class ChatController extends Controller
         $todoRequested = false;
         $advisoriesRequested = false;
         $fillTemplateRequested = false;
+        $letterDrafted = false;
         $textLength = 0;
         $lastText = '';
         $buffering = $isDraftingRequest && ! $isIntakeSubmission;
@@ -244,23 +264,55 @@ class ChatController extends Controller
         // Derived once: it is the same for every frame of this turn.
         $topic = ChatStatus::topic($message);
 
+        // A status frame raised by this generator rather than by the service.
+        // Routed through one helper so every status — wherever it is raised —
+        // lands in the activity record as well as on the wire; the direct
+        // yields used to bypass the record entirely, so the persisted account
+        // of the turn was missing exactly the steps the controller owns.
+        $status = function (string $key, ?string $label = null, bool $withTopic = true) use ($emit, $message, $topic, $activity): string {
+            $label ??= ChatStatus::label($key, $message);
+
+            $activity->step($key, $label);
+
+            return $emit('status', array_filter([
+                'status' => $key,
+                'label' => $label,
+                'topic' => $withTopic ? $topic : null,
+            ], static fn ($value): bool => $value !== null));
+        };
+
         try {
             $stream = $this->chatService->stream(
                 $conversation,
                 $message,
-                function (string $status, ?string $label = null) use (&$pending, $message, $topic): void {
+                function (string $status, ?string $label = null) use (&$pending, $message, $topic, $activity): void {
+                    // Statuses fired by the tools carry only the status key,
+                    // so the label is derived here.
+                    $label ??= ChatStatus::label($status, $message);
+
+                    $activity->step($status, $label);
+
                     $pending[] = $this->sseFrame('status', [
                         'status' => $status,
-                        // Statuses fired by the tools carry only the status
-                        // key, so the label is derived here.
-                        'label' => $label ?? ChatStatus::label($status, $message),
+                        'label' => $label,
                         // Sent on every frame so a client that joins late, or
                         // drops one, still knows what is being worked on.
                         'topic' => $topic,
                     ]);
                 },
                 $attachmentIds,
+                // The delegated search runs inside a tool call, so its phases
+                // queue here and ride out with the next frame this generator
+                // yields — the same route the status frames take.
+                function (array $frame) use (&$pending): void {
+                    $pending[] = $this->sseFrame('web_search', $frame);
+                },
             );
+
+            // What the turn actually does, recorded as it happens. The service
+            // reads it when it persists the reply, to check the reply's own
+            // account of itself against it.
+            $toolRuns = $this->chatService->toolRuns();
 
             Log::info('Chat streaming started', [
                 'conversation_id' => $conversation->id,
@@ -279,14 +331,14 @@ class ChatController extends Controller
                 // The document must wait for the intake form, so the
                 // client shows a "collecting facts" animation instead of
                 // any premature text the model may produce.
-                yield $emit('status', [
-                    'status' => 'collecting_facts',
-                    'label' => ChatStatus::label('collecting_facts', $message),
-                    'topic' => $topic,
-                ]);
+                yield $status('collecting_facts');
             }
 
             foreach ($stream as $event) {
+                if ($pending !== []) {
+                    yield $drain();
+                }
+
                 // The delegated web search runs inside a tool call and emits no
                 // provider events of its own, so its sources are drained from
                 // the service on every event — the cards appear while the tool
@@ -322,11 +374,7 @@ class ChatController extends Controller
                     if (! $composingAnnounced) {
                         $composingAnnounced = true;
 
-                        yield $emit('status', [
-                            'status' => 'composing',
-                            'label' => ChatStatus::label('composing', $message),
-                            'topic' => $topic,
-                        ]);
+                        yield $status('composing');
                     }
 
                     $textLength += strlen($event->delta);
@@ -352,10 +400,7 @@ class ChatController extends Controller
                             $bufferedText = '';
                         }
 
-                        yield $emit('status', [
-                            'status' => 'drafting_document',
-                            'label' => ChatStatus::label('drafting_document', $message),
-                        ]);
+                        yield $status('drafting_document', withTopic: false);
                     }
 
                     if ($buffering) {
@@ -370,6 +415,8 @@ class ChatController extends Controller
                 }
 
                 if ($event instanceof ToolCall) {
+                    $toolRuns->recordCall($event->toolCall->name);
+
                     if ($event->toolCall->name === 'request_intake_form') {
                         // One form per turn, and never on the turn that
                         // answers one. A second frame re-opens the sheet on
@@ -433,10 +480,7 @@ class ChatController extends Controller
                         // before the tool's handle() ever runs, so the status
                         // is reported here — the model just chose the intake
                         // step, which is the real signal.
-                        yield $emit('status', [
-                            'status' => 'gathering_facts',
-                            'label' => ChatStatus::label('gathering_facts', $message),
-                        ]);
+                        yield $status('gathering_facts', withTopic: false);
 
                         // Previously submitted intake values are carried over
                         // so a repeated drafting request reuses the user's
@@ -479,10 +523,7 @@ class ChatController extends Controller
 
                         $choiceRequested = true;
 
-                        yield $emit('status', [
-                            'status' => 'awaiting_choice',
-                            'label' => ChatStatus::label('awaiting_choice', $message),
-                        ]);
+                        yield $status('awaiting_choice', withTopic: false);
 
                         yield $emit('tool_call', [
                             'name' => 'ask_user_question',
@@ -496,10 +537,26 @@ class ChatController extends Controller
                         break;
                     }
 
-                    yield $emit('tool_call', [
-                        'name' => $event->toolCall->name,
-                        'arguments' => $event->toolCall->arguments,
-                    ]);
+                    // Only the calls the client draws something for go out,
+                    // and only as the fields that drawing needs. A search query
+                    // written for a retrieval model, a template's field map,
+                    // an advisory payload — none of it is the user's to read,
+                    // and none of it was ever rendered.
+                    $call = ChatFrames::call($event->toolCall->name, $event->toolCall->arguments);
+
+                    if ($call !== null) {
+                        yield $emit('tool_call', $call);
+                    }
+
+                    if ($event->toolCall->name === 'draft_letter') {
+                        // The draft_letter tool runs server-side and takes a
+                        // while — the dedicated letter agent composes the Tiptap
+                        // JSON before the model resumes. Report drafting now so
+                        // the user sees progress while it works.
+                        $letterDrafted = true;
+
+                        yield $status('drafting_document');
+                    }
 
                     if ($event->toolCall->name === 'create_todo') {
                         $todoRequested = true;
@@ -515,10 +572,37 @@ class ChatController extends Controller
                 }
 
                 if ($event instanceof ToolResult) {
-                    yield $emit('tool_result', [
-                        'name' => $event->toolResult->name,
-                        'result' => $event->toolResult->result,
-                    ]);
+                    $toolRuns->recordResult($event->toolResult->name);
+
+                    // Same closed set as the calls: the client is told how many
+                    // todos or advisories were written, and re-fetches them from
+                    // the endpoints that own them. The tool's return value —
+                    // which is written for the model, not for a reader — stays
+                    // on the server.
+                    $result = ChatFrames::result($event->toolResult->name, $event->toolResult->result);
+
+                    if ($result !== null) {
+                        yield $emit('tool_result', $result);
+                    }
+
+                    if ($event->toolResult->name === 'draft_letter') {
+                        // Hand the finished Tiptap document to the client so the
+                        // letter editor panel opens with it. The model's reply
+                        // after the tool result carries the chat summary. The
+                        // assistant message is not persisted yet, so its pending
+                        // id travels with the event for saving edits.
+                        $letterDrafted = true;
+
+                        $draft = json_decode((string) $event->toolResult->result, true);
+
+                        if (is_array($draft) && isset($draft['content']) && is_array($draft['content'])) {
+                            yield $emit('letter_draft', [
+                                'content' => $draft['content'],
+                                'title' => is_string($draft['title'] ?? null) ? $draft['title'] : null,
+                                'message_id' => $this->chatService->pendingAssistantMessageId(),
+                            ]);
+                        }
+                    }
 
                     if ($event->toolResult->name === 'create_todo') {
                         $todoRequested = true;
@@ -535,6 +619,10 @@ class ChatController extends Controller
             // on the message and appear only on reload.
             foreach ($collectCitations($this->chatService->pullWebCitations()) as $card) {
                 yield $emit('citation', $card);
+            }
+
+            if ($pending !== []) {
+                yield $drain();
             }
         } catch (StreamStoppedException $exception) {
             // The client went away mid-stream (navigated off the page, hit
@@ -656,10 +744,7 @@ class ChatController extends Controller
                         }
 
                         if ($created !== []) {
-                            yield $emit('tool_result', [
-                                'name' => 'create_todo',
-                                'result' => json_encode(['items' => $created], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                            ]);
+                            yield $emit('tool_result', ['name' => 'create_todo', 'count' => count($created)]);
                         }
                     } catch (Throwable $exception) {
                         Log::warning('Fallback todo creation failed', [
@@ -689,10 +774,7 @@ class ChatController extends Controller
                                 'count' => count($created),
                             ]);
 
-                            yield $emit('tool_result', [
-                                'name' => 'flag_advisories',
-                                'result' => json_encode(['items' => $created], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                            ]);
+                            yield $emit('tool_result', ['name' => 'flag_advisories', 'count' => count($created)]);
                         }
                     } catch (Throwable $exception) {
                         Log::warning('Fallback advisory creation failed', [
@@ -702,7 +784,55 @@ class ChatController extends Controller
                     }
                 }
 
-                yield $emit('done', ['ok' => $completed]);
+                // The model wrote the letter inline ([[DOCUMENT_START]] …
+                // [[DOCUMENT_END]]) instead of calling draft_letter — ordinary
+                // behaviour on providers that are weak at tool calling. The
+                // letter is recovered into the editor exactly like the tool
+                // path: the panel opens with it, and the message carries the
+                // letter_draft metadata so /drafts and reloads see it too.
+                if (! $letterDrafted && $textLength > 0 && str_contains($lastText, '[[DOCUMENT_START]]')
+                    && in_array(DraftingIntent::documentTypeFor($message), ['formal letter', 'government transaction letter'], true)) {
+                    try {
+                        $body = app(DocumentExportService::class)->extractDocument($lastText);
+
+                        if (trim($body) !== '') {
+                            $draft = app(LetterDraftService::class)->fromMarkdown($body, $message);
+
+                            $this->chatService->recordRecoveredLetter($draft);
+
+                            Log::info('Recovered inline letter into the editor', [
+                                'conversation_id' => $conversation->id,
+                                'message_id' => $this->chatService->pendingAssistantMessageId(),
+                            ]);
+
+                            yield $emit('letter_draft', [
+                                'content' => $draft['content'],
+                                'title' => $draft['title'],
+                                'message_id' => $this->chatService->pendingAssistantMessageId(),
+                            ]);
+                        }
+                    } catch (Throwable $exception) {
+                        Log::warning('Fallback letter recovery failed', [
+                            'conversation_id' => $conversation->id,
+                            'exception' => $exception->getMessage(),
+                        ]);
+                    }
+                }
+
+                // Claims the reply made about actions this turn never took.
+                // Raised when the reply was persisted (inside the stream's
+                // completion callback, which has already run by now) and
+                // drained here so they reach the client with the answer they
+                // qualify rather than only on the next reload.
+                foreach ($this->chatService->pullToolNotices() as $notice) {
+                    yield $emit('notice', $notice);
+                }
+
+                // The client strips any "[Web N]" beyond this from the text it
+                // streamed: the persisted copy has already had them removed,
+                // and without this the live answer would keep dead badges the
+                // reader can click but never resolve.
+                yield $emit('done', ['ok' => $completed, 'web_citations' => $webIndex]);
             }
         } catch (StreamStoppedException) {
             // Same as above: the client is gone, so there is nothing to report
@@ -731,7 +861,6 @@ class ChatController extends Controller
      */
     protected function sseFrame(string $event, array $data): string
     {
-        return "event: {$event}\n"
-            .'data: '.json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)."\n\n";
+        return ChatFrames::frame($event, $data);
     }
 }

@@ -202,13 +202,14 @@ class LegalCase extends Model
     }
 
     /**
-     * The AI-generated documents produced within this case (through its conversation).
+     * The letters drafted within this case (through its conversation), each
+     * carrying a Tiptap letter in its metadata.
      */
     public function generatedDocuments(): HasManyThrough
     {
         return $this->hasManyThrough(Message::class, Conversation::class, 'case_id', 'conversation_id', 'id', 'id')
             ->where('role', MessageRole::Assistant)
-            ->where('content', 'like', '%/export/%');
+            ->whereNotNull('metadata->letter_draft');
     }
 
     /**

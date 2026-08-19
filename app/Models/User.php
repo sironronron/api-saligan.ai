@@ -3,6 +3,7 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Enums\IntegrationProvider;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
@@ -280,5 +281,34 @@ class User extends Authenticatable
     public function usageCounters(): HasMany
     {
         return $this->hasMany(UsageCounter::class);
+    }
+
+    /**
+     * The add-on integrations this user authorized.
+     */
+    public function integrations(): HasMany
+    {
+        return $this->hasMany(Integration::class);
+    }
+
+    /**
+     * The user's connection for a provider, resolving a firm-wide connection
+     * made by an admin when the organization runs in firm-wide mode.
+     */
+    public function integrationFor(IntegrationProvider $provider): ?Integration
+    {
+        $own = $this->integrations
+            ->firstWhere('provider', $provider);
+
+        if ($own !== null) {
+            return $own;
+        }
+
+        if ($this->organization === null || ! $this->organization->usesFirmWideIntegrations()) {
+            return null;
+        }
+
+        return $this->organization->integrations
+            ->firstWhere('provider', $provider);
     }
 }

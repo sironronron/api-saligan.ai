@@ -29,7 +29,7 @@ beforeEach(function () {
     {
         public function __construct() {}
 
-        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = []): StreamableAgentResponse
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = [], ?callable $onWebSearch = null): StreamableAgentResponse
         {
             Message::create([
                 'conversation_id' => $conversation->id,
@@ -146,7 +146,7 @@ it('streams web citations live as they are recorded', function () {
     {
         public function __construct() {}
 
-        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = []): StreamableAgentResponse
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = [], ?callable $onWebSearch = null): StreamableAgentResponse
         {
             $response = new StreamableAgentResponse('test-invocation', function (): Generator {
                 yield new Citation('c1', 'm1', new UrlCitation('https://lawphil.net/ra-6657', 'RA 6657'), 1);
@@ -193,7 +193,7 @@ it('deduplicates live web citations by url', function () {
     {
         public function __construct() {}
 
-        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = []): StreamableAgentResponse
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = [], ?callable $onWebSearch = null): StreamableAgentResponse
         {
             $response = new StreamableAgentResponse('test-invocation', function (): Generator {
                 yield new Citation('c1', 'm1', new UrlCitation('https://lawphil.net/ra-6657', 'RA 6657'), 1);

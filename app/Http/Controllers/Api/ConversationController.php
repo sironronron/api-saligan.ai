@@ -45,7 +45,7 @@ class ConversationController extends Controller
                     ->latest()
                     ->limit(1),
             ])
-            ->latest()
+            ->orderedByPinned()
             ->get();
 
         return ConversationResource::collection($conversations);
@@ -129,6 +129,30 @@ class ConversationController extends Controller
         $conversation->update(Arr::except($validated, 'label_ids'));
 
         return new ConversationResource($conversation->load(['messages', 'labels', 'case']));
+    }
+
+    /**
+     * Pin a conversation so it leads the thread list.
+     */
+    public function pin(Request $request, Conversation $conversation): ConversationResource
+    {
+        abort_unless($conversation->isAccessibleBy($request->user()), 403);
+
+        $conversation->update(['pinned_at' => now()]);
+
+        return new ConversationResource($conversation->load(['labels', 'case']));
+    }
+
+    /**
+     * Unpin a conversation, letting it fall back into natural recency order.
+     */
+    public function unpin(Request $request, Conversation $conversation): ConversationResource
+    {
+        abort_unless($conversation->isAccessibleBy($request->user()), 403);
+
+        $conversation->update(['pinned_at' => null]);
+
+        return new ConversationResource($conversation->load(['labels', 'case']));
     }
 
     /**

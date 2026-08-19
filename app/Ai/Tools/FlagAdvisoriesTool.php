@@ -3,6 +3,7 @@
 namespace App\Ai\Tools;
 
 use App\Services\Chat\AdvisoryRecorder;
+use App\Support\ToolResult;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\JsonSchema\Types\Type;
 use Laravel\Ai\Contracts\Tool;
@@ -18,6 +19,13 @@ use Laravel\Ai\Tools\Request;
  */
 class FlagAdvisoriesTool implements Tool
 {
+    /**
+     * Calls already served this turn, keyed by the provider's tool-call id.
+     *
+     * @var array<string, string>
+     */
+    protected array $served = [];
+
     /**
      * @param  (callable(string, ?string): void)|null  $onStatus  Fired the moment
      *                                                            the model calls
@@ -51,20 +59,49 @@ class FlagAdvisoriesTool implements Tool
 
     public function handle(Request $request): string
     {
+        $callId = $request->toolCallId();
+
+        // A provider retry, or a model calling twice for the same turn, would
+        // otherwise re-file the whole list. The recorder's own duplicate guard
+        // catches this too, but only after a second round of database reads.
+        if ($callId !== null && isset($this->served[$callId])) {
+            return $this->served[$callId];
+        }
+
         $this->onStatus?->__invoke('reviewing_gaps');
 
-        $created = app(AdvisoryRecorder::class)->record(
-            $this->conversationId,
-            $request->array('items') ?? [],
-        );
+        $submitted = $request->array('items');
+        $created = app(AdvisoryRecorder::class)->record($this->conversationId, $submitted ?? []);
 
-        return json_encode([
-            'items' => $created,
-            // The model does not need to repeat these in the reply — the app
-            // shows them on their own. Saying so here keeps it from writing the
-            // same list out twice.
-            'note' => 'Filed. The user reviews these in the app; do not repeat them in your reply.',
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($created === []) {
+            return $this->remember($callId, ToolResult::none(
+                'No flags were filed: every item was empty, generic boilerplate, or already raised on this conversation.',
+                'Nothing was filed. Do not tell the user you flagged anything, and do not restate these points '
+                    .'as a list in your reply — if a point genuinely matters, make it in the prose where it belongs.',
+            ));
+        }
+
+        // The count is reported because the model is otherwise free to say
+        // "I flagged five things" over a list of two — the app shows the real
+        // list beside the reply, so the two contradict each other on screen.
+        return $this->remember($callId, ToolResult::ok(
+            ['accepted' => count($created), 'items' => $created],
+            directive: 'Filed '.count($created).' item(s). The user reviews these in the app, so do not repeat '
+                .'them as a list in your reply, and do not claim a different number than this.',
+        ));
+    }
+
+    /**
+     * Cache a call's result against its provider tool-call id, so a retry
+     * returns what the first attempt did.
+     */
+    protected function remember(?string $callId, string $result): string
+    {
+        if ($callId !== null) {
+            $this->served[$callId] = $result;
+        }
+
+        return $result;
     }
 
     /**

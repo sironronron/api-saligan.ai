@@ -37,9 +37,9 @@ beforeEach(function () {
     {
         public function __construct() {}
 
-        public function instructionsFor(RetrievalResult $retrieval, Lab $provider, bool $exportRequested = false): string
+        public function instructionsFor(RetrievalResult $retrieval, Lab $provider): string
         {
-            return $this->buildInstructions($retrieval, $provider, $exportRequested);
+            return $this->buildInstructions($retrieval, $provider);
         }
 
         public function staticFor(): string
@@ -49,7 +49,7 @@ beforeEach(function () {
 
         public function instructionsWithNotices(RetrievalResult $retrieval, Lab $provider, string $notices): string
         {
-            return $this->buildInstructions($retrieval, $provider, false, turnNotices: $notices);
+            return $this->buildInstructions($retrieval, $provider, turnNotices: $notices);
         }
 
         public function dropWebMarkers(string $text, int $count): string
@@ -57,21 +57,21 @@ beforeEach(function () {
             return $this->dropUnresolvableWebMarkers($text, $count);
         }
 
-        public function instructionsForCase(RetrievalResult $retrieval, Lab $provider, ?LegalCase $case, ?Template $template, bool $exportRequested = false): string
+        public function instructionsForCase(RetrievalResult $retrieval, Lab $provider, ?LegalCase $case, ?Template $template): string
         {
-            return $this->buildInstructions($retrieval, $provider, $exportRequested, $case, $template);
+            return $this->buildInstructions($retrieval, $provider, $case, $template);
         }
 
-        public function instructionsForUser(RetrievalResult $retrieval, Lab $provider, ?User $user, bool $exportRequested = false): string
+        public function instructionsForUser(RetrievalResult $retrieval, Lab $provider, ?User $user): string
         {
-            return $this->buildInstructions($retrieval, $provider, $exportRequested, null, null, null, null, $user);
+            return $this->buildInstructions($retrieval, $provider, null, null, null, null, $user);
         }
 
         /**
          * @param  array<int, string>  $toolCalls  Tools the model called on the
          *                                         turn, by name.
          */
-        public function persistFor(Conversation $conversation, string $text, bool $appendExportLinks, bool $isIntakeSubmission = false, bool $isDraftingRequest = false, array $toolCalls = []): void
+        public function persistFor(Conversation $conversation, string $text, bool $isIntakeSubmission = false, bool $isDraftingRequest = false, array $toolCalls = []): void
         {
             $events = collect([new TextDelta(id: 'a', messageId: 'm1', delta: $text, timestamp: 1)]);
 
@@ -95,13 +95,12 @@ beforeEach(function () {
                 new RetrievalResult(collect(), collect()),
                 Lab::Ollama,
                 (string) Str::uuid(),
-                $appendExportLinks,
                 $isIntakeSubmission,
                 $isDraftingRequest,
             );
         }
 
-        public function completeFor(Conversation $conversation, string $text, string $question, bool $appendExportLinks = false): void
+        public function completeFor(Conversation $conversation, string $text, string $question): void
         {
             [, $prompt] = DraftingIntent::extractTemplateDirective($question);
 
@@ -117,15 +116,9 @@ beforeEach(function () {
                 new RetrievalResult(collect(), collect()),
                 Lab::Ollama,
                 (string) Str::uuid(),
-                $appendExportLinks,
                 $prompt,
                 $question,
             );
-        }
-
-        public function exportRequestedFor(Conversation $conversation, string $prompt): bool
-        {
-            return $this->exportRequested($conversation, $prompt);
         }
 
         public function templateFor(Conversation $conversation, string $question): ?Template
@@ -143,9 +136,9 @@ beforeEach(function () {
             return $this->intakeFieldsFor($conversation, $question, $documentType);
         }
 
-        public function instructionsForLibrary(RetrievalResult $retrieval, Lab $provider, array $legalTemplate, ?Template $template = null, bool $exportRequested = false): string
+        public function instructionsForLibrary(RetrievalResult $retrieval, Lab $provider, array $legalTemplate, ?Template $template = null): string
         {
-            return $this->buildInstructions($retrieval, $provider, $exportRequested, null, $template, $legalTemplate);
+            return $this->buildInstructions($retrieval, $provider, null, $template, $legalTemplate);
         }
     };
 });
@@ -282,104 +275,84 @@ it('gives precise todo creation guidance for next steps', function () {
         ->toContain('Merge near-duplicate actions');
 });
 
-it('lets the system append export links instead of the model writing them', function () {
-    $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama, true);
-
-    expect($instructions)
-        ->toContain('EXPORT INSTRUCTIONS')
-        ->toContain('do NOT re-paste the document text')
-        ->toContain('NEVER write download URLs')
-        ->toContain('example.com')
-        ->toContain('[[DOCUMENT_END]]')
-        ->toContain('the system appends')
-        ->not->toContain('/export/word')
-        ->not->toContain('/export/pdf');
-});
-
-it('does not instruct export links when the user did not ask for an export', function () {
+it('does not instruct the model about export links', function () {
     $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama);
 
     expect($instructions)
-        ->toContain('do NOT append any download links')
+        ->not->toContain('EXPORT INSTRUCTIONS')
+        ->not->toContain('the system appends')
         ->not->toContain('/export/word')
-        ->not->toContain('/export/pdf');
+        ->not->toContain('/export/pdf')
+        ->not->toContain('Never say you cannot export');
 });
 
-it('detects an explicit export request in the prompt', function () {
+it('does not append export links to a drafted message', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
-    expect($this->chat->exportRequestedFor($conversation, 'Draft the demand letter and export to PDF'))
-        ->toBeTrue()
-        ->and($this->chat->exportRequestedFor($conversation, 'Draft the demand letter'))
-        ->toBeFalse();
-});
-
-it('falls back to the prior user message when the prompt is an intake submission', function () {
-    $conversation = Conversation::factory()->for(User::factory())->create();
-
-    Message::create([
-        'conversation_id' => $conversation->id,
-        'role' => 'user',
-        'content' => 'Write the complaint and save it as a Word document',
-    ]);
-
-    expect($this->chat->exportRequestedFor(
-        $conversation,
-        '[Intake Form Submission] …user answers…',
-    ))->toBeTrue();
-
-    $conversation->messages()->where('content', 'like', 'Write the complaint%')->update(['content' => 'Write the complaint']);
-
-    expect($this->chat->exportRequestedFor(
-        $conversation,
-        '[Intake Form Submission] …user answers…',
-    ))->toBeFalse();
-});
-
-it('forbids the assistant from claiming it cannot export', function () {
-    $instructions = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama, true);
-
-    expect($instructions)
-        ->toContain('Never say you cannot export')
-        ->toContain('Never ask the user whether they want the document drafted')
-        ->toContain('Do not say "let me know if you would like"');
-});
-
-it('appends export links to a persisted drafting message when the model omitted them', function () {
-    $conversation = Conversation::factory()->for(User::factory())->create();
-
-    $this->chat->persistFor($conversation, 'REPUBLIC OF THE PHILIPPINES … COMPLAINT …', true);
+    $this->chat->persistFor($conversation, "[[DOCUMENT_START]]\nREPUBLIC OF THE PHILIPPINES\n… COMPLAINT …\n[[DOCUMENT_END]]");
 
     $message = Message::where('conversation_id', $conversation->id)
         ->where('role', 'assistant')
         ->firstOrFail();
 
     expect($message->content)
-        ->toContain('/export/word')
-        ->toContain('/export/pdf')
-        ->and($message->content)->toContain("/api/messages/{$message->id}/export/word")
-        ->and($message->content)->toContain("/api/messages/{$message->id}/export/pdf");
+        ->toContain('REPUBLIC OF THE PHILIPPINES')
+        ->not->toContain('/export/');
 });
 
-it('does not duplicate export links when the draft already includes them', function () {
+it('keeps a drafted message when the model omitted the document markers', function () {
+    $conversation = Conversation::factory()->for(User::factory())->create();
+
+    $this->chat->persistFor($conversation, 'REPUBLIC OF THE PHILIPPINES … COMPLAINT …');
+
+    $message = Message::where('conversation_id', $conversation->id)
+        ->where('role', 'assistant')
+        ->firstOrFail();
+
+    expect($message->content)
+        ->toContain('COMPLAINT')
+        ->not->toContain('/export/');
+});
+
+it('strips export links and placeholder labels the model wrote', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
     $text = "COMPLAINT\n\n[Download as Word](/api/messages/abc/export/word)\n[Download as PDF](/api/messages/abc/export/pdf)";
 
-    $this->chat->persistFor($conversation, $text, true);
+    $this->chat->persistFor($conversation, $text);
 
     $message = Message::where('conversation_id', $conversation->id)
         ->where('role', 'assistant')
         ->firstOrFail();
 
-    expect(substr_count($message->content, '/export/word'))->toBe(1)
-        ->and(substr_count($message->content, '/export/pdf'))->toBe(1);
+    expect($message->content)
+        ->toContain('COMPLAINT')
+        ->not->toContain('/export/');
 });
 
-it('does not append export links to non-drafting turns', function () {
+it('strips placeholder export labels from an unmarked answer', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
-    $this->chat->persistFor($conversation, 'Under RA 6657, agrarian reform covers private lands.', false);
+    $text = "Here is the summary.\n\nEXPORT LINKS: [Word Document Download Link] | [PDF Exported Version]";
+
+    $this->chat->persistFor($conversation, $text);
+
+    $message = Message::where('conversation_id', $conversation->id)
+        ->where('role', 'assistant')
+        ->firstOrFail();
+
+    expect($message->content)
+        ->toContain('Here is the summary.')
+        ->not->toContain('[Word Document Download Link]')
+        ->not->toContain('[PDF Exported Version]')
+        ->not->toContain('EXPORT LINKS')
+        ->not->toContain('/export/');
+});
+
+it('does not add export links to a plain chat answer', function () {
+    $conversation = Conversation::factory()->for(User::factory())->create();
+
+    $this->chat->persistFor($conversation, 'Under RA 6657, agrarian reform covers private lands.');
 
     $message = Message::where('conversation_id', $conversation->id)
         ->where('role', 'assistant')
@@ -388,82 +361,36 @@ it('does not append export links to non-drafting turns', function () {
     expect($message->content)->not->toContain('/export/');
 });
 
-it('appends export links to a marked document even when no export was requested', function () {
-    $conversation = Conversation::factory()->for(User::factory())->create();
-
-    $text = "[[DOCUMENT_START]]\nREPUBLIC OF THE PHILIPPINES\n… COMPLAINT …\n[[DOCUMENT_END]]";
-
-    $this->chat->persistFor($conversation, $text, false);
-
-    $message = Message::where('conversation_id', $conversation->id)
-        ->where('role', 'assistant')
-        ->firstOrFail();
-
-    expect($message->content)
-        ->toContain('/export/word')
-        ->toContain('/export/pdf');
-});
-
-it('appends export links to a draft missing the closing marker', function () {
-    $conversation = Conversation::factory()->for(User::factory())->create();
-
-    $text = "[[DOCUMENT_START]]\nREPUBLIC OF THE PHILIPPINES\n… COMPLAINT …";
-
-    $this->chat->persistFor($conversation, $text, false);
-
-    $message = Message::where('conversation_id', $conversation->id)
-        ->where('role', 'assistant')
-        ->firstOrFail();
-
-    expect($message->content)
-        ->toContain('/export/word')
-        ->toContain('/export/pdf');
-});
-
-it('appends export links to a marked document even when chat text ends with a question', function () {
-    $conversation = Conversation::factory()->for(User::factory())->create();
-
-    $text = "[[DOCUMENT_START]]\nDear Sir/Madam,\n\nRe: Demand for Payment\n\nKindly settle the amount due.\n\nVery truly yours,\nJuan Dela Cruz\n[[DOCUMENT_END]]\n\nWould you like any changes to this letter?";
-
-    $this->chat->persistFor($conversation, $text, false);
-
-    $message = Message::where('conversation_id', $conversation->id)
-        ->where('role', 'assistant')
-        ->firstOrFail();
-
-    expect($message->content)
-        ->toContain('/export/word')
-        ->toContain('/export/pdf');
-});
-
-it('appends export links to a marker-less substantive draft during a drafting request', function () {
+it('keeps a marker-less substantive draft during a drafting request intact', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
     $text = "Republic of the Philippines\nBarangay San Jose\n\nDear Sir/Madam,\n\nRe: Demand for Payment\n\nThis letter is a formal demand. Maria Santos built a house on the land I own in Barangay San Jose without my permission and without paying any rent or compensation. Despite repeated verbal requests, she has refused to vacate the premises or settle the amounts due.\n\nKindly settle the amount due on or before fifteen days from receipt of this letter, otherwise we shall be constrained to take legal action without further notice. This demand is made without prejudice to any remedies available under law.\n\nVery truly yours,\nJuan Dela Cruz\nBarangay San Jose, Cavite";
 
-    $this->chat->persistFor($conversation, $text, false, false, true);
+    $this->chat->persistFor($conversation, $text, isDraftingRequest: true);
 
     $message = Message::where('conversation_id', $conversation->id)
         ->where('role', 'assistant')
         ->firstOrFail();
 
     expect($message->content)
-        ->toContain('/export/word')
-        ->toContain('/export/pdf');
+        ->toContain('Republic of the Philippines')
+        ->not->toContain('/export/');
 });
 
-it('does not append export links to a marker-less essay when no draft was requested', function () {
+it('keeps a marker-less essay when no draft was requested', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
     $text = "Dear Sir/Madam,\n\nHere is a lengthy explanation of the remedies available under RA 6657 and the relevant procedures you could consider. Kindly evaluate each option carefully before proceeding.\n\nVery truly yours,\nThe Legal Team";
 
-    $this->chat->persistFor($conversation, $text, false);
+    $this->chat->persistFor($conversation, $text);
 
     $message = Message::where('conversation_id', $conversation->id)
         ->where('role', 'assistant')
         ->firstOrFail();
 
-    expect($message->content)->not->toContain('/export/');
+    expect($message->content)
+        ->toContain('lengthy explanation')
+        ->not->toContain('/export/');
 });
 
 it('derives the drafting flag from the original question when the stream completes', function () {
@@ -478,8 +405,8 @@ it('derives the drafting flag from the original question when the stream complet
         ->firstOrFail();
 
     expect($message->content)
-        ->toContain('/export/word')
-        ->toContain('/export/pdf');
+        ->toContain('Republic of the Philippines')
+        ->not->toContain('/export/');
 });
 
 it('does not treat an informational question as a drafting request at completion time', function () {
@@ -496,14 +423,13 @@ it('does not treat an informational question as a drafting request at completion
     expect($message->content)->not->toContain('/export/');
 });
 
-it('appends export links to an intake submission response even without markers', function () {
+it('keeps an intake submission response intact without export links', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
     $this->chat->persistFor(
         $conversation,
         "REPUBLIC OF THE PHILIPPINES\n… DEMAND LETTER …",
-        false,
-        true,
+        isIntakeSubmission: true,
     );
 
     $message = Message::where('conversation_id', $conversation->id)
@@ -511,16 +437,16 @@ it('appends export links to an intake submission response even without markers',
         ->firstOrFail();
 
     expect($message->content)
-        ->toContain('/export/word')
-        ->toContain('/export/pdf');
+        ->toContain('DEMAND LETTER')
+        ->not->toContain('/export/');
 });
 
-it('does not append export links to a clarifying question from an intake submission', function () {
+it('keeps a clarifying question from an intake submission intact', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
     $text = 'I have received your information. However, it appears the "Relief Sought" section was filled with placeholder text ("Testst"). Could you please clarify what specific outcome or remedy you are seeking from John Doe?';
 
-    $this->chat->persistFor($conversation, $text, true, true);
+    $this->chat->persistFor($conversation, $text, isIntakeSubmission: true);
 
     $message = Message::where('conversation_id', $conversation->id)
         ->where('role', 'assistant')
@@ -531,7 +457,7 @@ it('does not append export links to a clarifying question from an intake submiss
         ->not->toContain('/export/');
 });
 
-it('does not append export links when an intake submission is answered with another form', function () {
+it('keeps a reply that requests another form instead of drafting', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
     // The model answered the submitted form by requesting a second one. No
@@ -548,7 +474,7 @@ it('does not append export links when an intake submission is answered with anot
     Once you submit that, I'll draft the complete deed right away.
     TEXT;
 
-    $this->chat->persistFor($conversation, $text, false, true, true, ['request_intake_form']);
+    $this->chat->persistFor($conversation, $text, isIntakeSubmission: true, isDraftingRequest: true, toolCalls: ['request_intake_form']);
 
     $message = Message::where('conversation_id', $conversation->id)
         ->where('role', 'assistant')
@@ -559,45 +485,48 @@ it('does not append export links when an intake submission is answered with anot
         ->not->toContain('/export/');
 });
 
-it('does not append export links when the reply asks for facts with the need-info marker', function () {
+it('strips the need-info marker but keeps the reply intact', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
     $text = "I need a few more facts before drafting.\n\n[[NEED_INFO]]\n- What does the Answer allege?\n[[/NEED_INFO]]";
 
-    $this->chat->persistFor($conversation, $text, true, true, true);
-
-    $message = Message::where('conversation_id', $conversation->id)
-        ->where('role', 'assistant')
-        ->firstOrFail();
-
-    expect($message->content)->not->toContain('/export/');
-});
-
-it('still appends export links when an intake submission produces a marked document', function () {
-    $conversation = Conversation::factory()->for(User::factory())->create();
-
-    // The intake call was suppressed or already-submitted, so the model was
-    // handed a directive and drafted anyway. The document it produced still
-    // has to export.
-    $text = "[[DOCUMENT_START]]\nDEED OF EXTRAJUDICIAL SETTLEMENT\n\nKNOW ALL MEN BY THESE PRESENTS:\n[[DOCUMENT_END]]";
-
-    $this->chat->persistFor($conversation, $text, false, true, true, ['request_intake_form']);
+    $this->chat->persistFor($conversation, $text, isIntakeSubmission: true, isDraftingRequest: true);
 
     $message = Message::where('conversation_id', $conversation->id)
         ->where('role', 'assistant')
         ->firstOrFail();
 
     expect($message->content)
-        ->toContain('/export/word')
-        ->toContain('/export/pdf');
+        ->toContain('I need a few more facts before drafting.')
+        ->not->toContain('[[NEED_INFO]]')
+        ->not->toContain('/export/');
 });
 
-it('does not append export links when an explicit export request is answered with a clarification', function () {
+it('keeps a marked document produced by an intake submission', function () {
+    $conversation = Conversation::factory()->for(User::factory())->create();
+
+    // The intake call was suppressed or already-submitted, so the model was
+    // handed a directive and drafted anyway. The document it produced is kept
+    // in full; no export links are added to it.
+    $text = "[[DOCUMENT_START]]\nDEED OF EXTRAJUDICIAL SETTLEMENT\n\nKNOW ALL MEN BY THESE PRESENTS:\n[[DOCUMENT_END]]";
+
+    $this->chat->persistFor($conversation, $text, isIntakeSubmission: true, isDraftingRequest: true, toolCalls: ['request_intake_form']);
+
+    $message = Message::where('conversation_id', $conversation->id)
+        ->where('role', 'assistant')
+        ->firstOrFail();
+
+    expect($message->content)
+        ->toContain('DEED OF EXTRAJUDICIAL SETTLEMENT')
+        ->not->toContain('/export/');
+});
+
+it('keeps a clarification reply that answers an explicit export request', function () {
     $conversation = Conversation::factory()->for(User::factory())->create();
 
     $text = 'Once you provide the specific details regarding what you want to achieve with this document, I will be able to draft the formal letter for you.';
 
-    $this->chat->persistFor($conversation, $text, true);
+    $this->chat->persistFor($conversation, $text);
 
     $message = Message::where('conversation_id', $conversation->id)
         ->where('role', 'assistant')
@@ -605,25 +534,6 @@ it('does not append export links when an explicit export request is answered wit
 
     expect($message->content)
         ->toContain('Once you provide the specific details')
-        ->not->toContain('/export/');
-});
-
-it('strips placeholder export labels from an unmarked answer', function () {
-    $conversation = Conversation::factory()->for(User::factory())->create();
-
-    $text = "Here is the summary.\n\nEXPORT LINKS: [Word Document Download Link] | [PDF Exported Version]";
-
-    $this->chat->persistFor($conversation, $text, false);
-
-    $message = Message::where('conversation_id', $conversation->id)
-        ->where('role', 'assistant')
-        ->firstOrFail();
-
-    expect($message->content)
-        ->toContain('Here is the summary.')
-        ->not->toContain('[Word Document Download Link]')
-        ->not->toContain('[PDF Exported Version]')
-        ->not->toContain('EXPORT LINKS')
         ->not->toContain('/export/');
 });
 
@@ -718,7 +628,7 @@ it('emits the static instructions verbatim as the prefix of every prompt', funct
     $static = $this->chat->staticFor();
 
     $plain = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama);
-    $export = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama, true);
+    $export = $this->chat->instructionsFor(new RetrievalResult(collect(), collect()), Lab::Ollama);
     $case = LegalCase::factory()->create();
 
     $withCase = $this->chat->instructionsForCase(new RetrievalResult(collect(), collect()), Lab::Gemini, $case, null);
@@ -1150,7 +1060,6 @@ it('still persists the reply when a memory write-back fails', function () {
     $this->chat->persistFor(
         $conversation,
         "The prescriptive period is four years.\n\n[[MEMORY_WRITE_START]] matter={$case->id} type=fact content: A durable fact [[MEMORY_WRITE_END]]",
-        false,
     );
 
     $message = Message::where('conversation_id', $conversation->id)
@@ -1177,7 +1086,6 @@ it('persists the reply and the memory when the case carries no organization', fu
         $conversation,
         "[[DOCUMENT_START]]\nDEMAND LETTER\nVery truly yours,\n[[DOCUMENT_END]]\n\n"
         ."[[MEMORY_WRITE_START]] matter={$case->id} type=fact content: DPWH took possession of the 1,200 sq. m. portion [[MEMORY_WRITE_END]]",
-        false,
     );
 
     $message = Message::where('conversation_id', $conversation->id)

@@ -2,6 +2,7 @@
 
 use App\Ai\Tools\CreateTodoTool;
 use App\Ai\Tools\RequestIntakeFormTool;
+use App\Support\DraftingIntent;
 use Illuminate\JsonSchema\JsonSchemaTypeFactory;
 use Laravel\Ai\Tools\Request;
 use Laravel\Ai\Tools\ToolNameResolver;
@@ -28,16 +29,45 @@ it('request intake form schema serializes to a valid tool definition', function 
         ->toHaveKeys(['key', 'label', 'type', 'options', 'required']);
 });
 
-it('request intake form handle echoes the declared document type', function () {
+it('request intake form handle echoes the declared document type and the fields it accepted', function () {
     $result = (new RequestIntakeFormTool)->handle(new Request([
         'document_type' => 'special power of attorney',
         'fields' => [['key' => 'principal_name', 'label' => 'Principal', 'type' => 'text', 'required' => true]],
     ]));
 
-    expect($result)->toBe(json_encode([
-        'document_type' => 'special power of attorney',
-        'fields' => [['key' => 'principal_name', 'label' => 'Principal', 'type' => 'text', 'required' => true]],
-    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    expect(json_decode($result, true))
+        ->toHaveKey('document_type', 'special power of attorney')
+        ->toHaveKey('accepted', 1)
+        ->toHaveKey('fields', [['key' => 'principal_name', 'label' => 'Principal', 'type' => 'text', 'required' => true]])
+        // The model is told to stop and wait rather than left to infer it from
+        // a bare echo of its own arguments.
+        ->and($result)->toContain('[Intake Form Submission]');
+});
+
+it('opens no form and says so when nothing usable was passed', function () {
+    // A form with no fields is a dead end the user cannot answer, so the tool
+    // refuses it and tells the model not to promise one.
+    $result = (new RequestIntakeFormTool)->handle(new Request([
+        'document_type' => 'complaint',
+        'fields' => [['type' => 'text'], 'not-an-object'],
+    ]));
+
+    expect(json_decode($result, true))
+        ->toHaveKey('accepted', 0)
+        ->not->toHaveKey('fields')
+        ->and($result)->toContain('No form was shown');
+});
+
+it('caps a runaway field list at the number the wizard can reasonably ask for', function () {
+    $fields = [];
+
+    for ($i = 0; $i < 40; $i++) {
+        $fields[] = ['key' => 'field_'.$i, 'label' => 'Field '.$i, 'type' => 'text', 'required' => false];
+    }
+
+    $result = json_decode((new RequestIntakeFormTool)->handle(new Request(['fields' => $fields])), true);
+
+    expect($result['accepted'])->toBe(DraftingIntent::MAX_INTAKE_FIELDS);
 });
 
 it('request intake form handle tolerates a missing document type', function () {
@@ -66,8 +96,10 @@ it('fires the gathering_facts status when the intake form tool runs', function (
 });
 
 it('does not fire a status when the intake form tool has no callback', function () {
+    // The point is that a null callback is not invoked; the tool still answers.
     $result = (new RequestIntakeFormTool)->handle(new Request([
         'document_type' => 'complaint',
+        'fields' => [['key' => 'complainant_name', 'label' => 'Complainant', 'type' => 'text', 'required' => true]],
     ]));
 
     expect(json_decode($result, true))->toHaveKey('document_type', 'complaint');

@@ -3,7 +3,9 @@
 namespace App\Services\Chat;
 
 use App\Models\Advisory;
+use App\Support\ToolInput;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
  * The one place advisories are written, whether the model filed them through
@@ -15,6 +17,13 @@ use Illuminate\Support\Facades\Log;
  */
 class AdvisoryRecorder
 {
+    /**
+     * More flags than this on one turn is a model itemising the whole answer
+     * rather than naming what the reader would otherwise miss — and a list
+     * that long is scrolled past exactly like the prose it replaced.
+     */
+    private const MAX_ITEMS = 12;
+
     /**
      * Record a batch of flags, dropping boilerplate and anything this
      * conversation has already raised.
@@ -37,8 +46,11 @@ class AdvisoryRecorder
         $created = [];
         $order = 0;
 
-        foreach ($items as $item) {
-            $title = trim((string) ($item['title'] ?? ''));
+        foreach (ToolInput::items($items, self::MAX_ITEMS) as $item) {
+            // Read defensively: `kind` and `severity` are database enums, so a
+            // value outside their sets is a constraint violation that takes
+            // down the turn rather than a bad row.
+            $title = ToolInput::text($item, 'title', 255);
 
             if ($title === '') {
                 continue;
@@ -61,14 +73,26 @@ class AdvisoryRecorder
 
             $seen[] = $key;
 
-            $advisory = Advisory::create([
-                'conversation_id' => $conversationId,
-                'kind' => $this->normalize($item['kind'] ?? null, Advisory::KINDS, 'caveat'),
-                'title' => $title,
-                'detail' => trim((string) ($item['detail'] ?? '')) ?: null,
-                'severity' => $this->normalize($item['severity'] ?? null, Advisory::SEVERITIES, 'medium'),
-                'order' => $order++,
-            ]);
+            try {
+                $advisory = Advisory::create([
+                    'conversation_id' => $conversationId,
+                    'kind' => ToolInput::enum($item, 'kind', Advisory::KINDS, 'caveat'),
+                    'title' => $title,
+                    'detail' => ToolInput::multilineText($item, 'detail', 1000) ?: null,
+                    'severity' => ToolInput::enum($item, 'severity', Advisory::SEVERITIES, 'medium'),
+                    'order' => $order++,
+                ]);
+            } catch (Throwable $exception) {
+                // One flag failing costs that flag, never the answer it was
+                // filed against.
+                Log::warning('Could not record an advisory', [
+                    'conversation_id' => $conversationId,
+                    'title' => $title,
+                    'exception' => $exception->getMessage(),
+                ]);
+
+                continue;
+            }
 
             $created[] = [
                 'id' => $advisory->id,
@@ -126,17 +150,5 @@ class AdvisoryRecorder
         }
 
         return false;
-    }
-
-    /**
-     * Coerce a model-supplied enum value to one the column accepts.
-     *
-     * @param  array<int, string>  $allowed
-     */
-    protected function normalize(mixed $value, array $allowed, string $fallback): string
-    {
-        $normalized = mb_strtolower(trim((string) $value));
-
-        return in_array($normalized, $allowed, true) ? $normalized : $fallback;
     }
 }

@@ -86,6 +86,7 @@ final class VettingRequestService
             'processing_fee' => $breakdown['processing_fee'] > 0 ? $breakdown['processing_fee'] : null,
             'payment_status' => VettingPaymentStatus::None,
             'deadline_at' => $data['deadline_at'] ?? null,
+            'letter_draft_message_id' => $data['letter_draft_message_id'] ?? null,
         ]);
 
         if ($request->requiresPayment()) {

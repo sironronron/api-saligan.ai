@@ -7,6 +7,11 @@ use Illuminate\Support\Facades\Storage;
 
 beforeEach(function () {
     Storage::fake('local');
+
+    // The command's job is to migrate legacy files, which it must be able to
+    // do whether or not the deployment already refuses to serve them. Both
+    // settings are covered: the default here, and the refusing one below.
+    config()->set('saligan.documents.require_authenticated_encryption', false);
 });
 
 /**
@@ -28,6 +33,25 @@ function legacyDocument(string $path, string $content): Document
 
     return Document::factory()->create(['storage_path' => $path]);
 }
+
+it('rewrites legacy files even when the deployment already refuses that format', function () {
+    // The refusal message tells the operator to run this command, so running
+    // it has to work. Before the read exemption it threw on every file and
+    // stranded the whole legacy corpus.
+    config()->set('saligan.documents.require_authenticated_encryption', true);
+
+    $document = legacyDocument('documents/strict.txt', 'still readable afterwards');
+
+    $this->artisan('saligan:reencrypt-documents')->assertSuccessful();
+
+    expect(app(DocumentEncryptor::class)->formatVersion($document->storage_path))->toBe(2);
+
+    $decrypted = app(DocumentEncryptor::class)->decryptToTemp($document->storage_path);
+    $content = file_get_contents($decrypted);
+    @unlink($decrypted);
+
+    expect($content)->toBe('still readable afterwards');
+});
 
 it('rewrites legacy files as authenticated ones, preserving their contents', function () {
     $document = legacyDocument('documents/legacy.txt', 'the original contents');

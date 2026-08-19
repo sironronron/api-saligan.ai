@@ -1086,6 +1086,8 @@ final class DraftingIntent
      * @param  mixed  $fields  The raw tool-call argument, of any shape.
      * @return array<int, array{key: string, label: string, type: string, options?: array<int, string>, required: bool}>
      */
+    public const MAX_INTAKE_FIELDS = 14;
+
     public static function normalizeIntakeFields(mixed $fields): array
     {
         if (! is_array($fields)) {
@@ -1096,6 +1098,14 @@ final class DraftingIntent
         $seen = [];
 
         foreach ($fields as $field) {
+            // A form longer than this is not a form, it is an interview. The
+            // wizard shows one field at a time, so an uncapped list is a
+            // model-authored questionnaire the user has to click through
+            // before they can get the document they asked for.
+            if (count($normalized) >= self::MAX_INTAKE_FIELDS) {
+                break;
+            }
+
             if (! is_array($field)) {
                 continue;
             }

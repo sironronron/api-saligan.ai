@@ -43,6 +43,7 @@ class VettingRequestResource extends JsonResource
             'session_link' => $this->session_scheduled_at !== null ? $this->session_link : null,
             'session_provider' => $this->session_provider,
             'certificate_number' => $this->certificate_number,
+            'letter_draft_message_id' => $this->letter_draft_message_id,
             'completed_at' => $this->completed_at,
             'cancelled_at' => $this->cancelled_at,
             'cancellation_reason' => $this->cancellation_reason,

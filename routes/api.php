@@ -19,12 +19,14 @@ use App\Http\Controllers\Api\DocumentController;
 use App\Http\Controllers\Api\ExportController;
 use App\Http\Controllers\Api\FeedbackController;
 use App\Http\Controllers\Api\GeneratedDocumentController;
+use App\Http\Controllers\Api\IntegrationController;
 use App\Http\Controllers\Api\KycController;
 use App\Http\Controllers\Api\LabelController;
 use App\Http\Controllers\Api\LawyerProfileController;
 use App\Http\Controllers\Api\LawyerVettingRequestController;
 use App\Http\Controllers\Api\LegalCaseController;
 use App\Http\Controllers\Api\LegalPageController;
+use App\Http\Controllers\Api\LetterCommentController;
 use App\Http\Controllers\Api\NotarialJournalController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\OrganizationController;
@@ -36,6 +38,7 @@ use App\Http\Controllers\Api\TaskAttachmentController;
 use App\Http\Controllers\Api\TaskCommentController;
 use App\Http\Controllers\Api\TemplateController;
 use App\Http\Controllers\Api\TermsController;
+use App\Http\Controllers\Api\TextRewriteController;
 use App\Http\Controllers\Api\TodoController;
 use App\Http\Controllers\Api\TourController;
 use App\Http\Controllers\Api\TrialCodeController;
@@ -77,6 +80,17 @@ Route::get('/terms/document', [TermsController::class, 'document']);
 Route::get('/organizations/{organization}/logo', [OrganizationController::class, 'logo'])
     ->middleware('signed')
     ->name('organizations.logo');
+
+// The OAuth landing for add-on integrations. The provider returns the browser
+// here with a code and an encrypted, expiry-stamped state; no bearer token
+// rides along, so the route is public and the state is the authentication.
+Route::get('/integrations/callback', [IntegrationController::class, 'callback']);
+
+// Push notifications from the add-on providers. Public by necessity — Google
+// and Microsoft cannot carry a bearer token — and authenticated by the
+// channel/subscription metadata only the registration stored.
+Route::post('/integrations/webhooks/google', [IntegrationController::class, 'googleWebhook']);
+Route::post('/integrations/webhooks/microsoft', [IntegrationController::class, 'microsoftWebhook']);
 
 Route::middleware(['auth:supabase', 'track_last_used', 'not_suspended'])->group(function (): void {
     // Exempt from `not_suspended`: the client has to be able to read back the
@@ -123,6 +137,12 @@ Route::middleware(['auth:supabase', 'track_last_used', 'not_suspended'])->group(
     Route::post('/subscription/seats', [SubscriptionController::class, 'addSeats']);
     Route::delete('/subscription/seats', [SubscriptionController::class, 'removeSeats']);
 
+    // The add-ons catalogue is a discovery surface, so it stays readable on
+    // every plan — a locked card still has to render. Disconnecting is allowed
+    // here too: cutting a cord is a safety act, not a feature a plan gates.
+    Route::get('/integrations', [IntegrationController::class, 'index']);
+    Route::delete('/integrations/{provider}', [IntegrationController::class, 'disconnect']);
+
     Route::get('/organizations', [OrganizationController::class, 'show']);
     Route::post('/organizations', [OrganizationController::class, 'store']);
     Route::patch('/organizations', [OrganizationController::class, 'update']);
@@ -167,6 +187,22 @@ Route::middleware(['auth:supabase', 'track_last_used', 'not_suspended'])->group(
     Route::get('/vetting-requests/{vettingRequest}/file', [VettingRequestController::class, 'file']);
 
     Route::middleware(['active_subscription', 'terms.accepted'])->group(function (): void {
+        // Add-on integrations. Every mutating call re-checks the plan's
+        // `integrations` capability server-side; the locked cards are an
+        // upsell, not the gate.
+        Route::post('/integrations/{provider}/connect', [IntegrationController::class, 'connect']);
+        Route::post('/integrations/{provider}/capabilities/{capability}', [IntegrationController::class, 'toggleCapability']);
+        Route::post('/integrations/{provider}/sync', [IntegrationController::class, 'sync']);
+        Route::post('/integrations/{provider}/reauthorize', [IntegrationController::class, 'reauthorize']);
+
+        // Firm-level add-on management: who has connected what, org-wide
+        // capability policies, the per-seat vs firm-wide switch, and the audit
+        // trail. Organization managers only.
+        Route::get('/organizations/integrations', [IntegrationController::class, 'admin']);
+        Route::put('/organizations/integrations/policies', [IntegrationController::class, 'updatePolicies']);
+        Route::put('/organizations/integrations/connection-mode', [IntegrationController::class, 'updateConnectionMode']);
+        Route::get('/organizations/integrations/audit-logs', [IntegrationController::class, 'auditLogs']);
+
         Route::post('/labels/reorder', [LabelController::class, 'reorder']);
         Route::apiResource('labels', LabelController::class)->only(['index', 'store', 'update', 'destroy']);
 
@@ -178,20 +214,26 @@ Route::middleware(['auth:supabase', 'track_last_used', 'not_suspended'])->group(
 
         Route::get('/generated-documents', [GeneratedDocumentController::class, 'index']);
         Route::get('/generated-documents/{message}', [GeneratedDocumentController::class, 'show']);
+        Route::patch('/messages/{message}/letter-draft', [GeneratedDocumentController::class, 'saveLetterDraft']);
 
         Route::apiResource('conversations', ConversationController::class);
         Route::post('/conversations/{conversation}/messages', [ChatController::class, 'store']);
+        Route::post('/conversations/{conversation}/pin', [ConversationController::class, 'pin']);
+        Route::post('/conversations/{conversation}/unpin', [ConversationController::class, 'unpin']);
 
         Route::post('/messages/{message}/export/word', [ExportController::class, 'word']);
         Route::post('/messages/{message}/export/pdf', [ExportController::class, 'pdf']);
         Route::post('/messages/{message}/feedback', [FeedbackController::class, 'store']);
         Route::delete('/messages/{message}/feedback', [FeedbackController::class, 'destroy']);
 
+        Route::post('/text/rewrite', [TextRewriteController::class, 'store']);
+
         Route::apiResource('todos', TodoController::class)->only(['index', 'store', 'update', 'destroy']);
         Route::post('/todos/reorder', [TodoController::class, 'reorder']);
 
         Route::apiResource('todos.subtasks', SubtaskController::class)->except(['show']);
         Route::apiResource('todos.comments', TaskCommentController::class)->except(['show', 'update']);
+        Route::apiResource('messages.comments', LetterCommentController::class)->except(['show', 'update']);
         Route::get('/todos/{todo}/activities', [TaskActivityController::class, 'index']);
         Route::apiResource('todos.attachments', TaskAttachmentController::class)->only(['index', 'store', 'destroy']);
 

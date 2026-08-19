@@ -145,3 +145,45 @@ it('forbids deleting another user conversation', function () {
         ->deleteJson("/api/conversations/{$conversation->id}")
         ->assertForbidden();
 });
+
+it('pins a conversation', function () {
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $this->signInAs($this->user)
+        ->postJson("/api/conversations/{$conversation->id}/pin")
+        ->assertOk()
+        ->assertJsonPath('data.id', $conversation->id)
+        ->assertJsonPath('data.pinned', true)
+        ->assertJsonPath('data.pinned_at', $conversation->fresh()->pinned_at?->toISOString());
+});
+
+it('unpins a conversation', function () {
+    $conversation = Conversation::factory()->for($this->user)->create(['pinned_at' => now()]);
+
+    $this->signInAs($this->user)
+        ->postJson("/api/conversations/{$conversation->id}/unpin")
+        ->assertOk()
+        ->assertJsonPath('data.pinned', false)
+        ->assertJsonPath('data.pinned_at', null);
+
+    $this->assertNull($conversation->fresh()->pinned_at);
+});
+
+it('forbids pinning another user conversation', function () {
+    $conversation = Conversation::factory()->for(User::factory())->create();
+
+    $this->signInAs($this->user)
+        ->postJson("/api/conversations/{$conversation->id}/pin")
+        ->assertForbidden();
+});
+
+it('leads the list with pinned conversations', function () {
+    $pinned = Conversation::factory()->for($this->user)->create(['pinned_at' => now()->subMinute()]);
+    $recent = Conversation::factory()->for($this->user)->create();
+
+    $this->signInAs($this->user)
+        ->getJson('/api/conversations')
+        ->assertOk()
+        ->assertJsonPath('data.0.id', $pinned->id)
+        ->assertJsonPath('data.1.id', $recent->id);
+});

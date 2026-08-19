@@ -19,6 +19,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'title',
     'purpose',
     'provider',
+    'pinned_at',
 ])]
 class Conversation extends Model
 {
@@ -37,7 +38,18 @@ class Conversation extends Model
     {
         return [
             'provider' => ChatProvider::class,
+            'pinned_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Pinned threads lead the list, each group most-recently-pinned first.
+     *
+     * @param  Builder<Conversation>  $query
+     */
+    public function scopeOrderedByPinned($query): void
+    {
+        $query->orderByRaw('pinned_at desc nulls last')->latest();
     }
 
     /**

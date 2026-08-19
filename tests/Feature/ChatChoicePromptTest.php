@@ -24,7 +24,7 @@ function makeChoiceChatService(array $events): ChatService
     {
         public function __construct(private array $events) {}
 
-        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = []): StreamableAgentResponse
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = [], ?callable $onWebSearch = null): StreamableAgentResponse
         {
             $message = Message::create([
                 'conversation_id' => $conversation->id,

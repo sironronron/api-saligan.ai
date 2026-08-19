@@ -29,6 +29,14 @@ class MessageResource extends JsonResource
             'attachments' => MessageAttachments::for($this->resource),
             'feedback' => $this->feedback,
             'template_id' => $this->metadata['template_id'] ?? null,
+            'letter_draft' => $this->metadata['letter_draft'] ?? null,
+            // Claims the reply made about actions the turn never took. Sent on
+            // reload as well as live, so the caveat stays attached to the
+            // answer it qualifies rather than vanishing with the stream.
+            'tool_notices' => $this->metadata['tool_notices'] ?? [],
+            // The steps this answer went through, for the collapsed "how this
+            // was worked out" line the reader can expand under the reply.
+            'activity' => $this->metadata['activity'] ?? null,
             'created_at' => $this->created_at,
         ];
     }

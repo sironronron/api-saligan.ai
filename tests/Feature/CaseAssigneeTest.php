@@ -215,13 +215,15 @@ it('shows an assignee the drafts generated on the case by a colleague', function
     $shared = Message::factory()->create([
         'conversation_id' => $onCase->id,
         'role' => MessageRole::Assistant,
-        'content' => "COMPLAINT\n\n[Download as Word](/api/messages/abc/export/word)",
+        'content' => 'COMPLAINT',
+        'metadata' => ['letter_draft' => ['content' => ['type' => 'doc', 'content' => []], 'title' => 'Complaint']],
     ]);
 
     $hidden = Message::factory()->create([
         'conversation_id' => $private->id,
         'role' => MessageRole::Assistant,
-        'content' => "AFFIDAVIT\n\n[Download as PDF](/api/messages/def/export/pdf)",
+        'content' => 'AFFIDAVIT',
+        'metadata' => ['letter_draft' => ['content' => ['type' => 'doc', 'content' => []], 'title' => 'Affidavit']],
     ]);
 
     $ids = $this->signInAs($this->colleague)

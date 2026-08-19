@@ -48,6 +48,9 @@ final class PlanFeatures
     /** Create an organization, invite members, and buy seats. */
     public const TEAMS = 'teams';
 
+    /** Connect Google Workspace and Microsoft SharePoint add-ons. */
+    public const INTEGRATIONS = 'integrations';
+
     /**
      * The one support promise. There is deliberately no "priority support"
      * tier beneath it: a queue position is not something a reader can check,
@@ -107,6 +110,11 @@ final class PlanFeatures
             self::TEAMS => [
                 'label' => 'Team accounts',
                 'description' => 'Invite colleagues onto shared matters and buy seats as the team grows.',
+                'group' => self::GROUP_CAPABILITY,
+            ],
+            self::INTEGRATIONS => [
+                'label' => 'Add-ons & integrations',
+                'description' => 'Connect Google Workspace and Microsoft SharePoint and choose exactly which capabilities each one gets.',
                 'group' => self::GROUP_CAPABILITY,
             ],
             self::SUPPORT_24_7 => [

@@ -12,6 +12,21 @@ class Todo extends Model
 {
     use HasFactory, HasUuids;
 
+    /**
+     * The statuses the column accepts. Declared here because it is a database
+     * enum: a value outside this set is not a soft failure but a constraint
+     * violation that takes the whole request down, so anything writing a todo
+     * — the AI tool above all — normalizes against this list first.
+     *
+     * @var array<int, string>
+     */
+    public const STATUSES = ['pending', 'on-going', 'completed'];
+
+    /**
+     * @var array<int, string>
+     */
+    public const PRIORITIES = ['low', 'medium', 'high'];
+
     protected $fillable = [
         'conversation_id',
         'title',

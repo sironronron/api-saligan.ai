@@ -101,7 +101,12 @@ class ReencryptDocuments extends Command
      */
     protected function rewrite(DocumentEncryptor $encryptor, string $storagePath): void
     {
-        $plaintextPath = $encryptor->decryptToTemp($storagePath);
+        // Reading v1 is the whole job. A deployment that already refuses the
+        // format still has to be able to migrate out of it, so the refusal is
+        // lifted for exactly this read.
+        $plaintextPath = $encryptor->readingLegacy(
+            fn () => $encryptor->decryptToTemp($storagePath),
+        );
 
         if ($plaintextPath === null) {
             throw new \RuntimeException('The file is not encrypted.');

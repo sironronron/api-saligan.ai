@@ -87,11 +87,18 @@ class LegalDigestService
     public function instructions(): string
     {
         return <<<'PROMPT'
-You write digests of Philippine legal authorities for practising lawyers.
+You write case digests and rule indexes of Philippine legal authorities, in the
+form a practising lawyer or a law student expects from a digest: the legal
+substance only, with the surrounding text cut away.
+
+A digest is NOT a summary of the document as an object. Never describe what the
+file is, what it is used for, why it matters, who might read it, or what it
+contains. Never write sentences like "This document sets out..." or "This is
+useful for...". Write the law and the facts themselves.
 
 For a COURT DECISION, use exactly these labelled lines, each on its own line:
 Nature: the kind of case and how it reached this court, in one sentence.
-Facts: the material facts, in two or three sentences.
+Facts: the material facts, in two or three sentences, in the order they happened.
 Issue: the question the court actually decided, phrased as a question.
 Ruling: how the court resolved that issue, and the disposition.
 Doctrine: the rule this case is cited for, stated so it can be applied to other facts.
@@ -99,12 +106,28 @@ Doctrine: the rule this case is cited for, stated so it can be applied to other 
 For a STATUTE, RULE, or ADMINISTRATIVE ISSUANCE, use exactly these lines:
 Nature: what the instrument is and what it governs.
 Scope: who and what it applies to.
-Key provisions: the operative rules, as up to four short bullet lines beginning with "- ".
+Key provisions: the operative rules, as up to six short bullet lines beginning
+  with "- ". Lead each with its section or article number where the text gives
+  one, then state the rule itself.
 Notes: amendments, repeals, or effectivity dates that appear in the text.
+
+For any OTHER legal document — a contract, pleading, affidavit, decision of an
+agency, or a party's own case file — use exactly these lines:
+Nature: what kind of instrument it is and what it does.
+Parties: who is bound or involved, by role.
+Key terms: the operative obligations, dates, and amounts, as up to six short
+  bullet lines beginning with "- ".
+Notes: anything that changes the legal effect — conditions, deadlines, defects,
+  or missing signatures the text itself shows.
 
 Rules:
 - Use only what the supplied text states. Never add a holding, a date, a section
   number, or a party the text does not contain.
+- Keep every label exactly as written above, followed by a colon. The reader
+  parses these labels to lay the digest out.
+- Cut procedural recitals, quoted pleadings, and boilerplate. What a digest is
+  for is finding the rule, the facts, and the outcome without reading the whole
+  authority.
 - If the text is too fragmentary to digest (a navigation page, an index, an
   error page), reply with exactly: NO_DIGEST
 - Write plainly, in English, with no preamble and no closing commentary.

@@ -11,6 +11,7 @@ use App\Services\Billing\BillingGatewayManager;
 use App\Services\Billing\LemonSqueezyClient;
 use App\Services\Billing\PaymongoClient;
 use App\Services\Billing\SeatBillingService;
+use App\Services\Integrations\IntegrationEligibility;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -161,6 +162,17 @@ class SubscriptionController extends Controller
             'seats_purchased' => max($subscription->seats_purchased, $plan->included_seats ?? 1),
         ]);
 
+        // A plan change can carry add-ons in or take them away; reconcile the
+        // organization's integrations now rather than waiting for the sweep.
+        $eligibility = app(IntegrationEligibility::class);
+        $organization = $request->user()->organization;
+
+        if ($organization !== null) {
+            $eligibility->syncOrganization($organization);
+        } else {
+            $eligibility->syncUser($request->user());
+        }
+
         return response()->json([
             'data' => (new SubscriptionResource($subscription->fresh()->load('plan')))->resolve(),
         ]);
@@ -180,6 +192,18 @@ class SubscriptionController extends Controller
             'status' => Subscription::STATUS_CANCELLED,
             'cancelled_at' => now(),
         ]);
+
+        // Cancelling drops the account below the tiers that carry add-ons, so
+        // pause its integrations now rather than at the next sweep. Settings
+        // are kept; reconnecting is one upgrade away.
+        $eligibility = app(IntegrationEligibility::class);
+        $organization = $request->user()->organization;
+
+        if ($organization !== null) {
+            $eligibility->syncOrganization($organization);
+        } else {
+            $eligibility->syncUser($request->user());
+        }
 
         return response()->json([
             'data' => (new SubscriptionResource($subscription->fresh()->load('plan')))->resolve(),

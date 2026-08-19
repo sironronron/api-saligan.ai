@@ -2,6 +2,8 @@
 
 namespace App\Ai\Tools;
 
+use App\Support\ToolInput;
+use App\Support\ToolResult;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\JsonSchema\Types\Type;
 use Laravel\Ai\Contracts\Tool;
@@ -9,6 +11,9 @@ use Laravel\Ai\Tools\Request;
 
 class FillTemplateFieldsTool implements Tool
 {
+    /** A template with more placeholders than this is not a letter. */
+    private const MAX_FIELDS = 80;
+
     /**
      * @param  (callable(string, ?string): void)|null  $onStatus  Fired the moment the model calls
      *                                                            this tool, so status reflects
@@ -52,14 +57,49 @@ class FillTemplateFieldsTool implements Tool
     {
         $this->onStatus?->__invoke('filling_template');
 
-        $fields = $request->array('fields') ?? [];
+        $accepted = [];
+        $rejected = [];
 
-        $this->onFields?->__invoke($fields);
+        foreach (ToolInput::items($request->array('fields'), self::MAX_FIELDS) as $position => $field) {
+            $key = ToolInput::text($field, 'key', 200);
+            // The replacement itself may legitimately run to several lines —
+            // an address block, a recital — so it is not collapsed the way a
+            // placeholder key is.
+            $value = ToolInput::multilineText($field, 'value', 4000);
 
-        return json_encode([
-            'fields' => $fields,
+            if ($key === '') {
+                $rejected[] = 'Field '.($position + 1).' had no placeholder key.';
+
+                continue;
+            }
+
+            if ($value === '') {
+                // An empty replacement would silently blank a placeholder in
+                // the user's own letterhead, which reads as a corrupted export
+                // rather than as a fact nobody supplied.
+                $rejected[] = '"'.$key.'" had no value, so the placeholder was left as it is.';
+
+                continue;
+            }
+
+            $accepted[] = ['key' => $key, 'value' => $value];
+        }
+
+        if ($accepted === []) {
+            return ToolResult::none(
+                'No usable field values were supplied.',
+                'The template was not filled. Do not tell the user their document is ready. Say which details you '
+                    .'still need, and call this tool again once you have them.',
+            );
+        }
+
+        $this->onFields?->__invoke($accepted);
+
+        return ToolResult::ok([
             'status' => 'filled',
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            'accepted' => count($accepted),
+            'fields' => $accepted,
+        ], $rejected);
     }
 
     /**

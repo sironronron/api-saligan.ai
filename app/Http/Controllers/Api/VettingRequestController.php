@@ -47,6 +47,7 @@ class VettingRequestController extends Controller
             'property_value' => ['sometimes', 'nullable', 'numeric', 'min:0'],
             'document_id' => ['required_without:file', 'nullable', 'uuid', 'exists:documents,id'],
             'file' => ['required_without:document_id', 'nullable', 'file', 'max:'.(config('saligan.documents.max_size_mb') * 1024), $this->documentRule()],
+            'letter_draft_message_id' => ['sometimes', 'nullable', 'uuid', 'exists:messages,id'],
         ]);
 
         $document = isset($validated['document_id'])
