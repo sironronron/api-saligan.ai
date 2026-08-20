@@ -1,0 +1,153 @@
+<?php
+
+use App\Enums\MessageRole;
+use App\Models\Advisory;
+use App\Models\Conversation;
+use App\Models\LegalCase;
+use App\Models\MatterMemory;
+use App\Models\Message;
+use App\Models\Todo;
+use App\Models\User;
+use App\Support\UserProfile;
+use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
+
+beforeEach(function () {
+    config([
+        'saligan.ai_provider.internal_secret' => 'test-internal-secret',
+        'saligan.chat.provider' => 'ollama',
+    ]);
+
+    $this->user = User::factory()->create();
+    $this->conversation = Conversation::factory()->for($this->user)->create();
+});
+
+function internalAiPost(string $path, array $payload = []): TestResponse
+{
+    return test()->withToken('test-internal-secret')->postJson($path, $payload);
+}
+
+it('protects every internal route with the shared secret', function () {
+    $this->getJson("/internal/conversations/{$this->conversation->id}/context")
+        ->assertUnauthorized()
+        ->assertJsonPath('message', 'Invalid internal service credential.');
+});
+
+it('returns the prompt-building context', function () {
+    $this->withToken('test-internal-secret')
+        ->getJson("/internal/conversations/{$this->conversation->id}/context")
+        ->assertOk()
+        ->assertJsonPath('user_id', $this->user->id)
+        ->assertJsonPath('provider', 'ollama')
+        ->assertJsonPath('messages', []);
+});
+
+it('returns onboarding profile calibration in the prompt-building context', function () {
+    $this->user->forceFill([
+        'kyc_role' => UserProfile::ROLE_BUSINESS_OWNER,
+        'kyc_use_case' => UserProfile::USE_CASE_CLIENT_WORK,
+        'kyc_experience_level' => UserProfile::EXP_PROFESSIONAL,
+        'kyc_completed_at' => now(),
+    ])->save();
+
+    $this->withToken('test-internal-secret')
+        ->getJson("/internal/conversations/{$this->conversation->id}/context")
+        ->assertOk()
+        ->assertJsonPath('user_profile', fn (string $profile): bool => str_contains($profile, 'Role: Business Owner / Entrepreneur')
+            && str_contains($profile, 'Primary use: Preparing documents/research for clients')
+            && str_contains($profile, 'Experience level: Professional'));
+});
+
+it('omits onboarding calibration when the profile was not completed', function () {
+    $this->withToken('test-internal-secret')
+        ->getJson("/internal/conversations/{$this->conversation->id}/context")
+        ->assertOk()
+        ->assertJsonPath('user_profile', '');
+});
+
+it('persists a completed turn idempotently', function () {
+    $messageId = (string) Str::uuid();
+    $payload = [
+        'message_id' => $messageId,
+        'provider' => 'gemini',
+        'user' => ['content' => 'What does the law say?', 'attachment_ids' => []],
+        'assistant' => ['content' => 'It depends on the governing statute.'],
+        'metadata' => [
+            'activity' => [['status' => 'composing', 'label' => 'Writing your answer']],
+            'legal_chunk_ids' => [(string) Str::uuid()],
+            'document_chunk_ids' => [(string) Str::uuid()],
+            'web_citations' => [],
+        ],
+    ];
+
+    internalAiPost("/internal/conversations/{$this->conversation->id}/messages", $payload)
+        ->assertOk()
+        ->assertJsonPath('idempotent', false)
+        ->assertJsonPath('message_id', $messageId);
+
+    internalAiPost("/internal/conversations/{$this->conversation->id}/messages", $payload)
+        ->assertOk()
+        ->assertJsonPath('idempotent', true);
+
+    expect(Message::where('conversation_id', $this->conversation->id)->count())->toBe(2);
+    $assistant = Message::findOrFail($messageId);
+
+    expect($assistant->role)->toBe(MessageRole::Assistant)
+        ->and($assistant->provider->value)->toBe('gemini')
+        ->and($assistant->metadata['activity'][0]['status'])->toBe('composing');
+});
+
+it('creates todos and advisories idempotently by tool call id', function () {
+    $todoPayload = [
+        'tool_call_id' => 'todo-call-1',
+        'items' => [['title' => 'File the complaint', 'status' => 'pending']],
+    ];
+    $advisoryPayload = [
+        'tool_call_id' => 'advisory-call-1',
+        'items' => [[
+            'kind' => 'deadline',
+            'title' => 'The filing period may expire this month',
+            'detail' => 'Confirm the date of receipt.',
+            'severity' => 'high',
+        ]],
+    ];
+
+    foreach ([1, 2] as $_) {
+        internalAiPost("/internal/conversations/{$this->conversation->id}/todos", $todoPayload)
+            ->assertOk()
+            ->assertJsonPath('accepted', 1);
+        internalAiPost("/internal/conversations/{$this->conversation->id}/advisories", $advisoryPayload)
+            ->assertOk()
+            ->assertJsonPath('accepted', 1);
+    }
+
+    expect(Todo::where('conversation_id', $this->conversation->id)->count())->toBe(1)
+        ->and(Advisory::where('conversation_id', $this->conversation->id)->count())->toBe(1);
+});
+
+it('normalizes letter callback payloads', function () {
+    internalAiPost("/internal/conversations/{$this->conversation->id}/letters", [
+        'title' => 'Demand Letter',
+        'content' => [
+            'type' => 'doc',
+            'content' => [['type' => 'paragraph', 'content' => []]],
+        ],
+        'tool_call_id' => 'letter-call-1',
+    ])->assertOk()
+        ->assertJsonPath('ok', true)
+        ->assertJsonPath('title', 'Demand Letter')
+        ->assertJsonPath('content.type', 'doc');
+});
+
+it('stores matter memory through the existing domain service', function () {
+    $case = LegalCase::factory()->for($this->user)->create();
+    $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+
+    internalAiPost("/internal/conversations/{$conversation->id}/memory", [
+        'facts' => ["matter={$case->id} type=fact content: The client received notice on 1 August."],
+        'tool_call_id' => 'memory-call-1',
+    ])->assertOk()
+        ->assertJsonPath('accepted', 1);
+
+    expect(MatterMemory::where('case_id', $case->id)->count())->toBe(1);
+});
