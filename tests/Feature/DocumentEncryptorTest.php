@@ -74,6 +74,21 @@ it('detects encrypted files and ignores plaintext files', function () {
         ->and(app(DocumentEncryptor::class)->decryptToTemp('documents/encrypted.txt'))->not->toBeNull();
 });
 
+it('stages decrypted files in private application storage', function () {
+    encryptTo('documents/private-temp.txt', 'private temporary contents');
+
+    $decrypted = app(DocumentEncryptor::class)->decryptToTemp('documents/private-temp.txt');
+
+    try {
+        expect($decrypted)
+            ->not->toBeNull()
+            ->toStartWith(storage_path('app/private/tmp/documents').DIRECTORY_SEPARATOR)
+            ->and(is_writable(dirname((string) $decrypted)))->toBeTrue();
+    } finally {
+        @unlink((string) $decrypted);
+    }
+});
+
 /**
  * Encrypt `$content` to `$path` and hand back the stored bytes.
  */
