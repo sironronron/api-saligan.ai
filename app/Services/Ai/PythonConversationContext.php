@@ -41,7 +41,7 @@ class PythonConversationContext
             'case_context' => $case !== null ? $this->caseContext->for($case) : '',
             'matter_memory' => $case !== null ? $this->memory->getMemoryBlock($case) : '',
             'template' => $template !== null ? $this->template($template) : '',
-            'recent_intake_values' => $this->chat->recentIntakeValues($conversation),
+            'recent_intake_values' => (object) $this->chat->recentIntakeValues($conversation),
             'messages' => $conversation->messages()
                 ->whereIn('role', [MessageRole::User->value, MessageRole::Assistant->value])
                 ->latest()

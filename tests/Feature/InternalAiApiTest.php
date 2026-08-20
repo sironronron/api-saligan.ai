@@ -34,12 +34,14 @@ it('protects every internal route with the shared secret', function () {
 });
 
 it('returns the prompt-building context', function () {
-    $this->withToken('test-internal-secret')
+    $response = $this->withToken('test-internal-secret')
         ->getJson("/internal/conversations/{$this->conversation->id}/context")
         ->assertOk()
         ->assertJsonPath('user_id', $this->user->id)
         ->assertJsonPath('provider', 'ollama')
         ->assertJsonPath('messages', []);
+
+    expect($response->getContent())->toContain('"recent_intake_values":{}');
 });
 
 it('returns onboarding profile calibration in the prompt-building context', function () {
