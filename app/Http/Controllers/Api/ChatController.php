@@ -632,7 +632,9 @@ class ChatController extends Controller
                 'conversation_id' => $conversation->id,
             ]);
 
-            $this->chatService->discardCurrentUserMessage();
+            if (! $this->chatService->persistInterruptedResponse($conversation, $lastText)) {
+                $this->chatService->discardCurrentUserMessage();
+            }
 
             return;
         } catch (Throwable $exception) {
@@ -642,9 +644,12 @@ class ChatController extends Controller
                 'trace' => $exception->getTraceAsString(),
             ]);
 
-            // Roll back the user message persisted before streaming so a
-            // client retry does not duplicate it in the conversation.
-            $this->chatService->discardCurrentUserMessage();
+            if (! $this->chatService->persistInterruptedResponse($conversation, $lastText)) {
+                // A failure before any useful output keeps the existing retry
+                // contract: remove the attempted user turn so retrying it does
+                // not create a duplicate.
+                $this->chatService->discardCurrentUserMessage();
+            }
 
             $error = 'The AI provider could not complete the response. Please try again.';
         }
@@ -670,7 +675,7 @@ class ChatController extends Controller
                 // from the marker onward.
                 $questionSource = $buffering ? $bufferedText : $needInfoText;
 
-                if (! $intakeRequested && ! $choiceRequested && DraftingIntent::needsInfo($questionSource)) {
+                if (! $letterDrafted && ! $intakeRequested && ! $choiceRequested && DraftingIntent::needsInfo($questionSource)) {
                     // A buffered turn wrote nothing to the client, so its
                     // persisted reply is pure question text and goes away
                     // entirely. A gated turn already delivered the lead-in
@@ -710,7 +715,11 @@ class ChatController extends Controller
                     // Any other buffered reply is the model's answer — a
                     // legitimate direct draft (markers waived when the
                     // case supplies the facts) or a plain chat reply.
-                    yield $emit('delta', ['delta' => $bufferedText]);
+                    $reply = trim(DraftingIntent::stripNeedsInfoBlock($bufferedText));
+
+                    if ($reply !== '') {
+                        yield $emit('delta', ['delta' => $reply]);
+                    }
                 }
 
                 // A turn cut short by a question has no finished document, so

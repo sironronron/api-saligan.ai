@@ -1927,6 +1927,84 @@ PROMPT;
     }
 
     /**
+     * Preserve useful work from a stream that ended before its completion
+     * callback could persist the assistant message.
+     */
+    public function persistInterruptedResponse(Conversation $conversation, string $partialText): bool
+    {
+        if ($this->pendingAssistantMessageId === null) {
+            return false;
+        }
+
+        try {
+            $existing = Message::query()->find($this->pendingAssistantMessageId);
+
+            if ($existing !== null) {
+                $this->lastAssistantMessageId = $existing->id;
+
+                return true;
+            }
+
+            $text = trim(MemoryWriteBackParser::stripBlocks(
+                DraftingIntent::stripExportLinks(
+                    DraftingIntent::stripNeedsInfoBlock($partialText),
+                ),
+            ));
+
+            $metadata = ['interrupted' => true];
+            $letterDrafted = $this->draftLetter !== null;
+
+            if ($letterDrafted) {
+                $metadata['letter_draft'] = $this->draftLetter;
+            }
+
+            if ($text === '' && ! $letterDrafted) {
+                return false;
+            }
+
+            if ($text === '') {
+                $text = 'Your letter was drafted, but the response was interrupted. Review it in the letter editor.';
+            }
+
+            $message = Message::create([
+                'id' => $this->pendingAssistantMessageId,
+                'conversation_id' => $conversation->id,
+                'role' => MessageRole::Assistant,
+                'content' => $text,
+                'provider' => $conversation->provider,
+                'metadata' => $metadata,
+            ]);
+
+            $this->lastAssistantMessageId = $message->id;
+
+            Advisory::query()
+                ->where('conversation_id', $conversation->id)
+                ->whereNull('message_id')
+                ->update(['message_id' => $message->id]);
+
+            if ($conversation->title === null) {
+                $conversation->update([
+                    'title' => Str::limit($this->extractTitle($text), 60),
+                ]);
+            }
+
+            if ($letterDrafted) {
+                $this->draftLetter = null;
+            }
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::error('Failed to persist interrupted chat response', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $this->pendingAssistantMessageId,
+                'exception' => $exception,
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
      * Delete the assistant message persisted by the most recent completed
      * stream, used when the model left a premature draft behind and the
      * intake form is triggered instead. No-op when nothing was persisted.
