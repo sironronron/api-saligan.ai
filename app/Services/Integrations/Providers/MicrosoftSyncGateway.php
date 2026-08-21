@@ -86,10 +86,15 @@ class MicrosoftSyncGateway implements ProviderSyncGateway
             ? $request->get('/me/drive/root/delta')->throw()
             : $request->get($deltaLink)->throw();
 
-        $changed = count($response->json('value', []));
-        $nextDelta = $response->header('Preference-Applied') !== null
-            ? $response->json('@odata.deltaLink')
-            : ($response->json('@odata.deltaLink') ?? $response->json('@odata.nextLink'));
+        // Read the OData annotations as literal keys. Response::json($key)
+        // resolves with dot-notation, and Graph's `@odata.deltaLink` /
+        // `@odata.nextLink` keys contain a dot — asking for them by key would
+        // split on it and always miss, dropping the cursor so every sync
+        // re-scanned from the root. Pull the decoded body and index it directly.
+        $body = (array) $response->json();
+
+        $changed = count($body['value'] ?? []);
+        $nextDelta = $body['@odata.deltaLink'] ?? $body['@odata.nextLink'] ?? null;
 
         if (is_string($nextDelta) && $nextDelta !== '') {
             $integration->updateCapabilityState($capability, ['sync_cursor' => $nextDelta]);
