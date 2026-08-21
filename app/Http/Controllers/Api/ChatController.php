@@ -553,8 +553,6 @@ class ChatController extends Controller
                         // while — the dedicated letter agent composes the Tiptap
                         // JSON before the model resumes. Report drafting now so
                         // the user sees progress while it works.
-                        $letterDrafted = true;
-
                         yield $status('drafting_document');
                     }
 
@@ -591,11 +589,11 @@ class ChatController extends Controller
                         // after the tool result carries the chat summary. The
                         // assistant message is not persisted yet, so its pending
                         // id travels with the event for saving edits.
-                        $letterDrafted = true;
-
                         $draft = json_decode((string) $event->toolResult->result, true);
 
                         if (is_array($draft) && isset($draft['content']) && is_array($draft['content'])) {
+                            $letterDrafted = true;
+
                             yield $emit('letter_draft', [
                                 'content' => $draft['content'],
                                 'title' => is_string($draft['title'] ?? null) ? $draft['title'] : null,

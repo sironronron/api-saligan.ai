@@ -11,6 +11,7 @@ use App\Models\Subscription;
 use App\Models\User;
 use App\Services\Chat\ChatService;
 use App\Services\LetterDrafts\LetterDraftService;
+use App\Support\ToolResult;
 use Generator;
 use Laravel\Ai\Prompts\AgentPrompt;
 use Laravel\Ai\Responses\Data\Meta;
@@ -104,6 +105,8 @@ function makeTiptapDraft(string $title): array
 }
 
 beforeEach(function () {
+    config(['saligan.chat.engine' => 'laravel']);
+
     $this->user = User::factory()->create();
     Subscription::factory()->for($this->user)->create([
         'plan_id' => Plan::factory()->pro()->create()->id,
@@ -142,6 +145,36 @@ it('streams a letter_draft event carrying the tiptap document', function () {
         // wire twice, in a frame nothing rendered.
         ->not->toContain('"name":"draft_letter","count"')
         ->not->toContain('event: tool_result');
+});
+
+it('recovers an inline letter when the draft tool returns no document', function () {
+    $failedDraft = json_decode(ToolResult::none(
+        'The letter draft came back empty.',
+        'Write the complete letter directly in your reply.',
+    ), true);
+
+    $this->app->instance(ChatService::class, makeFakeChatServiceForLetters([
+        makeDraftLetterToolCall(['request' => 'Draft a demand letter for unpaid rent.']),
+        makeDraftLetterToolResult($failedDraft),
+        new TextDelta(id: 'a', messageId: 'm1', delta: "[[DOCUMENT_START]]\n**DEMAND LETTER**\n\nDear Mr. Reyes,\n\nPlease pay the unpaid rent within 15 days.\n[[DOCUMENT_END]]", timestamp: 3),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 20), timestamp: 4),
+    ]));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->signInAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'Draft a demand letter for unpaid rent.',
+        ])
+        ->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->toContain('event: tool_call')
+        ->toContain('event: letter_draft')
+        ->toContain('DEMAND LETTER')
+        ->and(substr_count($body, 'event: letter_draft'))->toBe(1);
 });
 
 it('persists the assistant reply as the summary, not the document json', function () {
