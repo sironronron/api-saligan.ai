@@ -2,6 +2,7 @@
 
 namespace App\Services\Retrieval;
 
+use App\Enums\KnowledgeType;
 use App\Models\DocumentChunk;
 use App\Models\LegalCase;
 use App\Models\LegalChunk;
@@ -34,17 +35,36 @@ class RetrievalService
         $deep = PlanFeatures::has($user, PlanFeatures::DEEP_RESEARCH);
 
         $legalLimit = config($deep ? 'saligan.retrieval.max_legal_chunks' : 'saligan.retrieval.base_max_legal_chunks');
+        $standardLimit = config($deep ? 'saligan.retrieval.max_standard_chunks' : 'saligan.retrieval.base_max_standard_chunks');
         $documentLimit = config($deep ? 'saligan.retrieval.max_document_chunks' : 'saligan.retrieval.base_max_document_chunks');
 
         $legalChunks = LegalChunk::query()
             ->select(['id', 'crawled_page_id', 'chunk_index', 'content'])
             ->with(['crawledPage.legalSource:id,name,base_domain'])
+            ->whereHas('crawledPage', function ($query): void {
+                $query->where(function ($query): void {
+                    $query->where('knowledge_type', KnowledgeType::Legal->value)
+                        ->orWhereNull('knowledge_type');
+                });
+            })
             ->whereVectorSimilarTo(
                 'embedding',
                 $embedding,
                 minSimilarity: config('saligan.retrieval.min_similarity'),
             )
             ->limit($legalLimit)
+            ->get();
+
+        $standardChunks = LegalChunk::query()
+            ->select(['id', 'crawled_page_id', 'chunk_index', 'content'])
+            ->with(['crawledPage.legalSource:id,name,base_domain'])
+            ->whereHas('crawledPage', fn ($query) => $query->where('knowledge_type', KnowledgeType::Standard->value))
+            ->whereVectorSimilarTo(
+                'embedding',
+                $embedding,
+                minSimilarity: config('saligan.retrieval.min_similarity'),
+            )
+            ->limit($standardLimit)
             ->get();
 
         $documentChunks = DocumentChunk::query()
@@ -70,6 +90,6 @@ class RetrievalService
             ->limit($documentLimit)
             ->get();
 
-        return new RetrievalResult($legalChunks, $documentChunks);
+        return new RetrievalResult($legalChunks, $documentChunks, $standardChunks);
     }
 }

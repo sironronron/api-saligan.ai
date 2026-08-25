@@ -3,7 +3,9 @@
 use App\Enums\MessageRole;
 use App\Models\Advisory;
 use App\Models\Conversation;
+use App\Models\CrawledPage;
 use App\Models\LegalCase;
+use App\Models\LegalChunk;
 use App\Models\MatterMemory;
 use App\Models\Message;
 use App\Models\Todo;
@@ -97,6 +99,28 @@ it('persists a completed turn idempotently', function () {
     expect($assistant->role)->toBe(MessageRole::Assistant)
         ->and($assistant->provider->value)->toBe('gemini')
         ->and($assistant->metadata['activity'][0]['status'])->toBe('composing');
+});
+
+it('persists standard chunk ids separately from generic callback metadata', function () {
+    $page = CrawledPage::factory()->standard()->create();
+    $chunk = LegalChunk::factory()->for($page)->create();
+    $messageId = (string) Str::uuid();
+
+    internalAiPost("/internal/conversations/{$this->conversation->id}/messages", [
+        'message_id' => $messageId,
+        'user' => ['content' => 'What does the standard define?', 'attachment_ids' => []],
+        'assistant' => ['content' => 'It defines a message format.'],
+        'metadata' => [
+            'standard_chunk_ids' => [$chunk->id],
+            'activity' => [['status' => 'composing']],
+        ],
+    ])->assertOk();
+
+    $assistant = Message::findOrFail($messageId);
+
+    expect($assistant->cited_standard_chunk_ids)->toBe([$chunk->id])
+        ->and($assistant->metadata)->not->toHaveKey('standard_chunk_ids')
+        ->and($assistant->metadata['activity'])->toHaveCount(1);
 });
 
 it('creates todos and advisories idempotently by tool call id', function () {

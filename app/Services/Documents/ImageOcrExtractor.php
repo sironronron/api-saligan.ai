@@ -2,6 +2,7 @@
 
 namespace App\Services\Documents;
 
+use App\Services\Ai\PythonAiClient;
 use Illuminate\Support\Facades\Log;
 use Laravel\Ai\Contracts\Agent;
 use Laravel\Ai\Enums\Lab;
@@ -11,6 +12,10 @@ use Laravel\Ai\Promptable;
 
 class ImageOcrExtractor
 {
+    public function __construct(
+        private readonly PythonAiClient $python,
+    ) {}
+
     /**
      * Whether this extractor can read the given file. Images and PDFs are both
      * handed to the vision model directly — a scanned PDF carries no text
@@ -27,6 +32,10 @@ class ImageOcrExtractor
      */
     public function extract(string $fullPath, string $mimeType): string
     {
+        if (config('saligan.ai_provider.batch_engine') === 'python') {
+            return trim((string) ($this->python->ocr($fullPath, $mimeType)['text'] ?? ''));
+        }
+
         [$provider, $model] = $this->resolveProvider();
 
         $agent = new class implements Agent

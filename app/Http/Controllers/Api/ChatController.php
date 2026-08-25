@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Conversation;
 use App\Models\Document;
 use App\Models\Todo;
+use App\Services\Ai\PythonAiClient;
 use App\Services\Chat\AdvisoryRecorder;
 use App\Services\Chat\ChatService;
 use App\Services\Export\DocumentExportService;
@@ -37,6 +38,7 @@ class ChatController extends Controller
 {
     public function __construct(
         private readonly ChatService $chatService,
+        private readonly PythonAiClient $pythonAi,
     ) {
         //
     }
@@ -63,7 +65,24 @@ class ChatController extends Controller
         $isDraftingRequest = DraftingIntent::matches($message);
         $isIntakeSubmission = DraftingIntent::isIntakeSubmission($message);
 
-        $frames = $this->chatFrames($conversation, $message, $isDraftingRequest, $isIntakeSubmission, $attachmentIds);
+        if (config('saligan.chat.engine') === 'python') {
+            $upstream = $this->pythonAi->streamChat(
+                $conversation->id,
+                $message,
+                $attachmentIds,
+                $isDraftingRequest,
+                $isIntakeSubmission,
+            );
+            $frames = $this->pythonAi->body($upstream);
+        } else {
+            $frames = $this->chatFrames(
+                $conversation,
+                $message,
+                $isDraftingRequest,
+                $isIntakeSubmission,
+                $attachmentIds,
+            );
+        }
 
         return response()->stream($this->streamEmitter($frames), 200, [
             'Content-Type' => 'text/event-stream',

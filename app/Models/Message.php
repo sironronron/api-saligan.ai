@@ -21,6 +21,7 @@ use Illuminate\Support\Str;
     'provider',
     'cited_chunk_ids',
     'cited_legal_chunk_ids',
+    'cited_standard_chunk_ids',
     'metadata',
     'feedback',
     'feedback_at',
@@ -44,6 +45,7 @@ class Message extends Model
             'provider' => ChatProvider::class,
             'cited_chunk_ids' => 'array',
             'cited_legal_chunk_ids' => 'array',
+            'cited_standard_chunk_ids' => 'array',
             'metadata' => 'array',
             'feedback_at' => 'datetime',
         ];

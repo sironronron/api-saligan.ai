@@ -7,6 +7,10 @@ use Laravel\Ai\Enums\Lab;
 
 class EmbeddingService
 {
+    public function __construct(
+        private readonly PythonAiClient $python,
+    ) {}
+
     /**
      * Generate an embedding vector for the given text.
      *
@@ -34,6 +38,10 @@ class EmbeddingService
     {
         if ($texts === []) {
             return [];
+        }
+
+        if (config('saligan.ai_provider.batch_engine') === 'python') {
+            return $this->python->embeddings($texts);
         }
 
         $batchSize = (int) config('saligan.embedding.batch_size', 16);

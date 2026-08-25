@@ -1,6 +1,7 @@
 <?php
 
 use App\Enums\CrawlStatus;
+use App\Enums\KnowledgeType;
 use App\Enums\LegalSourceCategory;
 use App\Jobs\ProcessLegalDocumentUpload;
 use App\Models\CrawledPage;
@@ -84,6 +85,48 @@ it('requires a valid category and a supported file type', function () {
             'category' => LegalSourceCategory::Law->value,
         ])->assertUnprocessable()
         ->assertJsonValidationErrors(['file']);
+});
+
+it('requires standard metadata and rights basis for a standard upload', function () {
+    Storage::fake('local');
+
+    $this->signInAs($this->admin)->postJson('/api/admin/legal-documents', [
+        'file' => UploadedFile::fake()->createWithContent('iso-20022.pdf', '%PDF-1.4 fake bytes'),
+        'knowledge_type' => 'standard',
+        'category' => 'standard',
+    ])->assertUnprocessable()->assertJsonValidationErrors([
+        'standard_code', 'standard_edition', 'standard_issuer', 'standard_status', 'rights_basis',
+    ]);
+});
+
+it('stores standard metadata and dates for a standard upload', function () {
+    Queue::fake();
+    Storage::fake('local');
+
+    $response = $this->signInAs($this->admin)->postJson('/api/admin/legal-documents', [
+        'file' => UploadedFile::fake()->createWithContent('iso-20022.pdf', '%PDF-1.4 fake bytes'),
+        'knowledge_type' => KnowledgeType::Standard->value,
+        'category' => LegalSourceCategory::Standard->value,
+        'standard_code' => 'ISO 20022',
+        'standard_edition' => '2019',
+        'standard_issuer' => 'ISO',
+        'standard_status' => 'current',
+        'standard_publication_date' => '2019-11-01',
+        'standard_review_date' => '2024-11-01',
+        'rights_basis' => 'licensed_copy',
+    ])->assertCreated();
+
+    $page = CrawledPage::findOrFail($response->json('id'));
+
+    expect($page->knowledge_type)->toBe(KnowledgeType::Standard)
+        ->and($page->category)->toBe(LegalSourceCategory::Standard)
+        ->and($page->standard_code)->toBe('ISO 20022')
+        ->and($page->standard_edition)->toBe('2019')
+        ->and($page->standard_issuer)->toBe('ISO')
+        ->and($page->standard_status)->toBe('current')
+        ->and($page->standard_publication_date->toDateString())->toBe('2019-11-01')
+        ->and($page->standard_review_date->toDateString())->toBe('2024-11-01')
+        ->and($page->rights_basis)->toBe('licensed_copy');
 });
 
 it('serves the original file of an uploaded document', function () {
