@@ -10,6 +10,7 @@ use App\Models\Integration;
 use App\Models\Organization;
 use App\Models\User;
 use App\Services\Integrations\IntegrationAdminService;
+use App\Services\Integrations\IntegrationCatalogue;
 use App\Services\Integrations\IntegrationEligibility;
 use App\Services\Integrations\IntegrationManager;
 use App\Services\Integrations\IntegrationSyncService;
