@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\CrawlStatus;
+use App\Enums\KnowledgeType;
 use App\Enums\LegalSourceCategory;
 use Database\Factories\CrawledPageFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
@@ -20,12 +21,20 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'raw_html_path',
     'kind',
     'category',
+    'knowledge_type',
     'storage_path',
     'original_filename',
     'mime_type',
     'law_name',
     'gr_number',
     'promulgation_date',
+    'standard_code',
+    'standard_edition',
+    'standard_issuer',
+    'standard_status',
+    'standard_publication_date',
+    'standard_review_date',
+    'rights_basis',
     'digest',
     'digest_generated_at',
     'crawl_status',
@@ -59,6 +68,9 @@ class CrawledPage extends Model
             'last_crawled_at' => 'datetime',
             'digest_generated_at' => 'datetime',
             'category' => LegalSourceCategory::class,
+            'knowledge_type' => KnowledgeType::class,
+            'standard_publication_date' => 'date',
+            'standard_review_date' => 'date',
         ];
     }
 

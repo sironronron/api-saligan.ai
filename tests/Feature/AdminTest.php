@@ -1,6 +1,7 @@
 <?php
 
 use App\Enums\CrawlStatus;
+use App\Enums\KnowledgeType;
 use App\Enums\LegalSourceCategory;
 use App\Jobs\CrawlLegalSourcePage;
 use App\Models\CrawledPage;
@@ -80,6 +81,29 @@ it('stores the chosen category when creating a legal source', function () {
             'category' => 'not-a-category',
         ])->assertUnprocessable()
         ->assertJsonValidationErrors(['category']);
+});
+
+it('creates a standard crawl source with the standard category and type', function () {
+    $response = $this->signInAs($this->admin)->postJson('/api/admin/legal-sources', [
+        'name' => 'ISO Online Browsing Platform',
+        'base_domain' => 'iso.org',
+        'seed_urls' => ['https://www.iso.org/'],
+        'knowledge_type' => 'standard',
+        'category' => 'standard',
+    ])->assertCreated();
+
+    expect($response->json('knowledge_type'))->toBe(KnowledgeType::Standard->value)
+        ->and($response->json('category'))->toBe(LegalSourceCategory::Standard->value);
+});
+
+it('rejects a legal source with the standard category', function () {
+    $this->signInAs($this->admin)->postJson('/api/admin/legal-sources', [
+        'name' => 'Invalid source',
+        'base_domain' => 'invalid.example',
+        'seed_urls' => ['https://invalid.example/'],
+        'knowledge_type' => 'legal',
+        'category' => 'standard',
+    ])->assertUnprocessable()->assertJsonValidationErrors(['category']);
 });
 
 it('rejects duplicate base domains', function () {

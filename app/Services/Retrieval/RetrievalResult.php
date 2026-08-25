@@ -17,16 +17,24 @@ class RetrievalResult
     public function __construct(
         public readonly Collection $legalChunks,
         public readonly Collection $documentChunks,
+        ?Collection $standardChunks = null,
     ) {
-        //
+        $this->standardChunks = $standardChunks ?? collect();
     }
+
+    /**
+     * @var Collection<int, LegalChunk>
+     */
+    public readonly Collection $standardChunks;
 
     /**
      * Whether neither source produced any relevant context.
      */
     public function isEmpty(): bool
     {
-        return $this->legalChunks->isEmpty() && $this->documentChunks->isEmpty();
+        return $this->legalChunks->isEmpty()
+            && $this->standardChunks->isEmpty()
+            && $this->documentChunks->isEmpty();
     }
 
     /**
@@ -50,6 +58,16 @@ class RetrievalResult
     }
 
     /**
+     * IDs of the retrieved standard chunks, for citation persistence.
+     *
+     * @return array<int, string>
+     */
+    public function standardChunkIds(): array
+    {
+        return $this->standardChunks->pluck('id')->all();
+    }
+
+    /**
      * Format the retrieved context for the prompt, respecting source priority
      * (legal knowledge base first, then the user's own documents).
      *
@@ -66,7 +84,7 @@ class RetrievalResult
         $lines = [];
 
         if ($this->legalChunks->isNotEmpty()) {
-            $lines[] = '### OFFICIAL SOURCES (PRIORITY 1)';
+            $lines[] = '### OFFICIAL LEGAL SOURCES (PRIORITY 1)';
 
             foreach ($this->legalChunks->groupBy(fn (LegalChunk $chunk): string => (string) ($chunk->crawled_page_id ?? $chunk->id)) as $identity => $chunks) {
                 $chunk = $chunks->first();
@@ -91,7 +109,38 @@ class RetrievalResult
                     $tokens[$identity],
                     $label.($meta === [] ? '' : ' ('.implode(', ', $meta).')'),
                     $page?->url,
-                    $chunks->map(fn (LegalChunk $chunk) => PromptGuard::wrap((string) $chunk->content))->filter(),
+                    $chunks->map(fn (LegalChunk $chunk) => (string) $chunk->content)->filter(),
+                );
+            }
+        }
+
+        if ($this->standardChunks->isNotEmpty()) {
+            $lines[] = '### INTERNATIONAL STANDARDS';
+
+            foreach ($this->standardChunks->groupBy(fn (LegalChunk $chunk): string => (string) ($chunk->crawled_page_id ?? $chunk->id)) as $identity => $chunks) {
+                $chunk = $chunks->first();
+                $page = $chunk->crawledPage;
+                $source = $page?->legalSource;
+
+                $label = self::sanitizeLabel($page?->standard_code ?: ($page?->title ?: ($source?->name ?: 'International standard')));
+
+                $meta = [];
+                if ($page?->standard_edition) {
+                    $meta[] = 'edition '.$page->standard_edition;
+                }
+                if ($page?->standard_issuer) {
+                    $meta[] = 'issuer '.$page->standard_issuer;
+                }
+                if ($page?->standard_status) {
+                    $meta[] = 'status '.$page->standard_status;
+                }
+
+                $lines[] = $this->unitBlock(
+                    CitationTokens::STD,
+                    $tokens[$identity],
+                    $label.($meta === [] ? '' : ' ('.implode(', ', $meta).')'),
+                    $page?->url,
+                    $chunks->map(fn (LegalChunk $chunk) => (string) $chunk->content)->filter(),
                 );
             }
         }
@@ -107,7 +156,7 @@ class RetrievalResult
                     $tokens[$identity],
                     self::sanitizeLabel($chunk->document?->original_filename ?? 'Uploaded document'),
                     null,
-                    $chunks->map(fn (DocumentChunk $chunk) => PromptGuard::wrap((string) $chunk->content))->filter(),
+                    $chunks->map(fn (DocumentChunk $chunk) => (string) $chunk->content)->filter(),
                 );
             }
         }
@@ -130,6 +179,10 @@ class RetrievalResult
             $identities[] = (string) ($chunk->crawled_page_id ?? $chunk->id);
         }
 
+        foreach ($this->standardChunks as $chunk) {
+            $identities[] = (string) ($chunk->crawled_page_id ?? $chunk->id);
+        }
+
         foreach ($this->documentChunks as $chunk) {
             $identities[] = (string) ($chunk->document_id ?? $chunk->id);
         }
@@ -142,9 +195,13 @@ class RetrievalResult
      */
     protected function unitBlock(string $kind, string $token, string $label, ?string $url, Collection $contents): string
     {
-        $url = $url !== null ? "\nURL: {$url}" : '';
+        $source = $label;
+        if ($url !== null) {
+            $source .= "\nURL: {$url}";
+        }
+        $source .= "\n".$contents->implode("\n\n");
 
-        return CitationTokens::marker($kind, $token)." {$label}{$url}\n{$contents->implode("\n\n")}";
+        return CitationTokens::marker($kind, $token).' '.PromptGuard::wrap($source);
     }
 
     /**

@@ -17,6 +17,7 @@ use App\Support\CitationTokens;
 use App\Support\DraftingIntent;
 use App\Support\LegalTemplateLibrary;
 use App\Support\UserProfile;
+use Database\Seeders\SystemPromptSeeder;
 use Illuminate\Support\Str;
 use Laravel\Ai\Enums\Lab;
 use Laravel\Ai\Responses\Data\Meta;
@@ -71,7 +72,7 @@ beforeEach(function () {
          * @param  array<int, string>  $toolCalls  Tools the model called on the
          *                                         turn, by name.
          */
-        public function persistFor(Conversation $conversation, string $text, bool $isIntakeSubmission = false, bool $isDraftingRequest = false, array $toolCalls = []): void
+        public function persistFor(Conversation $conversation, string $text, bool $isIntakeSubmission = false, bool $isDraftingRequest = false, array $toolCalls = [], ?RetrievalResult $retrieval = null): void
         {
             $events = collect([new TextDelta(id: 'a', messageId: 'm1', delta: $text, timestamp: 1)]);
 
@@ -92,7 +93,7 @@ beforeEach(function () {
             $this->persistAssistantResponse(
                 $conversation,
                 $response,
-                new RetrievalResult(collect(), collect()),
+                $retrieval ?? new RetrievalResult(collect(), collect()),
                 Lab::Ollama,
                 (string) Str::uuid(),
                 $isIntakeSubmission,
@@ -217,6 +218,81 @@ it('includes the retrieved context block when sources are found', function () {
         ->toContain('=== RETRIEVED CONTEXT ===')
         ->toContain('[SRC '.$tokens[(string) $page->id].']')
         ->not->toContain('WEB SEARCH FALLBACK');
+});
+
+it('renders standard context as a separate typed source section', function () {
+    $page = CrawledPage::factory()->standard()->create([
+        'title' => 'Universal financial messaging standard',
+        'standard_code' => 'ISO 20022',
+        'standard_edition' => '2019',
+        'standard_issuer' => 'ISO',
+        'standard_status' => 'current',
+    ]);
+    $chunk = LegalChunk::factory()->for($page)->create([
+        'content' => 'ISO 20022 defines financial messages.',
+    ]);
+    $token = CitationTokens::assign([(string) $page->id])[(string) $page->id];
+
+    $instructions = $this->chat->instructionsFor(
+        new RetrievalResult(collect(), collect(), collect([$chunk])),
+        Lab::Gemini,
+    );
+
+    expect($instructions)
+        ->toContain('### INTERNATIONAL STANDARDS')
+        ->toContain('[STD '.$token.']')
+        ->toContain('ISO 20022')
+        ->toContain('2019')
+        ->toContain('ISO')
+        ->toContain('current');
+});
+
+it('persists standard citation chunk ids on native assistant messages', function () {
+    $conversation = Conversation::factory()->for(User::factory())->create();
+    $page = CrawledPage::factory()->standard()->create();
+    $chunk = LegalChunk::factory()->for($page)->create([
+        'content' => 'The standard defines a technical message format.',
+    ]);
+
+    $this->chat->persistFor(
+        $conversation,
+        'The standard defines a technical message format.',
+        retrieval: new RetrievalResult(collect(), collect(), collect([$chunk])),
+    );
+
+    $assistant = Message::query()
+        ->where('conversation_id', $conversation->id)
+        ->where('role', 'assistant')
+        ->firstOrFail();
+
+    expect($assistant->cited_standard_chunk_ids)->toBe([$chunk->id]);
+});
+
+it('explains standards citation and banking technical boundaries in native instructions', function () {
+    $instructions = $this->chat->staticFor();
+
+    expect($instructions)
+        ->toContain('### INTERNATIONAL STANDARDS')
+        ->toContain('exact [STD <token>] marker')
+        ->toContain('technical references distinct from Philippine law, BSP rules, contracts, and certification obligations')
+        ->toContain('edition and status')
+        ->toContain('banking message formats, identifiers, and interoperability')
+        ->toContain('ISO certification is not automatically legally required');
+});
+
+it('seeds matching standards citation and banking technical boundaries', function () {
+    SystemPrompt::query()->delete();
+    $this->seed(SystemPromptSeeder::class);
+
+    $persona = SystemPrompt::activeFor('batayan')->content;
+
+    expect($persona)
+        ->toContain('### INTERNATIONAL STANDARDS')
+        ->toContain('[STD <token>]')
+        ->toContain('technical references distinct from Philippine law, BSP rules, contracts, and certification obligations')
+        ->toContain('edition and status')
+        ->toContain('banking message formats, identifiers, and interoperability')
+        ->toContain('ISO certification is not automatically legally required');
 });
 
 it('drafts directly with known facts and triggers intake only when facts are missing', function () {

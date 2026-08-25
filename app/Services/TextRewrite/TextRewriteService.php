@@ -5,6 +5,7 @@ namespace App\Services\TextRewrite;
 use App\Ai\TextRewriteAgent;
 use App\Enums\ChatProvider;
 use App\Models\Conversation;
+use App\Services\Ai\PythonAiClient;
 use App\Services\MatterMemory\MatterMemoryService;
 use App\Support\CaseContextBlock;
 use Illuminate\Support\Facades\Log;
@@ -19,6 +20,10 @@ use Laravel\Ai\Enums\Lab;
  */
 class TextRewriteService
 {
+    public function __construct(
+        private readonly PythonAiClient $python,
+    ) {}
+
     /**
      * Rewrite the passage.
      *
@@ -32,6 +37,23 @@ class TextRewriteService
      */
     public function rewrite(string $text, string $instruction, ?Conversation $conversation = null): ?string
     {
+        if (config('saligan.ai_provider.batch_engine') === 'python') {
+            for ($attempt = 1; $attempt <= 3; $attempt++) {
+                $response = $this->python->call('/agents/rewrite', [
+                    'text' => $text,
+                    'instruction' => $instruction,
+                    'context' => $this->contextFor($conversation),
+                ]);
+                $rewritten = $this->extractText((string) ($response['text'] ?? ''));
+
+                if ($rewritten !== '') {
+                    return $rewritten;
+                }
+            }
+
+            return null;
+        }
+
         [$provider, $model] = $this->resolveProvider();
 
         $agent = new TextRewriteAgent(

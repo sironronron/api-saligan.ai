@@ -64,6 +64,7 @@ return [
     */
 
     'chat' => [
+        'engine' => env('AI_CHAT_ENGINE', 'laravel'),
         'provider' => env('AI_CHAT_PROVIDER', 'anthropic'),
         'ollama_model' => env('OLLAMA_CHAT_MODEL', 'qwen3.6:latest'),
         'ollama_model_alt' => env('OLLAMA_CHAT_MODEL_ALT', 'qwen3.5:latest'),
@@ -139,6 +140,24 @@ return [
          * request that sends it anyway is rejected with a 400.
          */
         'effort' => env('ANTHROPIC_CHAT_EFFORT', 'medium'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Python AI provider
+    |--------------------------------------------------------------------------
+    |
+    | Laravel is the public boundary. It calls this private service for AI
+    | work and authenticates both directions with one deployment secret.
+    |
+    */
+
+    'ai_provider' => [
+        'url' => env('AI_PROVIDER_URL', 'http://127.0.0.1:8080'),
+        'internal_secret' => env('AI_INTERNAL_SECRET'),
+        'batch_engine' => env('AI_BATCH_ENGINE', 'laravel'),
+        'connect_timeout' => (int) env('AI_PROVIDER_CONNECT_TIMEOUT', 5),
+        'timeout' => (int) env('AI_PROVIDER_TIMEOUT', 300),
     ],
 
     /*
@@ -506,8 +525,10 @@ return [
     'retrieval' => [
         'min_similarity' => (float) env('RETRIEVAL_MIN_SIMILARITY', 0.30),
         'max_legal_chunks' => (int) env('RETRIEVAL_MAX_LEGAL_CHUNKS', 6),
+        'max_standard_chunks' => (int) env('RETRIEVAL_MAX_STANDARD_CHUNKS', 6),
         'max_document_chunks' => (int) env('RETRIEVAL_MAX_DOCUMENT_CHUNKS', 4),
         'base_max_legal_chunks' => (int) env('RETRIEVAL_BASE_MAX_LEGAL_CHUNKS', 4),
+        'base_max_standard_chunks' => (int) env('RETRIEVAL_BASE_MAX_STANDARD_CHUNKS', 4),
         'base_max_document_chunks' => (int) env('RETRIEVAL_BASE_MAX_DOCUMENT_CHUNKS', 2),
     ],
 

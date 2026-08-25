@@ -7,6 +7,7 @@ use App\Enums\LabelKind;
 use App\Models\Document;
 use App\Models\DocumentClassificationRequest;
 use App\Models\Label;
+use App\Services\Ai\PythonAiClient;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -21,6 +22,10 @@ use Throwable;
  */
 class DocumentClassifier
 {
+    public function __construct(
+        private readonly PythonAiClient $python,
+    ) {}
+
     /**
      * Suggest and apply categories for a document.
      *
@@ -79,6 +84,28 @@ class DocumentClassifier
      */
     public function suggest(Document $document, string $text, Collection $vocabulary): array
     {
+        if (config('saligan.ai_provider.batch_engine') === 'python') {
+            $response = $this->python->call('/documents/classify', [
+                'filename' => $document->original_filename,
+                'title' => $document->title,
+                'text' => mb_substr(
+                    $text,
+                    0,
+                    (int) config('saligan.documents.classification.excerpt_characters', 6000),
+                ),
+                'vocabulary' => $vocabulary->map(fn (Label $label): array => [
+                    'slug' => $label->slug,
+                    'name' => $label->name,
+                    'description' => $label->description,
+                ])->values()->all(),
+            ]);
+
+            return $this->selectConfident(
+                $this->candidatesFrom($response['categories'] ?? []),
+                $vocabulary,
+            );
+        }
+
         [$provider, $model] = $this->resolveProvider();
 
         $agent = $this->agentFor($vocabulary);
@@ -156,6 +183,10 @@ class DocumentClassifier
      */
     public function batches(): bool
     {
+        if (config('saligan.ai_provider.batch_engine') === 'python') {
+            return false;
+        }
+
         if (! config('saligan.documents.classification.batch.enabled', false)) {
             return false;
         }

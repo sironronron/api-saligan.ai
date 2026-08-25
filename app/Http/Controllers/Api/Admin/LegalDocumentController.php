@@ -3,10 +3,12 @@
 namespace App\Http\Controllers\Api\Admin;
 
 use App\Enums\CrawlStatus;
+use App\Enums\KnowledgeType;
 use App\Enums\LegalSourceCategory;
 use App\Http\Controllers\Controller;
 use App\Jobs\ProcessLegalDocumentUpload;
 use App\Models\CrawledPage;
+use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -49,7 +51,51 @@ class LegalDocumentController extends Controller
             'law_name' => ['nullable', 'string', 'max:255'],
             'gr_number' => ['nullable', 'string', 'max:255'],
             'promulgation_date' => ['nullable', 'date'],
-            'category' => ['required', Rule::enum(LegalSourceCategory::class)],
+            'knowledge_type' => ['sometimes', Rule::enum(KnowledgeType::class)],
+            'standard_code' => [
+                'nullable',
+                'string',
+                'max:255',
+                Rule::requiredIf(fn (): bool => $request->input('knowledge_type', KnowledgeType::Legal->value) === KnowledgeType::Standard->value),
+                Rule::in(array_column(config('standards.profiles'), 'code')),
+            ],
+            'standard_edition' => [
+                'nullable',
+                'string',
+                'max:255',
+                Rule::requiredIf(fn (): bool => $request->input('knowledge_type', KnowledgeType::Legal->value) === KnowledgeType::Standard->value),
+            ],
+            'standard_issuer' => [
+                'nullable',
+                'string',
+                'max:255',
+                Rule::requiredIf(fn (): bool => $request->input('knowledge_type', KnowledgeType::Legal->value) === KnowledgeType::Standard->value),
+            ],
+            'standard_status' => [
+                'nullable',
+                'string',
+                Rule::requiredIf(fn (): bool => $request->input('knowledge_type', KnowledgeType::Legal->value) === KnowledgeType::Standard->value),
+                Rule::in(config('standards.allowed_statuses')),
+            ],
+            'standard_publication_date' => ['nullable', 'date'],
+            'standard_review_date' => ['nullable', 'date'],
+            'rights_basis' => [
+                'nullable',
+                'string',
+                Rule::requiredIf(fn (): bool => $request->input('knowledge_type', KnowledgeType::Legal->value) === KnowledgeType::Standard->value),
+                Rule::in(config('standards.allowed_rights_bases')),
+            ],
+            'category' => [
+                'required',
+                Rule::enum(LegalSourceCategory::class),
+                function (string $attribute, mixed $value, Closure $fail) use ($request): void {
+                    $knowledgeType = $request->input('knowledge_type', KnowledgeType::Legal->value);
+
+                    if (($knowledgeType === KnowledgeType::Standard->value) !== ($value === LegalSourceCategory::Standard->value)) {
+                        $fail('The category must match the knowledge type.');
+                    }
+                },
+            ],
         ]);
 
         $file = $validated['file'];
@@ -61,6 +107,7 @@ class LegalDocumentController extends Controller
         $page = CrawledPage::create([
             'kind' => CrawledPage::KIND_UPLOADED,
             'category' => $validated['category'],
+            'knowledge_type' => $validated['knowledge_type'] ?? KnowledgeType::Legal->value,
             'storage_path' => $storagePath,
             'original_filename' => $originalFilename,
             'mime_type' => $file->getClientMimeType(),
@@ -68,6 +115,13 @@ class LegalDocumentController extends Controller
             'law_name' => $validated['law_name'] ?? null,
             'gr_number' => $validated['gr_number'] ?? null,
             'promulgation_date' => $validated['promulgation_date'] ?? null,
+            'standard_code' => $validated['standard_code'] ?? null,
+            'standard_edition' => $validated['standard_edition'] ?? null,
+            'standard_issuer' => $validated['standard_issuer'] ?? null,
+            'standard_status' => $validated['standard_status'] ?? null,
+            'standard_publication_date' => $validated['standard_publication_date'] ?? null,
+            'standard_review_date' => $validated['standard_review_date'] ?? null,
+            'rights_basis' => $validated['rights_basis'] ?? null,
             'crawl_status' => CrawlStatus::Pending->value,
         ]);
 

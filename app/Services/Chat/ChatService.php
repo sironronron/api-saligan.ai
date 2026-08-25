@@ -1136,6 +1136,11 @@ PROMPT;
         return <<<'PROMPT'
 CITATION INSTRUCTIONS
 - Ground your answer in the RETRIEVED CONTEXT below. Cite sources inline using the exact [SRC <token>] / [DOC <token>] label that heads each retrieved block, placing the tag immediately after the specific word, phrase, or sentence it supports — never after an entire paragraph. Copy the token exactly as shown; never invent, shorten, or reuse a token, and never cite a source that was not retrieved.
+- Standards appear in the distinct `### INTERNATIONAL STANDARDS` section and use the exact [STD <token>] marker that heads each standards block. Copy the token exactly, place it immediately after the specific technical statement it supports, and never use an [STD] marker for Philippine law, a BSP rule, a contract, or a certification obligation.
+- Treat international standards as technical references distinct from Philippine law, BSP rules, contracts, and certification obligations. A standard is not law, a BSP rule, a contract term, or proof that certification is required by itself; connect any legal, regulatory, contractual, or certification conclusion to a separately retrieved authority or obligation.
+- Keep edition and status awareness explicit when relying on a standard: identify its code and edition and state the retrieved status when available (for example current, withdrawn, draft, or informational). Do not present a withdrawn, draft, informational, or otherwise non-current edition as a current requirement.
+- For banking standards, keep technical boundaries explicit: describe banking message formats, identifiers, and interoperability as technical specifications, and do not turn them into banking law, BSP compliance advice, contractual duties, or certification requirements without separate retrieved support.
+- ISO certification is not automatically legally required. State that certification is mandatory only when a separately retrieved law, BSP rule, contract, or other applicable obligation establishes it.
 - When a statute, administrative issuance (e.g. DAR Administrative Order, DENR Memorandum Circular, BIR Revenue Regulation), or LGU ordinance is retrieved, cite the specific section or provision — not just the title of the law. If it has been amended, note the amending law/issuance and its effect on the cited provision.
 - When jurisprudence (G.R. number, case name) is retrieved, state the specific doctrine or ruling being applied, not just the citation. Do not treat a case as controlling authority if the retrieved excerpt does not actually support the point being made.
 - Whenever a transaction, claim, or remedy involves a prescriptive or reglementary period (e.g. periods to file a claim, redeem property, appeal an agency decision, register a document, contest an assessment), flag the applicable period explicitly if it is present in the RETRIEVED CONTEXT, and state what date it runs from based on the facts given. If the period is not in the retrieved context, say so — do not estimate or assume a period from memory.
@@ -1927,6 +1932,84 @@ PROMPT;
     }
 
     /**
+     * Preserve useful work from a stream that ended before its completion
+     * callback could persist the assistant message.
+     */
+    public function persistInterruptedResponse(Conversation $conversation, string $partialText): bool
+    {
+        if ($this->pendingAssistantMessageId === null) {
+            return false;
+        }
+
+        try {
+            $existing = Message::query()->find($this->pendingAssistantMessageId);
+
+            if ($existing !== null) {
+                $this->lastAssistantMessageId = $existing->id;
+
+                return true;
+            }
+
+            $text = trim(MemoryWriteBackParser::stripBlocks(
+                DraftingIntent::stripExportLinks(
+                    DraftingIntent::stripNeedsInfoBlock($partialText),
+                ),
+            ));
+
+            $metadata = ['interrupted' => true];
+            $letterDrafted = $this->draftLetter !== null;
+
+            if ($letterDrafted) {
+                $metadata['letter_draft'] = $this->draftLetter;
+            }
+
+            if ($text === '' && ! $letterDrafted) {
+                return false;
+            }
+
+            if ($text === '') {
+                $text = 'Your letter was drafted, but the response was interrupted. Review it in the letter editor.';
+            }
+
+            $message = Message::create([
+                'id' => $this->pendingAssistantMessageId,
+                'conversation_id' => $conversation->id,
+                'role' => MessageRole::Assistant,
+                'content' => $text,
+                'provider' => $conversation->provider,
+                'metadata' => $metadata,
+            ]);
+
+            $this->lastAssistantMessageId = $message->id;
+
+            Advisory::query()
+                ->where('conversation_id', $conversation->id)
+                ->whereNull('message_id')
+                ->update(['message_id' => $message->id]);
+
+            if ($conversation->title === null) {
+                $conversation->update([
+                    'title' => Str::limit($this->extractTitle($text), 60),
+                ]);
+            }
+
+            if ($letterDrafted) {
+                $this->draftLetter = null;
+            }
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::error('Failed to persist interrupted chat response', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $this->pendingAssistantMessageId,
+                'exception' => $exception,
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
      * Delete the assistant message persisted by the most recent completed
      * stream, used when the model left a premature draft behind and the
      * intake form is triggered instead. No-op when nothing was persisted.
@@ -2480,6 +2563,7 @@ PROMPT;
             },
             'cited_chunk_ids' => $retrieval->documentChunkIds(),
             'cited_legal_chunk_ids' => $retrieval->legalChunkIds(),
+            'cited_standard_chunk_ids' => $retrieval->standardChunkIds(),
             'metadata' => $metadata,
         ]);
 

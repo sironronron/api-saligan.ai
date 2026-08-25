@@ -14,6 +14,7 @@ use App\Models\User;
 use App\Services\Chat\ChatService;
 use App\Support\DraftingIntent;
 use Generator;
+use Illuminate\Support\Str;
 use Laravel\Ai\Responses\Data\Meta;
 use Laravel\Ai\Responses\Data\ToolCall as ToolCallData;
 use Laravel\Ai\Responses\Data\Usage;
@@ -83,6 +84,33 @@ function makeFailingChatService(): ChatService
     };
 }
 
+function makePartiallyFailingChatService(string $partialText): ChatService
+{
+    return new class($partialText) extends ChatService
+    {
+        public function __construct(private readonly string $partialText) {}
+
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = [], ?callable $onWebSearch = null): StreamableAgentResponse
+        {
+            $message = Message::create([
+                'conversation_id' => $conversation->id,
+                'role' => MessageRole::User,
+                'content' => $question,
+            ]);
+
+            $this->createdUserMessageId = $message->id;
+            $this->pendingAssistantMessageId = (string) Str::uuid();
+            $partialText = $this->partialText;
+
+            return new StreamableAgentResponse('test-invocation', function () use ($partialText): Generator {
+                yield new TextDelta(id: 'a', messageId: 'm1', delta: $partialText, timestamp: 1);
+
+                throw new RuntimeException('Provider connection lost');
+            }, new Meta(provider: 'ollama', model: 'test-model'));
+        }
+    };
+}
+
 function makeToolCallEvent(string $name, array $arguments): ToolCallEvent
 {
     return new ToolCallEvent(
@@ -93,6 +121,8 @@ function makeToolCallEvent(string $name, array $arguments): ToolCallEvent
 }
 
 beforeEach(function () {
+    config(['saligan.chat.engine' => 'laravel']);
+
     $this->user = User::factory()->create();
     Subscription::factory()->for($this->user)->create([
         'plan_id' => Plan::factory()->pro()->create()->id,
@@ -1348,6 +1378,31 @@ it('rolls back the user message when the stream fails', function () {
     expect($body)->toContain('event: error');
 
     $this->assertDatabaseCount('messages', 0);
+});
+
+it('preserves the user and partial assistant reply when the stream fails after output', function () {
+    $partialText = 'The available facts support a demand for payment, subject to reviewing the lease.';
+
+    $this->app->instance(ChatService::class, makePartiallyFailingChatService($partialText));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->signInAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'Explain my options for recovering unpaid rent.',
+        ])
+        ->assertOk();
+
+    $body = $response->streamedContent();
+    $messages = $conversation->messages()->get();
+
+    expect($body)
+        ->toContain('event: error')
+        ->and($messages)->toHaveCount(2)
+        ->and($messages[0]->role)->toBe(MessageRole::User)
+        ->and($messages[1]->role)->toBe(MessageRole::Assistant)
+        ->and($messages[1]->content)->toBe($partialText)
+        ->and($messages[1]->metadata['interrupted'])->toBeTrue();
 });
 
 it('strips fabricated export links from drafted replies', function () {

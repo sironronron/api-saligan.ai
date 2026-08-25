@@ -2,6 +2,7 @@
 
 namespace App\Services\Crawler;
 
+use App\Services\Ai\PythonAiClient;
 use Laravel\Ai\Contracts\Agent;
 use Laravel\Ai\Enums\Lab;
 use Laravel\Ai\Promptable;
@@ -16,6 +17,10 @@ use Throwable;
  */
 class LegalDigestService
 {
+    public function __construct(
+        private readonly PythonAiClient $python,
+    ) {}
+
     /**
      * Roughly how much of the document the model is given. Philippine Supreme
      * Court decisions run long; the opening carries the caption, parties, and
@@ -39,6 +44,19 @@ class LegalDigestService
 
         if ($text === '') {
             return null;
+        }
+
+        if (config('saligan.ai_provider.batch_engine') === 'python') {
+            try {
+                $response = $this->python->call('/crawler/digest', [
+                    'text' => $this->excerpt($text),
+                    'title' => $title,
+                ]);
+
+                return $this->read((string) ($response['digest'] ?? ''));
+            } catch (Throwable) {
+                return null;
+            }
         }
 
         [$provider, $model] = $this->resolveProvider();
@@ -167,6 +185,10 @@ PROMPT;
      */
     public function batches(): bool
     {
+        if (config('saligan.ai_provider.batch_engine') === 'python') {
+            return false;
+        }
+
         if (! config('saligan.crawler.digest.batch.enabled', false)) {
             return false;
         }

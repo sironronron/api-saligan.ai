@@ -9,6 +9,7 @@ enum LegalSourceCategory: string
     case Issuance = 'issuance';
     case Treaty = 'treaty';
     case General = 'general';
+    case Standard = 'standard';
 
     /**
      * The human-readable label for the category.
@@ -21,6 +22,7 @@ enum LegalSourceCategory: string
             self::Issuance => 'Issuance',
             self::Treaty => 'Treaty',
             self::General => 'General',
+            self::Standard => 'ISO / international standard',
         };
     }
 }

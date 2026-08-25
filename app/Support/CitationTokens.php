@@ -6,9 +6,10 @@ namespace App\Support;
  * Assigns the short, stable citation tokens the model cites inline and the
  * UI uses to link badges to source cards.
  *
- * Each retrieved source (a legal crawled page or an uploaded document) is a
- * labeled document headed by a token: legal pages use `[SRC <token>]` and
- * uploaded documents use `[DOC <token>]`. Tokens are derived deterministically
+ * Each retrieved source (a legal page, international standard, or uploaded
+ * document) is a labeled document headed by a token: legal pages use
+ * `[SRC <token>]`, standards use `[STD <token>]`, and uploaded documents use
+ * `[DOC <token>]`. Tokens are derived deterministically
  * from the source's row id, so the same source always carries the same token —
  * the model copies it from the block header, and the parser recomputes it
  * from the same identity without any position mapping.
@@ -20,6 +21,8 @@ namespace App\Support;
 final class CitationTokens
 {
     public const SRC = 'SRC';
+
+    public const STD = 'STD';
 
     public const DOC = 'DOC';
 

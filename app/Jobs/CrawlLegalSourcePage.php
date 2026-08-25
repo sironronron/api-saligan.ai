@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Enums\CrawlStatus;
+use App\Enums\KnowledgeType;
 use App\Models\CrawledPage;
 use App\Models\LegalChunk;
 use App\Models\LegalSource;
@@ -84,7 +85,7 @@ class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
         if (! $robots->allows($this->url)) {
             $page = CrawledPage::firstOrCreate(
                 ['legal_source_id' => $this->source->id, 'url' => $this->url],
-                ['crawl_status' => CrawlStatus::Pending->value],
+                $this->pageDefaults(),
             );
 
             $this->recordFailure('Blocked by robots.txt', $page);
@@ -94,7 +95,7 @@ class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
 
         $page = CrawledPage::firstOrCreate(
             ['legal_source_id' => $this->source->id, 'url' => $this->url],
-            ['crawl_status' => CrawlStatus::Pending->value],
+            $this->pageDefaults(),
         );
 
         if ($page->crawl_status === CrawlStatus::Pending && $page->raw_html_path !== null) {
@@ -143,7 +144,7 @@ class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
 
             $this->storeRawArtifact($page, $body);
 
-            $page->update([
+            $pageAttributes = [
                 'content_hash' => $hash,
                 'title' => $parsed->title,
                 'law_name' => $parsed->lawName,
@@ -152,7 +153,20 @@ class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
                 'crawl_status' => CrawlStatus::Ok->value,
                 'last_error' => null,
                 'last_crawled_at' => now(),
-            ]);
+            ];
+
+            if ($this->source->knowledge_type === KnowledgeType::Standard) {
+                $pageAttributes += array_filter([
+                    'standard_code' => $parsed->standardCode,
+                    'standard_edition' => $parsed->standardEdition,
+                    'standard_issuer' => $parsed->standardIssuer,
+                    'standard_status' => $parsed->standardStatus,
+                    'standard_publication_date' => $parsed->standardPublicationDate,
+                    'standard_review_date' => $parsed->standardReviewDate,
+                ], static fn (mixed $value): bool => $value !== null);
+            }
+
+            $page->update($pageAttributes);
 
             $this->reindexChunks($page, $parsed->text, $embeddings);
 
@@ -319,6 +333,26 @@ class CrawlLegalSourcePage implements ShouldBeUnique, ShouldQueue
         Storage::put($path, $body);
 
         $page->update(['raw_html_path' => $path]);
+    }
+
+    /**
+     * Default metadata copied from the source to a newly-created page.
+     *
+     * @return array<string, mixed>
+     */
+    private function pageDefaults(): array
+    {
+        $defaults = [
+            'knowledge_type' => $this->source->knowledge_type,
+            'category' => $this->source->category,
+            'crawl_status' => CrawlStatus::Pending->value,
+        ];
+
+        if ($this->source->knowledge_type === KnowledgeType::Standard) {
+            $defaults['rights_basis'] = 'public_summary';
+        }
+
+        return $defaults;
     }
 
     /**

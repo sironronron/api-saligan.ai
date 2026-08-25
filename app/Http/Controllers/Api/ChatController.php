@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Conversation;
 use App\Models\Document;
 use App\Models\Todo;
+use App\Services\Ai\PythonAiClient;
 use App\Services\Chat\AdvisoryRecorder;
 use App\Services\Chat\ChatService;
 use App\Services\Export\DocumentExportService;
@@ -37,6 +38,7 @@ class ChatController extends Controller
 {
     public function __construct(
         private readonly ChatService $chatService,
+        private readonly PythonAiClient $pythonAi,
     ) {
         //
     }
@@ -63,7 +65,24 @@ class ChatController extends Controller
         $isDraftingRequest = DraftingIntent::matches($message);
         $isIntakeSubmission = DraftingIntent::isIntakeSubmission($message);
 
-        $frames = $this->chatFrames($conversation, $message, $isDraftingRequest, $isIntakeSubmission, $attachmentIds);
+        if (config('saligan.chat.engine') === 'python') {
+            $upstream = $this->pythonAi->streamChat(
+                $conversation->id,
+                $message,
+                $attachmentIds,
+                $isDraftingRequest,
+                $isIntakeSubmission,
+            );
+            $frames = $this->pythonAi->body($upstream);
+        } else {
+            $frames = $this->chatFrames(
+                $conversation,
+                $message,
+                $isDraftingRequest,
+                $isIntakeSubmission,
+                $attachmentIds,
+            );
+        }
 
         return response()->stream($this->streamEmitter($frames), 200, [
             'Content-Type' => 'text/event-stream',
@@ -553,8 +572,6 @@ class ChatController extends Controller
                         // while — the dedicated letter agent composes the Tiptap
                         // JSON before the model resumes. Report drafting now so
                         // the user sees progress while it works.
-                        $letterDrafted = true;
-
                         yield $status('drafting_document');
                     }
 
@@ -591,11 +608,11 @@ class ChatController extends Controller
                         // after the tool result carries the chat summary. The
                         // assistant message is not persisted yet, so its pending
                         // id travels with the event for saving edits.
-                        $letterDrafted = true;
-
                         $draft = json_decode((string) $event->toolResult->result, true);
 
                         if (is_array($draft) && isset($draft['content']) && is_array($draft['content'])) {
+                            $letterDrafted = true;
+
                             yield $emit('letter_draft', [
                                 'content' => $draft['content'],
                                 'title' => is_string($draft['title'] ?? null) ? $draft['title'] : null,
@@ -634,7 +651,9 @@ class ChatController extends Controller
                 'conversation_id' => $conversation->id,
             ]);
 
-            $this->chatService->discardCurrentUserMessage();
+            if (! $this->chatService->persistInterruptedResponse($conversation, $lastText)) {
+                $this->chatService->discardCurrentUserMessage();
+            }
 
             return;
         } catch (Throwable $exception) {
@@ -644,9 +663,12 @@ class ChatController extends Controller
                 'trace' => $exception->getTraceAsString(),
             ]);
 
-            // Roll back the user message persisted before streaming so a
-            // client retry does not duplicate it in the conversation.
-            $this->chatService->discardCurrentUserMessage();
+            if (! $this->chatService->persistInterruptedResponse($conversation, $lastText)) {
+                // A failure before any useful output keeps the existing retry
+                // contract: remove the attempted user turn so retrying it does
+                // not create a duplicate.
+                $this->chatService->discardCurrentUserMessage();
+            }
 
             $error = 'The AI provider could not complete the response. Please try again.';
         }
@@ -672,7 +694,7 @@ class ChatController extends Controller
                 // from the marker onward.
                 $questionSource = $buffering ? $bufferedText : $needInfoText;
 
-                if (! $intakeRequested && ! $choiceRequested && DraftingIntent::needsInfo($questionSource)) {
+                if (! $letterDrafted && ! $intakeRequested && ! $choiceRequested && DraftingIntent::needsInfo($questionSource)) {
                     // A buffered turn wrote nothing to the client, so its
                     // persisted reply is pure question text and goes away
                     // entirely. A gated turn already delivered the lead-in
@@ -712,7 +734,11 @@ class ChatController extends Controller
                     // Any other buffered reply is the model's answer — a
                     // legitimate direct draft (markers waived when the
                     // case supplies the facts) or a plain chat reply.
-                    yield $emit('delta', ['delta' => $bufferedText]);
+                    $reply = trim(DraftingIntent::stripNeedsInfoBlock($bufferedText));
+
+                    if ($reply !== '') {
+                        yield $emit('delta', ['delta' => $reply]);
+                    }
                 }
 
                 // A turn cut short by a question has no finished document, so

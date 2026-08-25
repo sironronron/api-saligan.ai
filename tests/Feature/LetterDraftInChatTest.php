@@ -11,7 +11,10 @@ use App\Models\Subscription;
 use App\Models\User;
 use App\Services\Chat\ChatService;
 use App\Services\LetterDrafts\LetterDraftService;
+use App\Support\DraftingIntent;
+use App\Support\ToolResult;
 use Generator;
+use Illuminate\Support\Str;
 use Laravel\Ai\Prompts\AgentPrompt;
 use Laravel\Ai\Responses\Data\Meta;
 use Laravel\Ai\Responses\Data\ToolCall as ToolCallData;
@@ -50,14 +53,46 @@ function makeFakeChatServiceForLetters(array $events): ChatService
             }, new Meta(provider: 'ollama', model: 'test-model'));
 
             $response->then(function (StreamedAgentResponse $streamed) use ($conversation): void {
-                Message::create([
+                $message = Message::create([
                     'conversation_id' => $conversation->id,
                     'role' => MessageRole::Assistant,
-                    'content' => trim((string) $streamed->text),
+                    'content' => trim(DraftingIntent::stripNeedsInfoBlock((string) $streamed->text)),
                 ]);
+
+                $this->lastAssistantMessageId = $message->id;
             });
 
             return $response;
+        }
+    };
+}
+
+function makeInterruptedLetterChatService(array $events, array $draft): ChatService
+{
+    return new class($events, $draft) extends ChatService
+    {
+        public function __construct(private array $events, private array $draft) {}
+
+        public function stream(Conversation $conversation, string $question, ?callable $onStatus = null, array $attachmentIds = [], ?callable $onWebSearch = null): StreamableAgentResponse
+        {
+            $message = Message::create([
+                'conversation_id' => $conversation->id,
+                'role' => MessageRole::User,
+                'content' => $question,
+            ]);
+
+            $this->createdUserMessageId = $message->id;
+            $this->pendingAssistantMessageId = (string) Str::uuid();
+            $this->draftLetter = $this->draft;
+            $events = $this->events;
+
+            return new StreamableAgentResponse('test-invocation', function () use ($events): Generator {
+                foreach ($events as $event) {
+                    yield $event;
+                }
+
+                throw new RuntimeException('Provider connection lost before the summary');
+            }, new Meta(provider: 'ollama', model: 'test-model'));
         }
     };
 }
@@ -104,6 +139,8 @@ function makeTiptapDraft(string $title): array
 }
 
 beforeEach(function () {
+    config(['saligan.chat.engine' => 'laravel']);
+
     $this->user = User::factory()->create();
     Subscription::factory()->for($this->user)->create([
         'plan_id' => Plan::factory()->pro()->create()->id,
@@ -142,6 +179,94 @@ it('streams a letter_draft event carrying the tiptap document', function () {
         // wire twice, in a frame nothing rendered.
         ->not->toContain('"name":"draft_letter","count"')
         ->not->toContain('event: tool_result');
+});
+
+it('recovers an inline letter when the draft tool returns no document', function () {
+    $failedDraft = json_decode(ToolResult::none(
+        'The letter draft came back empty.',
+        'Write the complete letter directly in your reply.',
+    ), true);
+
+    $this->app->instance(ChatService::class, makeFakeChatServiceForLetters([
+        makeDraftLetterToolCall(['request' => 'Draft a demand letter for unpaid rent.']),
+        makeDraftLetterToolResult($failedDraft),
+        new TextDelta(id: 'a', messageId: 'm1', delta: "[[DOCUMENT_START]]\n**DEMAND LETTER**\n\nDear Mr. Reyes,\n\nPlease pay the unpaid rent within 15 days.\n[[DOCUMENT_END]]", timestamp: 3),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 20), timestamp: 4),
+    ]));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->signInAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'Draft a demand letter for unpaid rent.',
+        ])
+        ->assertOk();
+
+    $body = $response->streamedContent();
+
+    expect($body)
+        ->toContain('event: tool_call')
+        ->toContain('event: letter_draft')
+        ->toContain('DEMAND LETTER')
+        ->and(substr_count($body, 'event: letter_draft'))->toBe(1);
+});
+
+it('preserves a completed letter when the stream fails before its summary', function () {
+    $draft = makeTiptapDraft('Demand Letter');
+
+    $this->app->instance(ChatService::class, makeInterruptedLetterChatService([
+        makeDraftLetterToolCall(['request' => 'Draft a demand letter for unpaid rent.']),
+        makeDraftLetterToolResult($draft),
+    ], $draft));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->signInAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'Draft a demand letter for unpaid rent.',
+        ])
+        ->assertOk();
+
+    $body = $response->streamedContent();
+    $assistant = $conversation->messages()->where('role', MessageRole::Assistant)->first();
+
+    expect($body)
+        ->toContain('event: letter_draft')
+        ->toContain('event: error')
+        ->and($assistant)->not->toBeNull()
+        ->and($assistant->content)->toBe('Your letter was drafted, but the response was interrupted. Review it in the letter editor.')
+        ->and($assistant->metadata['interrupted'])->toBeTrue()
+        ->and($assistant->metadata['letter_draft']['title'])->toBe('Demand Letter');
+});
+
+it('keeps a completed letter when its summary asks for more information', function () {
+    $draft = makeTiptapDraft('Demand Letter');
+
+    $this->app->instance(ChatService::class, makeFakeChatServiceForLetters([
+        makeDraftLetterToolCall(['request' => 'Draft a demand letter for unpaid rent.']),
+        makeDraftLetterToolResult($draft),
+        new TextDelta(id: 'a', messageId: 'm1', delta: "Your demand letter is ready.\n\n[[NEED_INFO]]\n- Confirm the payment deadline.", timestamp: 3),
+        new StreamEnd(id: 'b', reason: 'stop', usage: new Usage(promptTokens: 5, completionTokens: 12), timestamp: 4),
+    ]));
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+
+    $response = $this->signInAs($this->user)
+        ->post("/api/conversations/{$conversation->id}/messages", [
+            'message' => 'Draft a demand letter for unpaid rent.',
+        ])
+        ->assertOk();
+
+    $body = $response->streamedContent();
+    $assistant = $conversation->messages()->where('role', MessageRole::Assistant)->first();
+
+    expect($body)
+        ->toContain('event: letter_draft')
+        ->toContain('Your demand letter is ready.')
+        ->not->toContain('"name":"request_intake_form"')
+        ->not->toContain('[[NEED_INFO]]')
+        ->and($assistant)->not->toBeNull()
+        ->and($assistant->content)->toBe('Your demand letter is ready.');
 });
 
 it('persists the assistant reply as the summary, not the document json', function () {

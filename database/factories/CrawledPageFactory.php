@@ -3,6 +3,7 @@
 namespace Database\Factories;
 
 use App\Enums\CrawlStatus;
+use App\Enums\KnowledgeType;
 use App\Enums\LegalSourceCategory;
 use App\Models\CrawledPage;
 use App\Models\LegalSource;
@@ -27,6 +28,7 @@ class CrawledPageFactory extends Factory
             'crawl_status' => CrawlStatus::Ok,
             'kind' => CrawledPage::KIND_CRAWLED,
             'category' => LegalSourceCategory::Law,
+            'knowledge_type' => KnowledgeType::Legal,
             'law_name' => 'RA No. 1234',
             'gr_number' => 'G.R. No. '.fake()->numberBetween(100000, 200000),
             'promulgation_date' => fake()->date(),
@@ -46,6 +48,22 @@ class CrawledPageFactory extends Factory
             'original_filename' => 'uploaded-doc.pdf',
             'mime_type' => 'application/pdf',
             'crawl_status' => CrawlStatus::Ok,
+        ]);
+    }
+
+    /**
+     * An administrator-provided standard document.
+     */
+    public function standard(): static
+    {
+        return $this->state(fn () => [
+            'knowledge_type' => KnowledgeType::Standard,
+            'category' => LegalSourceCategory::Standard,
+            'standard_code' => 'ISO 20022',
+            'standard_edition' => '2019',
+            'standard_issuer' => 'ISO',
+            'standard_status' => 'current',
+            'rights_basis' => 'licensed_copy',
         ]);
     }
 }

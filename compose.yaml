@@ -137,8 +137,7 @@ services:
         extra_hosts:
             - 'host.docker.internal:host-gateway'
             - 'ollama-host:192.168.1.101'
-        command: >
-            sh -c "php artisan queue:work --queue=document-processing,legal-crawler,default --tries=3 --sleep=3 --timeout=900"
+        command: "sh -c \"php artisan queue:work --queue=document-processing,legal-crawler,default --tries=3 --sleep=3 --timeout=900\"\n"
         environment:
             WWWUSER: '${WWWUSER}'
             LARAVEL_SAIL: 1
@@ -157,8 +156,7 @@ services:
         extra_hosts:
             - 'host.docker.internal:host-gateway'
             - 'ollama-host:192.168.1.101'
-        command: >
-            sh -c "php artisan schedule:work"
+        command: "sh -c \"php artisan schedule:work\"\n"
         environment:
             WWWUSER: '${WWWUSER}'
             LARAVEL_SAIL: 1

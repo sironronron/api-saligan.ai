@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
+use App\Enums\KnowledgeType;
 use App\Enums\LegalSourceCategory;
 use App\Http\Controllers\Controller;
 use App\Jobs\CrawlLegalSourcePage;
@@ -52,7 +53,23 @@ class LegalSourceController extends Controller
                 },
             ],
             'is_active' => ['sometimes', 'boolean'],
-            'category' => ['sometimes', Rule::enum(LegalSourceCategory::class)],
+            'knowledge_type' => ['sometimes', Rule::enum(KnowledgeType::class)],
+            'category' => [
+                'nullable',
+                'required_if:knowledge_type,standard',
+                Rule::enum(LegalSourceCategory::class),
+                function (string $attribute, mixed $value, Closure $fail) use ($request): void {
+                    if ($value === null) {
+                        return;
+                    }
+
+                    $knowledgeType = $request->input('knowledge_type', KnowledgeType::Legal->value);
+
+                    if (($knowledgeType === KnowledgeType::Standard->value) !== ($value === LegalSourceCategory::Standard->value)) {
+                        $fail('The category must match the knowledge type.');
+                    }
+                },
+            ],
         ]);
 
         $source = LegalSource::create([
@@ -61,6 +78,7 @@ class LegalSourceController extends Controller
             'seed_urls' => array_values($validated['seed_urls']),
             'is_active' => $validated['is_active'] ?? true,
             'category' => $validated['category'] ?? LegalSourceCategory::General->value,
+            'knowledge_type' => $validated['knowledge_type'] ?? KnowledgeType::Legal->value,
         ]);
 
         return response()->json($source, 201);

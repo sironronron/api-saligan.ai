@@ -60,6 +60,41 @@ it('resolves legal and document source cards actually cited by a message', funct
         ->and($sources[1]['label'])->toBe('case-brief.pdf');
 });
 
+it('resolves a cited standard source card with standard metadata', function () {
+    $page = CrawledPage::factory()->standard()->create([
+        'title' => 'Universal financial messaging standard',
+        'standard_code' => 'ISO 20022',
+        'standard_edition' => '2019',
+        'standard_issuer' => 'ISO',
+        'standard_status' => 'current',
+        'standard_publication_date' => '2019-11-01',
+        'standard_review_date' => '2024-11-01',
+    ]);
+    $chunk = LegalChunk::factory()->for($page)->create([
+        'content' => 'ISO 20022 defines financial messages.',
+    ]);
+
+    $token = CitationTokens::assign([(string) $page->id])[(string) $page->id];
+    $message = Message::factory()->create([
+        'role' => MessageRole::Assistant,
+        'content' => "Under [STD {$token}], financial messages are structured.",
+        'cited_standard_chunk_ids' => [$chunk->id],
+    ]);
+
+    $standard = collect(MessageSources::for($message))->firstWhere('type', 'standard');
+
+    expect($standard)->toMatchArray([
+        'type' => 'standard',
+        'standard_code' => 'ISO 20022',
+        'standard_edition' => '2019',
+        'standard_issuer' => 'ISO',
+        'standard_status' => 'current',
+        'standard_publication_date' => '2019-11-01',
+        'standard_review_date' => '2024-11-01',
+    ])
+        ->and($standard)->not->toHaveKeys(['law_name', 'gr_number', 'promulgation_date']);
+});
+
 it('omits retrieved sources that were not cited inline', function () {
     $user = User::factory()->create();
 

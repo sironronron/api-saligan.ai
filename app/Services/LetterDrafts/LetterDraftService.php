@@ -5,6 +5,7 @@ namespace App\Services\LetterDrafts;
 use App\Ai\LetterDraftAgent;
 use App\Enums\ChatProvider;
 use App\Models\User;
+use App\Services\Ai\PythonAiClient;
 use Illuminate\Support\Facades\Log;
 use Laravel\Ai\Enums\Lab;
 
@@ -16,6 +17,10 @@ use Laravel\Ai\Enums\Lab;
  */
 class LetterDraftService
 {
+    public function __construct(
+        private readonly PythonAiClient $python,
+    ) {}
+
     /**
      * Node types the editor accepts. Anything else a model emits is dropped.
      *
@@ -56,6 +61,29 @@ class LetterDraftService
      */
     public function generate(string $request, ?User $user): array
     {
+        if (config('saligan.ai_provider.batch_engine') === 'python') {
+            $response = $this->python->call('/agents/letter', [
+                'request' => $request,
+                'sender_name' => $user?->name,
+                'organization_name' => $user?->organization?->name,
+            ]);
+            $content = $this->sanitizeNode($response['content'] ?? null, 0);
+
+            if ($content === null || $content['type'] !== 'doc') {
+                $content = $this->blankDocument();
+            }
+
+            $this->ensureSignature($content);
+
+            return [
+                'content' => $content,
+                'title' => filled($response['title'] ?? null)
+                    ? (string) $response['title']
+                    : $this->titleFrom($content, $request),
+                'raw' => (string) json_encode($response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            ];
+        }
+
         [$provider, $model] = $this->resolveProvider();
 
         $senderName = $user?->name ?? null;

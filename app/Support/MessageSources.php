@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Enums\KnowledgeType;
 use App\Models\DocumentChunk;
 use App\Models\LegalChunk;
 use App\Models\Message;
@@ -12,8 +13,8 @@ final class MessageSources
     /**
      * Resolve the source cards actually cited by a message.
      *
-     * Legal pages and uploaded documents are tied to inline [SRC <token>] /
-     * [DOC <token>] markers: a source only surfaces when the model actually
+     * Legal pages, standards, and uploaded documents are tied to inline
+     * [SRC <token>] / [STD <token>] / [DOC <token>] markers: a source only surfaces when the model actually
      * cited its token, so the UI never shows retrieved context it did not rely
      * on. Web search results are always surfaced — the provider only records
      * the web results the answer was grounded in, and the UI renders them in
@@ -34,7 +35,7 @@ final class MessageSources
         $tokenCited = self::citedTokens($content);
         $legacyCited = self::citedIndices($content);
 
-        $tokenMode = $tokenCited['src'] !== [] || $tokenCited['doc'] !== [];
+        $tokenMode = $tokenCited['src'] !== [] || $tokenCited['std'] !== [] || $tokenCited['doc'] !== [];
         $legacyMode = ! $tokenMode
             && ($legacyCited['source'] !== [] || $legacyCited['doc'] !== [] || $legacyCited['web'] !== []);
 
@@ -62,6 +63,22 @@ final class MessageSources
             $legalChunkIndexes[$identity][] = (int) $chunk->chunk_index;
         }
 
+        $standardUnits = [];
+        $standardChunkIndexes = [];
+
+        foreach ($message->cited_standard_chunk_ids ?? [] as $chunkId) {
+            $chunk = self::resolve(LegalChunk::class, $chunkId);
+
+            if ($chunk === null) {
+                continue;
+            }
+
+            $identity = (string) ($chunk->crawled_page_id ?? $chunk->id);
+
+            $standardUnits[$identity] ??= $chunk;
+            $standardChunkIndexes[$identity][] = (int) $chunk->chunk_index;
+        }
+
         $docUnits = [];
         // As with legal pages, every retrieved chunk index per document — the
         // citation reader highlights each passage the answer drew on, and a
@@ -81,7 +98,11 @@ final class MessageSources
             $docChunkIndexes[$identity][] = (int) $chunk->chunk_index;
         }
 
-        $tokens = CitationTokens::assign(array_merge(array_keys($legalUnits), array_keys($docUnits)));
+        $tokens = CitationTokens::assign(array_merge(
+            array_keys($legalUnits),
+            array_keys($standardUnits),
+            array_keys($docUnits),
+        ));
 
         $sources = [];
 
@@ -100,7 +121,19 @@ final class MessageSources
                 }
             }
 
-            $sources[] = self::legalSource($chunk, $index, $tokens[$identity], $legalChunkIndexes[$identity] ?? []);
+            $sources[] = self::officialSource($chunk, $index, $tokens[$identity], $legalChunkIndexes[$identity] ?? []);
+        }
+
+        $index = 0;
+
+        foreach ($standardUnits as $identity => $chunk) {
+            $index++;
+
+            if ($strict && ! in_array($tokens[$identity], $tokenCited['std'], true)) {
+                continue;
+            }
+
+            $sources[] = self::officialSource($chunk, $index, $tokens[$identity], $standardChunkIndexes[$identity] ?? []);
         }
 
         $index = 0;
@@ -127,12 +160,13 @@ final class MessageSources
     /**
      * Parse the inline citation tokens the model is instructed to use.
      *
-     * @return array{src: array<int, string>, doc: array<int, string>, web: array<int, int>}
+     * @return array{src: array<int, string>, std: array<int, string>, doc: array<int, string>, web: array<int, int>}
      */
     protected static function citedTokens(string $content): array
     {
         $citations = [
             'src' => [],
+            'std' => [],
             'doc' => [],
             'web' => [],
         ];
@@ -143,6 +177,10 @@ final class MessageSources
 
         if (preg_match_all('/\[DOC\s+([A-Z0-9]+)\]/i', $content, $matches)) {
             $citations['doc'] = array_map('strtoupper', $matches[1]);
+        }
+
+        if (preg_match_all('/\[STD\s+([A-Z0-9]+)\]/i', $content, $matches)) {
+            $citations['std'] = array_map('strtoupper', $matches[1]);
         }
 
         if (preg_match_all('/\[Web\s+(\d+)\]/i', $content, $matches)) {
@@ -244,19 +282,21 @@ final class MessageSources
     }
 
     /**
+     * @param  array<int, int>  $citedChunkIndexes  Chunks of this page the answer drew on.
      * @return array<string, mixed>
      */
-    /**
-     * @param  array<int, int>  $citedChunkIndexes  Chunks of this page the answer drew on.
-     */
-    protected static function legalSource(LegalChunk $chunk, int $index, string $token, array $citedChunkIndexes = []): array
+    protected static function officialSource(LegalChunk $chunk, int $index, string $token, array $citedChunkIndexes = []): array
     {
         $page = $chunk->crawledPage;
 
         sort($citedChunkIndexes);
 
-        return [
-            'type' => 'legal',
+        $knowledgeType = $page?->knowledge_type instanceof KnowledgeType
+            ? $page->knowledge_type
+            : KnowledgeType::tryFrom((string) ($page?->knowledge_type ?? KnowledgeType::Legal->value)) ?? KnowledgeType::Legal;
+
+        $source = [
+            'type' => $knowledgeType->value,
             'index' => $index,
             'token' => $token,
             'id' => $chunk->id,
@@ -267,16 +307,32 @@ final class MessageSources
             // original site.
             'page_id' => $page?->id,
             'has_digest' => filled($page?->digest),
-            'label' => $page?->law_name ?: ($page?->gr_number ?: ($page?->title ?: ($page?->original_filename ?: ($page?->legalSource?->name ?: 'Legal source')))),
+            'label' => $knowledgeType === KnowledgeType::Standard
+                ? ($page?->standard_code ?: ($page?->title ?: ($page?->legalSource?->name ?: 'International standard')))
+                : ($page?->law_name ?: ($page?->gr_number ?: ($page?->title ?: ($page?->original_filename ?: ($page?->legalSource?->name ?: 'Legal source'))))),
             'title' => $page?->title,
-            'law_name' => $page?->law_name,
-            'gr_number' => $page?->gr_number,
-            'promulgation_date' => $page?->promulgation_date?->toDateString(),
             'source_name' => $page?->legalSource?->name,
             'url' => $page?->url,
             'domain' => $page?->url !== null ? parse_url($page->url, PHP_URL_HOST) : null,
             'excerpt' => Str::limit($chunk->content, 300),
         ];
+
+        if ($knowledgeType === KnowledgeType::Standard) {
+            return array_merge($source, [
+                'standard_code' => $page?->standard_code,
+                'standard_edition' => $page?->standard_edition,
+                'standard_issuer' => $page?->standard_issuer,
+                'standard_status' => $page?->standard_status,
+                'standard_publication_date' => $page?->standard_publication_date?->toDateString(),
+                'standard_review_date' => $page?->standard_review_date?->toDateString(),
+            ]);
+        }
+
+        return array_merge($source, [
+            'law_name' => $page?->law_name,
+            'gr_number' => $page?->gr_number,
+            'promulgation_date' => $page?->promulgation_date?->toDateString(),
+        ]);
     }
 
     /**

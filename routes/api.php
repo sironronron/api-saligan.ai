@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\CaseAssigneeController;
 use App\Http\Controllers\Api\CaseProgressController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\ConversationController;
+use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\DemoRequestController;
 use App\Http\Controllers\Api\DocumentController;
 use App\Http\Controllers\Api\ExportController;
@@ -268,6 +269,9 @@ Route::middleware(['auth:supabase', 'track_last_used', 'not_suspended'])->group(
         Route::get('/vetting-requests/{vettingRequest}', [VettingRequestController::class, 'show']);
         Route::post('/vetting-requests/{vettingRequest}/cancel', [VettingRequestController::class, 'cancel']);
         Route::post('/vetting-requests/{vettingRequest}/retry', [VettingRequestController::class, 'retry']);
+
+        // One aggregated read for the post-login Dashboard (see planning-frontend).
+        Route::get('/dashboard/summary', [DashboardController::class, 'summary']);
     });
 
     Route::prefix('admin')->middleware('is_admin')->group(function (): void {

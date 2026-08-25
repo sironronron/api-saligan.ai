@@ -38,6 +38,39 @@ it('serves a crawled authority with its chunks in reading order', function () {
         ->and($response->json('data.chunks.0.content'))->toBe('Section 2. Declaration of policy.');
 });
 
+it('serves standard metadata in the existing reader response', function () {
+    $page = CrawledPage::factory()->standard()->create([
+        'title' => 'Universal financial messaging standard',
+        'url' => 'https://www.iso.org/standard/20022.html',
+        'standard_code' => 'ISO 20022',
+        'standard_edition' => '2019',
+        'standard_issuer' => 'ISO',
+        'standard_status' => 'current',
+        'standard_publication_date' => '2019-11-01',
+        'standard_review_date' => '2024-11-01',
+        'rights_basis' => 'licensed_copy',
+        'digest' => 'A standard for structured financial messages.',
+        'crawl_status' => CrawlStatus::Ok,
+    ]);
+    LegalChunk::factory()->for($page)->create(['content' => 'Standard content.']);
+
+    $response = $this->signInAs($this->user)
+        ->getJson("/api/legal-pages/{$page->id}")
+        ->assertOk();
+
+    expect($response->json('data.knowledge_type'))->toBe('standard')
+        ->and($response->json('data.standard_code'))->toBe('ISO 20022')
+        ->and($response->json('data.standard_edition'))->toBe('2019')
+        ->and($response->json('data.standard_issuer'))->toBe('ISO')
+        ->and($response->json('data.standard_status'))->toBe('current')
+        ->and($response->json('data.standard_publication_date'))->toBe('2019-11-01')
+        ->and($response->json('data.standard_review_date'))->toBe('2024-11-01')
+        ->and($response->json('data.rights_basis'))->toBe('licensed_copy')
+        ->and($response->json('data.title'))->toBe('Universal financial messaging standard')
+        ->and($response->json('data.url'))->toBe('https://www.iso.org/standard/20022.html')
+        ->and($response->json('data.has_digest'))->toBeTrue();
+});
+
 it('requires authentication to read an authority', function () {
     $page = CrawledPage::factory()->for(LegalSource::factory())->create();
 

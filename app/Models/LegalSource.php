@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\KnowledgeType;
 use App\Enums\LegalSourceCategory;
 use Database\Factories\LegalSourceFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
@@ -17,6 +18,7 @@ use Illuminate\Database\Eloquent\Relations\HasManyThrough;
     'seed_urls',
     'is_active',
     'category',
+    'knowledge_type',
 ])]
 class LegalSource extends Model
 {
@@ -36,6 +38,7 @@ class LegalSource extends Model
             'seed_urls' => 'array',
             'is_active' => 'boolean',
             'category' => LegalSourceCategory::class,
+            'knowledge_type' => KnowledgeType::class,
         ];
     }
 

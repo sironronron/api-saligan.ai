@@ -3,6 +3,7 @@
 namespace App\Services\Documents;
 
 use Illuminate\Encryption\Encrypter;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
 use Throwable;
@@ -472,10 +473,15 @@ class DocumentEncryptor
      */
     protected function temporaryPath(): string
     {
-        $directory = storage_path('tmp/documents');
+        $directory = storage_path('app/private/tmp/documents');
 
-        if (! is_dir($directory)) {
-            mkdir($directory, 0755, true);
+        if (! File::isDirectory($directory)
+            && ! File::makeDirectory($directory, 0755, true, true)) {
+            throw new RuntimeException('Could not create the temporary document directory.');
+        }
+
+        if (! is_writable($directory)) {
+            throw new RuntimeException('The temporary document directory is not writable.');
         }
 
         $tempPath = tempnam($directory, 'saligan_');
