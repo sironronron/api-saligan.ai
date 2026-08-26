@@ -33,7 +33,7 @@ class VettingRequestController extends Controller
 
     /**
      * Create a vetting/notarization request. A request with a fee returns the
-     * PayMongo checkout URL the submitter must complete before matching starts.
+     * Hosted checkout URL the submitter must complete before matching starts.
      */
     public function store(Request $request): JsonResponse
     {

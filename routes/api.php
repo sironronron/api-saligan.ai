@@ -31,6 +31,8 @@ use App\Http\Controllers\Api\LetterCommentController;
 use App\Http\Controllers\Api\NotarialJournalController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\OrganizationController;
+use App\Http\Controllers\Api\PaypalVettingController;
+use App\Http\Controllers\Api\PaypalWebhookController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\SubtaskController;
@@ -49,6 +51,10 @@ use Illuminate\Support\Facades\Route;
 
 Route::post('/subscriptions/webhook', [SubscriptionController::class, 'webhook']);
 Route::post('/subscriptions/webhook/lemonsqueezy', [SubscriptionController::class, 'lemonsqueezyWebhook']);
+
+Route::post('/paypal/webhook', [PaypalWebhookController::class, 'handle']);
+Route::get('/paypal/vetting/return', [PaypalVettingController::class, 'return']);
+Route::get('/paypal/vetting/cancel', [PaypalVettingController::class, 'cancel']);
 
 Route::post('/vetting/webhook', [VettingWebhookController::class, 'payments']);
 

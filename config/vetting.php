@@ -79,6 +79,8 @@ return [
     'default_vetting_fee' => (int) env('VETTING_FEE', 10000),
     'default_notarization_fee' => (int) env('NOTARIZATION_FEE', 50000),
 
+    'payment_gateway' => env('VETTING_PAYMENT_GATEWAY', 'paypal'),
+
     /*
      * The lawyer notarization fee schedule, in centavos. Keyed by a document
      * category slug; the fee shown to a submitter is matched from their

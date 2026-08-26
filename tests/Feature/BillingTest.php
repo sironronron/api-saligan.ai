@@ -17,6 +17,8 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 beforeEach(function () {
+    config(['billing.default_gateway' => 'paymongo']);
+
     $this->user = User::factory()->create();
     $this->standard = Plan::factory()->standard()->create();
     $this->pro = Plan::factory()->pro()->create();

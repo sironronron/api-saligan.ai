@@ -34,7 +34,11 @@ beforeEach(function () {
 
     // Free by default so the matching/workflow tests can skip the payment leg;
     // the payment tests set a fee explicitly.
-    config(['vetting.default_vetting_fee' => 0, 'vetting.default_notarization_fee' => 0]);
+    config([
+        'vetting.default_vetting_fee' => 0,
+        'vetting.default_notarization_fee' => 0,
+        'vetting.payment_gateway' => 'paymongo',
+    ]);
 
     $this->plan = Plan::factory()->pro()->create();
     $this->submitter = User::factory()->create();

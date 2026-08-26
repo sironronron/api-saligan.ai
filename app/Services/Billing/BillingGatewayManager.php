@@ -9,6 +9,7 @@ use App\Models\Subscription;
 class BillingGatewayManager
 {
     public function __construct(
+        private readonly PaypalGateway $paypal,
         private readonly PaymongoGateway $paymongo,
         private readonly LemonSqueezyGateway $lemonsqueezy,
     ) {
@@ -22,6 +23,10 @@ class BillingGatewayManager
      */
     public function resolve(Plan $plan, string $interval): PaymentGateway
     {
+        if ($this->wantsPaypal()) {
+            return $this->paypal;
+        }
+
         if ($this->wantsLemonSqueezy()
             && $this->lemonSqueezyConfigured()
             && $plan->lemonSqueezyVariantIdForInterval($interval) !== null) {
@@ -36,9 +41,19 @@ class BillingGatewayManager
      */
     public function for(Subscription $subscription): PaymentGateway
     {
-        return $subscription->gateway === BillingGateway::LemonSqueezy->value
-            ? $this->lemonsqueezy
-            : $this->paymongo;
+        return match ($subscription->gateway) {
+            BillingGateway::Paypal->value => $this->paypal,
+            BillingGateway::LemonSqueezy->value => $this->lemonsqueezy,
+            default => $this->paymongo,
+        };
+    }
+
+    /**
+     * Whether PayPal is the configured default gateway for new checkouts.
+     */
+    protected function wantsPaypal(): bool
+    {
+        return config('billing.default_gateway') === BillingGateway::Paypal->value;
     }
 
     /**
