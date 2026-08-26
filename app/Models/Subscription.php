@@ -19,6 +19,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'paymongo_customer_id',
     'lemonsqueezy_subscription_id',
     'lemonsqueezy_customer_id',
+    'paypal_subscription_id',
     'status',
     'seats_purchased',
     'price_per_seat',
@@ -37,6 +38,8 @@ class Subscription extends Model
     public const GATEWAY_PAYMONGO = 'paymongo';
 
     public const GATEWAY_LEMONSQUEEZY = 'lemonsqueezy';
+
+    public const GATEWAY_PAYPAL = 'paypal';
 
     public const STATUS_INCOMPLETE = 'incomplete';
 
@@ -185,8 +188,10 @@ class Subscription extends Model
      */
     public function gatewaySubscriptionId(): ?string
     {
-        return $this->gateway === self::GATEWAY_LEMONSQUEEZY
-            ? $this->lemonsqueezy_subscription_id
-            : $this->paymongo_subscription_id;
+        return match ($this->gateway) {
+            self::GATEWAY_LEMONSQUEEZY => $this->lemonsqueezy_subscription_id,
+            self::GATEWAY_PAYPAL => $this->paypal_subscription_id,
+            default => $this->paymongo_subscription_id,
+        };
     }
 }

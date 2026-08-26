@@ -152,7 +152,7 @@ class VettingRequest extends Model
 
     /**
      * The total fee the submitter owes, in centavos: the service fees plus the
-     * PayMongo processing fee passed through to the buyer.
+     * Payment processing fee passed through to the buyer.
      */
     public function totalFee(): int
     {

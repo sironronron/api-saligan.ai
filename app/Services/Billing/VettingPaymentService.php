@@ -10,6 +10,7 @@ use App\Models\VettingPayment;
 use App\Models\VettingRequest;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Log;
+use InvalidArgumentException;
 
 /**
  * Handles the payment side of vetting/notarization requests: authorizing the
@@ -20,49 +21,32 @@ use Illuminate\Support\Facades\Log;
 final class VettingPaymentService
 {
     public function __construct(
-        private readonly PaymongoClient $paymongo,
+        private readonly PaymongoVettingPaymentGateway $paymongoGateway,
+        private readonly PaypalVettingPaymentGateway $paypalGateway,
     ) {
         //
     }
 
     /**
-     * Authorize the request's total fee. The buyer pays in PayMongo's hosted
-     * checkout; with manual capture the funds are held, not moved.
+     * Authorize the request's total fee through the configured gateway.
      *
      * @return array{checkout_url: string, payment_intent_id: string}
      */
     public function authorize(VettingRequest $request, User $submitter): array
     {
-        $intent = $this->paymongo->createPaymentIntent(
-            amount: $request->totalFee(),
-            description: $this->intentDescription($request),
-            metadata: ['vetting_request_id' => $request->id],
-            captureType: 'manual',
-        );
-
-        $intentId = data_get($intent, 'id');
-
-        $frontendUrl = rtrim((string) config('app.frontend_url'), '/');
-
-        $checkout = $this->paymongo->createCheckoutSession(
-            paymentIntentId: (string) $intentId,
-            customerId: $this->resolveCustomerId($submitter),
-            description: $this->intentDescription($request),
-            amount: $request->totalFee(),
-            successUrl: "{$frontendUrl}/vetting/{$request->id}?payment=return",
-            cancelUrl: "{$frontendUrl}/vetting/{$request->id}?payment=cancelled",
-            metadata: ['vetting_request_id' => $request->id],
-        );
+        $gateway = $this->newGateway();
+        $checkout = $gateway->authorize($request, $submitter);
+        $intentId = $checkout['payment_intent_id'];
 
         $request->update([
             'gateway_payment_intent_id' => $intentId,
-            'gateway_checkout_url' => data_get($checkout, 'attributes.checkout_url'),
+            'gateway_checkout_url' => $checkout['checkout_url'],
         ]);
 
         VettingPayment::create([
             'vetting_request_id' => $request->id,
             'submitter_id' => $submitter->id,
-            'gateway' => 'paymongo',
+            'gateway' => $gateway->name(),
             'kind' => $request->includesNotarization()
                 ? VettingPayment::KIND_NOTARIZATION
                 : VettingPayment::KIND_VETTING,
@@ -94,11 +78,18 @@ final class VettingPaymentService
             ->latest('id')
             ->first();
 
+        if ($payment?->status === VettingPaymentStatus::Authorized) {
+            return true;
+        }
+
         if ($payment !== null) {
             $payment->update([
                 'status' => VettingPaymentStatus::Authorized,
-                'gateway_payment_id' => $gatewayPaymentId,
-                'metadata' => array_merge($payment->metadata ?? [], ['authorized_at' => now()->toIso8601String()]),
+                'gateway_payment_id' => $gatewayPaymentId ?? $payment->gateway_payment_id,
+                'metadata' => array_merge(
+                    $payment->metadata ?? [],
+                    ['authorized_at' => now()->toIso8601String()],
+                ),
             ]);
         }
 
@@ -117,6 +108,36 @@ final class VettingPaymentService
         }
 
         return true;
+    }
+
+    /**
+     * Complete the browser return from an approved PayPal vetting order.
+     */
+    public function authorizePaypalOrder(string $orderId): ?VettingRequest
+    {
+        $request = $this->requestByIntent($orderId);
+
+        if ($request === null) {
+            return null;
+        }
+
+        $payment = $request->payments()
+            ->where('gateway_payment_intent_id', $orderId)
+            ->where('gateway', 'paypal')
+            ->latest('id')
+            ->first();
+
+        if ($payment === null || $payment->status !== VettingPaymentStatus::Pending) {
+            return $request;
+        }
+
+        $authorized = $this->paypalGateway->authorizeApproved($payment);
+        $this->markAuthorized($orderId, $authorized['gateway_payment_id']);
+        $payment->refresh()->update([
+            'metadata' => array_merge($payment->metadata ?? [], $authorized['metadata']),
+        ]);
+
+        return $request->fresh();
     }
 
     /**
@@ -152,10 +173,17 @@ final class VettingPaymentService
             return false;
         }
 
+        $payment = $request->payments()
+            ->where('gateway_payment_intent_id', $intentId)
+            ->latest('id')
+            ->first();
+
+        if ($payment === null) {
+            return false;
+        }
+
         try {
-            // The intent was created for the request's total fee, so passing it
-            // captures the full authorized amount (PayMongo requires the amount).
-            $this->paymongo->capturePaymentIntent($intentId, $request->totalFee());
+            $result = $this->gatewayFor($payment->gateway)->capture($payment, $request);
         } catch (ConnectionException $e) {
             Log::warning('Could not capture vetting payment intent.', [
                 'vetting_request_id' => $request->id,
@@ -166,13 +194,12 @@ final class VettingPaymentService
             return false;
         }
 
-        $request->payments()
-            ->where('gateway_payment_intent_id', $intentId)
-            ->update([
-                'status' => VettingPaymentStatus::Captured,
-                'lawyer_id' => $request->assigned_lawyer_id,
-                'captured_at' => now(),
-            ]);
+        $payment->update([
+            'status' => VettingPaymentStatus::Captured,
+            'lawyer_id' => $request->assigned_lawyer_id,
+            'captured_at' => now(),
+            'metadata' => array_merge($payment->metadata ?? [], $result['metadata'] ?? []),
+        ]);
 
         $request->update(['payment_status' => VettingPaymentStatus::Captured]);
 
@@ -195,14 +222,22 @@ final class VettingPaymentService
         $status = $request->payment_status;
 
         if ($status === VettingPaymentStatus::Captured) {
-            $this->paymongo->refundPaymentIntent($intentId);
-
-            $request->payments()
+            $payment = $request->payments()
                 ->where('gateway_payment_intent_id', $intentId)
-                ->update([
-                    'status' => VettingPaymentStatus::Refunded,
-                    'refunded_at' => now(),
-                ]);
+                ->latest('id')
+                ->first();
+
+            if ($payment === null) {
+                return;
+            }
+
+            $result = $this->gatewayFor($payment->gateway)->refund($payment);
+
+            $payment->update([
+                'status' => VettingPaymentStatus::Refunded,
+                'refunded_at' => now(),
+                'gateway_refund_id' => $result['gateway_refund_id'] ?? $payment->gateway_refund_id,
+            ]);
 
             $request->update(['payment_status' => VettingPaymentStatus::Refunded]);
 
@@ -210,22 +245,31 @@ final class VettingPaymentService
         }
 
         if ($status === VettingPaymentStatus::Authorized) {
+            $payment = $request->payments()
+                ->where('gateway_payment_intent_id', $intentId)
+                ->latest('id')
+                ->first();
+
+            if ($payment === null) {
+                return;
+            }
+
             try {
-                $this->paymongo->cancelPaymentIntent($intentId);
+                $this->gatewayFor($payment->gateway)->void($payment);
             } catch (\Throwable $e) {
                 Log::warning('Could not cancel vetting payment intent.', [
                     'vetting_request_id' => $request->id,
                     'payment_intent_id' => $intentId,
                     'error' => $e->getMessage(),
                 ]);
+
+                return;
             }
 
-            $request->payments()
-                ->where('gateway_payment_intent_id', $intentId)
-                ->update([
-                    'status' => VettingPaymentStatus::Void,
-                    'voided_at' => now(),
-                ]);
+            $payment->update([
+                'status' => VettingPaymentStatus::Void,
+                'voided_at' => now(),
+            ]);
 
             $request->update(['payment_status' => VettingPaymentStatus::Void]);
         }
@@ -256,6 +300,73 @@ final class VettingPaymentService
     }
 
     /**
+     * Handle a PayPal capture webhook keyed by its order id.
+     */
+    public function markPaypalCaptured(string $orderId, string $captureId): bool
+    {
+        $payment = $this->paypalPayment($orderId);
+
+        if ($payment === null) {
+            return false;
+        }
+
+        if ($payment->status !== VettingPaymentStatus::Captured) {
+            $payment->update([
+                'status' => VettingPaymentStatus::Captured,
+                'captured_at' => now(),
+                'metadata' => array_merge($payment->metadata ?? [], ['capture_id' => $captureId]),
+            ]);
+
+            $payment->vettingRequest->update(['payment_status' => VettingPaymentStatus::Captured]);
+        }
+
+        return true;
+    }
+
+    /**
+     * Handle a PayPal capture refund webhook keyed by its order id.
+     */
+    public function markPaypalRefunded(string $orderId, string $refundId): bool
+    {
+        $payment = $this->paypalPayment($orderId);
+
+        if ($payment === null) {
+            return false;
+        }
+
+        $payment->update([
+            'status' => VettingPaymentStatus::Refunded,
+            'gateway_refund_id' => $refundId,
+            'refunded_at' => $payment->refunded_at ?? now(),
+        ]);
+
+        $payment->vettingRequest->update(['payment_status' => VettingPaymentStatus::Refunded]);
+
+        return true;
+    }
+
+    /**
+     * Handle a PayPal authorization void webhook keyed by its order id.
+     */
+    public function markPaypalVoided(string $orderId): bool
+    {
+        $payment = $this->paypalPayment($orderId);
+
+        if ($payment === null) {
+            return false;
+        }
+
+        $payment->update([
+            'status' => VettingPaymentStatus::Void,
+            'voided_at' => $payment->voided_at ?? now(),
+        ]);
+
+        $payment->vettingRequest->update(['payment_status' => VettingPaymentStatus::Void]);
+
+        return true;
+    }
+
+    /**
      * The request behind a gateway payment intent, if any.
      */
     public function requestByIntent(string $paymentIntentId): ?VettingRequest
@@ -266,29 +377,36 @@ final class VettingPaymentService
     }
 
     /**
-     * A human-readable line item for the payment intent and checkout.
+     * Resolve the gateway for a new payment.
      */
-    protected function intentDescription(VettingRequest $request): string
+    protected function newGateway(): VettingPaymentGateway
     {
-        $service = $request->service_type->label();
-        $type = $request->document_type;
-
-        return "Batayan — {$service} of {$type} ({$request->summary})";
+        return match (config('vetting.payment_gateway')) {
+            'paypal' => $this->paypalGateway,
+            'paymongo' => $this->paymongoGateway,
+            default => throw new InvalidArgumentException('Unsupported vetting payment gateway.'),
+        };
     }
 
     /**
-     * The submitter's PayMongo customer, created on demand.
+     * Resolve a persisted payment's gateway rather than the current default.
      */
-    protected function resolveCustomerId(User $submitter): string
+    protected function gatewayFor(string $gateway): VettingPaymentGateway
     {
-        $existing = $this->paymongo->findCustomerByEmail($submitter->email);
+        return match ($gateway) {
+            'paypal' => $this->paypalGateway,
+            default => $this->paymongoGateway,
+        };
+    }
 
-        if ($existing !== null) {
-            return (string) ($existing['id'] ?? '');
-        }
+    protected function paypalPayment(string $orderId): ?VettingPayment
+    {
+        $request = $this->requestByIntent($orderId);
 
-        $customer = $this->paymongo->createCustomer($submitter->email, $submitter->name);
-
-        return (string) data_get($customer, 'id');
+        return $request?->payments()
+            ->where('gateway', 'paypal')
+            ->where('gateway_payment_intent_id', $orderId)
+            ->latest('id')
+            ->first();
     }
 }

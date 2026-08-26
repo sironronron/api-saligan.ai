@@ -12,21 +12,23 @@ Internet
    |
 Reverse proxy (TLS)
    |
-Laravel API :8000       Docker network: batayan_sail       AI provider :8080
-   |                                                           |
-   +-------------------------- PostgreSQL --------------------+
+   Laravel API :8000       Docker host gateway       AI provider :0.0.0.0:8080
+   |                              |                         |
+   +-------------------------- PostgreSQL ----------------+
 ```
 
 - Laravel serves the public API and owns all application writes.
-- The AI provider is reachable only over the Docker network and calls Laravel's
-  authenticated internal callback endpoints.
+- The AI provider runs directly on Ubuntu under systemd and calls Laravel's
+  authenticated internal callback endpoints over localhost.
 - The provider reads PostgreSQL through a dedicated read-only database user.
+- Laravel reaches the host-native provider through Docker's
+  `host.docker.internal` gateway.
 - The frontend remains a separate deployment and points to the public Laravel
   URL with `NUXT_PUBLIC_API_BASE`.
 
 ## Requirements
 
-- Ubuntu 22.04 or newer, or another Docker-supported Linux distribution.
+- Ubuntu 24.04 LTS is recommended. Python 3.12 or newer is required by the provider.
 - Docker Engine and the Docker Compose plugin.
 - A DNS record for the API, such as `api.example.com`.
 - Supabase project credentials for authentication.
@@ -55,7 +57,7 @@ git clone <ai-provider-repository-url> ai-provider.batayan.ai
 ```
 
 The two repositories are independent. Deploy and update them independently,
-but keep their shared network name and `AI_INTERNAL_SECRET` identical.
+but keep their `AI_INTERNAL_SECRET` identical.
 
 ## Configure Laravel
 
@@ -78,6 +80,8 @@ DB_PORT=5432
 DB_DATABASE=laravel
 DB_USERNAME=sail
 DB_PASSWORD=replace-with-a-long-database-password
+# Publish PostgreSQL only to the host so the systemd provider can read it.
+FORWARD_DB_PORT=127.0.0.1:5432
 
 FRONTEND_URL=https://app.example.com
 SANCTUM_STATEFUL_DOMAINS=app.example.com
@@ -85,8 +89,8 @@ SANCTUM_STATEFUL_DOMAINS=app.example.com
 # Bind Laravel to localhost; the reverse proxy is the public listener.
 APP_PORT=127.0.0.1:8000
 
-# Keep the provider on the shared Docker network.
-AI_PROVIDER_URL=http://ai-provider:8080
+# The provider runs on the host; host.docker.internal is provided by compose.yaml.
+AI_PROVIDER_URL=http://host.docker.internal:8080
 AI_INTERNAL_SECRET=replace-with-the-same-long-random-secret
 AI_BATCH_ENGINE=laravel
 AI_CHAT_ENGINE=laravel
@@ -103,8 +107,7 @@ Generate the shared secret once and use the exact value in both `.env` files:
 openssl rand -base64 48
 ```
 
-Set the Compose project name before every Compose command. This gives the API
-network a predictable name for the provider's external-network declaration:
+Set the Compose project name before every API Compose command:
 
 ```bash
 export COMPOSE_PROJECT_NAME=batayan
@@ -146,8 +149,11 @@ Replace the placeholders with a strong password and the database role that owns
 the Laravel schema, usually the value of `DB_USERNAME`:
 
 ```bash
-docker compose exec pgsql psql -U "$DB_USERNAME" -d "$DB_DATABASE"
+docker compose exec pgsql psql -U sail -d laravel
 ```
+
+Replace `sail` and `laravel` with the values of `DB_USERNAME` and
+`DB_DATABASE` if your API uses different values.
 
 Run this SQL in `psql`:
 
@@ -164,22 +170,36 @@ Use the actual `DB_DATABASE`, schema-owner role, and reader password in the
 commands above. If migrations run under a different role, use that role in
 `ALTER DEFAULT PRIVILEGES`.
 
-## Configure the AI provider
+## Configure the AI provider on Ubuntu
+
+The provider is not deployed with Docker. Install Python and create a dedicated
+system user:
 
 ```bash
-cd /opt/batayan/ai-provider.batayan.ai
-cp .env.example .env
+sudo apt update
+sudo apt install -y python3.12 python3.12-venv python3.12-dev build-essential libpq-dev
+sudo useradd --system --home /opt/batayan --shell /usr/sbin/nologin batayan || true
+sudo chown -R batayan:batayan /opt/batayan/ai-provider.batayan.ai
+sudo -u batayan python3.12 -m venv --upgrade-deps /opt/batayan/ai-provider.batayan.ai/.venv
+sudo -u batayan /opt/batayan/ai-provider.batayan.ai/.venv/bin/python -m pip install /opt/batayan/ai-provider.batayan.ai
+sudo install -d -o batayan -g batayan -m 750 /etc/batayan
+sudo install -o batayan -g batayan -m 600 /dev/null /etc/batayan/ai-provider.env
 ```
 
-Edit the provider `.env` with values that are valid inside Docker, not values
-that point to `localhost`:
+If your Ubuntu release provides a different Python executable, use any Python
+version supported by `pyproject.toml` (3.12 or newer).
+
+Create `/etc/batayan/ai-provider.env` with values for host networking:
+
+> The systemd unit reads `/etc/batayan/ai-provider.env`. Editing the
+> repository's `.env` does not change the systemd service.
 
 ```dotenv
 ENVIRONMENT=production
 LOG_LEVEL=INFO
 AI_INTERNAL_SECRET=replace-with-the-same-long-random-secret
-LARAVEL_BASE_URL=http://laravel.test
-DATABASE_URL=postgresql://batayan_ai_reader:replace-with-reader-password@pgsql:5432/laravel
+LARAVEL_BASE_URL=http://127.0.0.1:8000
+DATABASE_URL=postgresql://batayan_ai_reader:replace-with-reader-password@127.0.0.1:5432/laravel
 
 AI_CHAT_PROVIDER=anthropic
 ANTHROPIC_API_KEY=replace-with-provider-key
@@ -188,33 +208,47 @@ AI_EMBED_PROVIDER=gemini
 AI_EMBED_MODEL=gemini-embedding-2
 EMBEDDING_DIMENSIONS=768
 
-# Used by compose.yaml to join the Laravel network.
-AI_PROVIDER_NETWORK=batayan_sail
 ```
 
-The provider's `LARAVEL_BASE_URL` must be `http://laravel.test`, and its
-`DATABASE_URL` host must be `pgsql`. Those Docker service names resolve only on
-the shared network. The secret must match Laravel's `AI_INTERNAL_SECRET`
-exactly.
-
-Start the provider after the Laravel stack has created the network and database:
+Create `/etc/systemd/system/batayan-ai-provider.service`:
 
 ```bash
-export COMPOSE_PROJECT_NAME=batayan
-export AI_PROVIDER_NETWORK=batayan_sail
+sudo tee /etc/systemd/system/batayan-ai-provider.service >/dev/null <<'UNIT'
+[Unit]
+Description=Batayan AI Provider
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=batayan
+Group=batayan
+WorkingDirectory=/opt/batayan/ai-provider.batayan.ai
+EnvironmentFile=/etc/batayan/ai-provider.env
+ExecStart=/opt/batayan/ai-provider.batayan.ai/.venv/bin/uvicorn ai_provider.main:app --host 0.0.0.0 --port 8080 --no-access-log
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now batayan-ai-provider
+sudo systemctl status batayan-ai-provider --no-pager
 ```
 
-Check the provider from the server:
+Check the provider and its logs:
 
 ```bash
 curl --fail http://127.0.0.1:8080/health
-docker compose logs --tail=100 ai-provider
+sudo journalctl -u batayan-ai-provider -n 100 --no-pager
 ```
 
-The provider Compose file currently publishes port `8080`. Allow only ports
-`80` and `443` through the server firewall; do not expose `8080` publicly.
-For a stricter setup, bind the provider port to `127.0.0.1` in a production
-Compose override. Laravel still reaches it through `http://ai-provider:8080`.
+The provider binds to the host interface so the Laravel container can reach it
+through `host.docker.internal:8080`. Block port `8080` at the firewall; the
+provider is still protected by its internal bearer secret.
 
 ## Enable the provider gradually
 
@@ -295,9 +329,10 @@ Update the provider first, then Laravel:
 
 ```bash
 cd /opt/batayan/ai-provider.batayan.ai
-export COMPOSE_PROJECT_NAME=batayan AI_PROVIDER_NETWORK=batayan_sail
-git pull --ff-only
-docker compose up -d --build
+sudo -u batayan git pull --ff-only
+sudo -u batayan /opt/batayan/ai-provider.batayan.ai/.venv/bin/pip install /opt/batayan/ai-provider.batayan.ai
+sudo systemctl restart batayan-ai-provider
+curl --fail http://127.0.0.1:8080/health
 
 cd /opt/batayan/api.batayan.ai
 export COMPOSE_PROJECT_NAME=batayan
@@ -323,38 +358,26 @@ contains application data, but it is not a substitute for an off-server backup.
 
 ### Provider cannot reach Laravel
 
-- Confirm both Compose projects use `COMPOSE_PROJECT_NAME=batayan`.
-- Confirm the provider `.env` has `AI_PROVIDER_NETWORK=batayan_sail`.
-- Confirm `LARAVEL_BASE_URL=http://laravel.test`.
+- Confirm Laravel publishes `APP_PORT=127.0.0.1:8000`.
+- Confirm the provider has `LARAVEL_BASE_URL=http://127.0.0.1:8000`.
+- Check `curl --fail http://127.0.0.1:8000/up` on the host.
 - Confirm `AI_INTERNAL_SECRET` is identical in both services.
-- Check `docker network inspect batayan_sail` and verify both containers are attached.
-
-If Docker reports `network ... not found` when starting the provider, the
-container was created against an older network instance. Recreate the provider
-container so Docker attaches it to the current network:
-
-```bash
-cd /opt/batayan/ai-provider.batayan.ai
-export COMPOSE_PROJECT_NAME=batayan
-export AI_PROVIDER_NETWORK=batayan_sail
-docker compose up -d --force-recreate
-docker compose ps
-curl --fail http://127.0.0.1:8080/health
-```
-
-Do not delete the network or PostgreSQL volumes as a first response. The
-provider container is disposable; the database and its volumes are not.
+- Check `sudo journalctl -u batayan-ai-provider -n 100 --no-pager`.
+- From Laravel, test `curl http://host.docker.internal:8080/health` inside the
+  `laravel.test` container.
 
 ### Provider cannot reach PostgreSQL
 
-- Use `pgsql` as the host, not `localhost`.
+- Use `127.0.0.1` as the host from the systemd provider, not `pgsql`.
+- Confirm the API `.env` publishes `FORWARD_DB_PORT=127.0.0.1:5432`.
 - Verify the reader role has `CONNECT`, schema `USAGE`, and table `SELECT` grants.
 - Confirm the provider `DATABASE_URL` database and password match the API stack.
 
 ### Chat streams stop or time out
 
 - Confirm the reverse proxy has buffering disabled and a long read timeout.
-- Check `docker compose logs laravel.test ai-provider`.
+- Check `docker compose logs laravel.test` and
+  `sudo journalctl -u batayan-ai-provider -n 100 --no-pager`.
 - Verify `AI_CHAT_ENGINE` and `AI_PROVIDER_URL` in Laravel's runtime environment.
 - After changing `.env`, run `php artisan octane:reload` inside the Laravel container.
 
@@ -363,6 +386,33 @@ provider container is disposable; the database and its volumes are not.
 The internal callback middleware requires the bearer secret. Compare the two
 `AI_INTERNAL_SECRET` values byte-for-byte and restart both services after fixing
 the value.
+
+### systemd reports `203/EXEC`
+
+This means the `ExecStart` file is missing or not executable. Confirm the
+virtualenv contains both Python and Uvicorn:
+
+```bash
+sudo -u batayan /opt/batayan/ai-provider.batayan.ai/.venv/bin/python --version
+sudo -u batayan /opt/batayan/ai-provider.batayan.ai/.venv/bin/python -m pip show uvicorn
+test -x /opt/batayan/ai-provider.batayan.ai/.venv/bin/uvicorn && echo ready
+```
+
+If `.venv/bin/pip` or `.venv/bin/uvicorn` is missing, install the Ubuntu venv
+package and recreate only the generated virtualenv:
+
+```bash
+sudo systemctl stop batayan-ai-provider
+sudo apt update
+sudo apt install -y python3.12-venv python3.12-dev build-essential libpq-dev
+sudo rm -rf /opt/batayan/ai-provider.batayan.ai/.venv
+sudo -u batayan python3.12 -m venv --upgrade-deps /opt/batayan/ai-provider.batayan.ai/.venv
+sudo -u batayan /opt/batayan/ai-provider.batayan.ai/.venv/bin/python -m pip install /opt/batayan/ai-provider.batayan.ai
+sudo systemctl daemon-reload
+sudo systemctl reset-failed batayan-ai-provider
+sudo systemctl start batayan-ai-provider
+sudo systemctl status batayan-ai-provider --no-pager -l
+```
 
 ## Local development
 

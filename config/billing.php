@@ -6,13 +6,12 @@ return [
     | Default Payment Gateway
     |--------------------------------------------------------------------------
     |
-    | The gateway used to start new subscriptions. LemonSqueezy is the
-    | default; PayMongo is used automatically as a fallback when
-    | LemonSqueezy is not configured or a plan has no LemonSqueezy variant.
+    | The gateway used to start new subscriptions. Existing subscriptions
+    | continue to use the gateway stored on their row.
     |
-    | Supported: 'lemonsqueezy', 'paymongo'
+    | Supported: 'paypal', 'lemonsqueezy', 'paymongo'
     |
     */
 
-    'default_gateway' => env('BILLING_GATEWAY', 'lemonsqueezy'),
+    'default_gateway' => env('BILLING_GATEWAY', 'paypal'),
 ];
