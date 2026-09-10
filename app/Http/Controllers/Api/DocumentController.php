@@ -8,14 +8,16 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\DocumentResource;
 use App\Http\Resources\LabelResource;
 use App\Jobs\ProcessDocumentUpload;
+use App\Models\AiUsage;
 use App\Models\Document;
 use App\Models\DocumentChunk;
 use App\Models\Label;
 use App\Models\LegalCase;
+use App\Services\Billing\AiBudget;
+use App\Services\Billing\AiCosting;
 use App\Services\Crawler\LegalDigestService;
 use App\Services\Documents\DocumentEncryptor;
 use App\Support\PlanFeatures;
-use App\Support\PlanLimits;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -121,17 +123,26 @@ class DocumentController extends Controller
         }
 
         $file = $validated['file'];
+        $isImage = str_starts_with((string) $file->getClientMimeType(), 'image/');
 
         // An image is nothing but a picture of text: without the OCR that
         // document intelligence pays for, ingesting it can only fail. Refusing
         // it here rather than in the queue means the upload allowance is not
         // spent on a document that was never going to be readable, and the
         // reader is told why while they are still looking at the picker.
-        if (str_starts_with((string) $file->getClientMimeType(), 'image/')) {
+        if ($isImage) {
             PlanFeatures::ensureHas($request->user(), PlanFeatures::DOCUMENT_INTELLIGENCE);
         }
 
-        PlanLimits::ensureCanUse($request->user(), 'documents_uploaded');
+        // Ingestion spends from the AI allowance, not an upload count: the
+        // scan branch reserves the heavier estimate up front, and the job
+        // settles the measured cost or releases the hold on failure.
+        $reservation = AiBudget::reserve(
+            $request->user(),
+            AiUsage::OPERATION_INGEST,
+            AiCosting::estimateFor($isImage ? 'ingest_scan' : 'ingest_text'),
+            context: ['engine' => config('saligan.ai_provider.batch_engine')],
+        );
 
         $originalFilename = $file->getClientOriginalName();
 
@@ -151,13 +162,12 @@ class DocumentController extends Controller
             'storage_path' => $storagePath,
             'mime_type' => $file->getClientMimeType(),
             'status' => DocumentStatus::Queued,
+            'ai_usage_id' => $reservation->id,
         ]);
 
         if ($labels->isNotEmpty()) {
             $document->syncLabels($labels, $request->user());
         }
-
-        PlanLimits::increment($request->user(), 'documents_uploaded');
 
         ProcessDocumentUpload::dispatch($document)
             ->onQueue(config('saligan.documents.queue'));
@@ -242,9 +252,19 @@ class DocumentController extends Controller
 
         abort_unless($document->status === DocumentStatus::Failed, 422, 'Only a failed document can be retried.');
 
+        // The failed attempt's hold was released when it failed, so the retry
+        // reserves anew: exactly one successful ingestion ever settles.
+        $retryReservation = AiBudget::reserve(
+            $request->user(),
+            AiUsage::OPERATION_INGEST,
+            AiCosting::estimateFor(str_starts_with((string) $document->mime_type, 'image/') ? 'ingest_scan' : 'ingest_text'),
+            context: ['engine' => config('saligan.ai_provider.batch_engine')],
+        );
+
         $document->update([
             'status' => DocumentStatus::Queued,
             'error_message' => null,
+            'ai_usage_id' => $retryReservation->id,
         ]);
 
         $document->chunks()->delete();

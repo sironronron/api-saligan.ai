@@ -16,11 +16,17 @@ use Illuminate\Http\JsonResponse;
  */
 final class UpgradeResponse
 {
-    public static function make(string $message): JsonResponse
+    /**
+     * @param  array<string, mixed>  $meta  Extra keys the client branches on
+     *                                      (usage percent, reset date). The
+     *                                      shape stays backward compatible:
+     *                                      `message` plus `upgrade_required`.
+     */
+    public static function make(string $message, array $meta = []): JsonResponse
     {
-        return response()->json([
+        return response()->json(array_merge([
             'message' => $message,
             'upgrade_required' => true,
-        ], 402);
+        ], $meta), 402);
     }
 }

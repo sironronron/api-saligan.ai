@@ -82,6 +82,21 @@ it('starts a LemonSqueezy checkout and returns the hosted checkout url', functio
     });
 });
 
+it('removes a LemonSqueezy checkout row when checkout creation fails', function () {
+    $this->pro->update(['lemonsqueezy_variant_id' => 456]);
+
+    Http::fake([
+        'api.lemonsqueezy.com/*' => Http::response(['errors' => [['detail' => 'unavailable']]], 503),
+    ]);
+
+    $this->signInAs($this->user)
+        ->postJson('/api/subscription', ['plan_id' => $this->pro->id])
+        ->assertStatus(502)
+        ->assertJsonPath('message', 'The payment provider is temporarily unavailable. Please try again.');
+
+    $this->assertDatabaseCount('subscriptions', 0);
+});
+
 it('falls back to PayMongo at the API level when the plan has no LemonSqueezy variant', function () {
     Http::fake([
         'api.paymongo.com/v1/customers*' => Http::response([

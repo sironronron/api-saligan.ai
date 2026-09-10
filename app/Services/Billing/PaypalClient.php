@@ -131,15 +131,21 @@ class PaypalClient
     }
 
     /**
-     * Change the plan for an existing PayPal subscription.
+     * Revise the plan for an existing PayPal subscription.
      */
-    public function patchSubscriptionPlan(string $subscriptionId, string $planId): array
-    {
-        $response = $this->client(true)->patch("/v1/billing/subscriptions/{$subscriptionId}", [
-            [
-                'op' => 'replace',
-                'path' => '/plan_id',
-                'value' => $planId,
+    public function reviseSubscriptionPlan(
+        string $subscriptionId,
+        string $planId,
+        string $returnUrl,
+        string $cancelUrl,
+    ): array {
+        $response = $this->client(true)->post("/v1/billing/subscriptions/{$subscriptionId}/revise", [
+            'plan_id' => $planId,
+            'application_context' => [
+                'brand_name' => 'Batayan',
+                'user_action' => 'SUBSCRIBE_NOW',
+                'return_url' => $returnUrl,
+                'cancel_url' => $cancelUrl,
             ],
         ]);
 

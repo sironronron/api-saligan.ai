@@ -4,9 +4,12 @@ namespace App\Jobs;
 
 use App\Enums\DocumentStatus;
 use App\Exceptions\DocumentProcessingException;
+use App\Models\AiUsage;
 use App\Models\Document;
 use App\Models\DocumentChunk;
 use App\Services\Ai\EmbeddingService;
+use App\Services\Billing\AiBudget;
+use App\Services\Billing\AiCosting;
 use App\Services\Documents\DocumentChunker;
 use App\Services\Documents\DocumentClassifier;
 use App\Services\Documents\ImageOcrExtractor;
@@ -92,21 +95,26 @@ class ProcessDocumentUpload implements ShouldQueue
         // temporary file that is removed as soon as extraction completes, so
         // plaintext never lingers on disk.
         $copy = $files->localCopy($document->storage_path);
+        $ocrRan = false;
 
         try {
-            $text = $this->isImage($mimeType) && $readsScans
-                ? $ocr->extract($copy->path, $mimeType)
+            if ($this->isImage($mimeType) && $readsScans) {
+                $text = $ocr->extract($copy->path, $mimeType);
+                $ocrRan = true;
+            } else {
                 // Markdown, not flat text: these chunks are what the citation
                 // reader shows, and a source is far easier to read — and to
                 // find a cited passage in — with its own headings and lists
                 // intact.
-                : $extractor->extractMarkdown($copy->path, $mimeType);
+                $text = $extractor->extractMarkdown($copy->path, $mimeType);
+            }
 
             // A scanned PDF has no text layer, so the parser returns nothing.
             // The pages are images, which is exactly what the OCR model reads,
             // so fall through to it rather than rejecting the upload.
             if ($readsScans && trim($this->sanitizeText($text)) === '' && ImageOcrExtractor::handles($mimeType) && ! $this->isImage($mimeType)) {
                 $text = $ocr->extract($copy->path, $mimeType);
+                $ocrRan = true;
             }
         } finally {
             $copy->discard();
@@ -169,6 +177,45 @@ class ProcessDocumentUpload implements ShouldQueue
         }
 
         $document->update(['status' => DocumentStatus::Ready]);
+
+        // Settle the upload's hold with what ingestion measurably spent.
+        // Embeddings are measured from the extracted length; OCR and
+        // classification are modeled flat add-ons because the providers do
+        // not report per-page counts on this path. Queue-level retries share
+        // the one reservation — only this success settles it.
+        $this->settleIngestUsage($document, $text, $ocrRan, $readsScans);
+    }
+
+    protected function settleIngestUsage(Document $document, string $text, bool $ocrRan, bool $readsScans): void
+    {
+        if ($document->ai_usage_id === null) {
+            return;
+        }
+
+        $reservation = AiUsage::query()->find($document->ai_usage_id);
+
+        if ($reservation === null) {
+            return;
+        }
+
+        $cost = AiCosting::embeddingCostUsd(AiCosting::estimateTokens($text));
+
+        if ($ocrRan) {
+            $cost += AiCosting::OCR_ADDON_USD;
+        }
+
+        if ($readsScans) {
+            $cost += AiCosting::CLASSIFY_ADDON_USD;
+        }
+
+        try {
+            AiBudget::settle($reservation, [
+                'cost_usd' => $cost,
+                'attempts' => $this->attempts(),
+            ]);
+        } catch (Throwable $exception) {
+            report($exception);
+        }
     }
 
     /**
@@ -215,5 +262,19 @@ class ProcessDocumentUpload implements ShouldQueue
             'status' => DocumentStatus::Failed,
             'error_message' => $message,
         ]);
+
+        // A failed ingestion bills nothing: release the hold so the retry —
+        // which reserves anew — is the single spend for this document.
+        if ($this->document->ai_usage_id !== null) {
+            $reservation = AiUsage::query()->find($this->document->ai_usage_id);
+
+            if ($reservation !== null) {
+                try {
+                    AiBudget::release($reservation, failed: true);
+                } catch (Throwable $releaseException) {
+                    report($releaseException);
+                }
+            }
+        }
     }
 }

@@ -33,6 +33,8 @@ class PlanResource extends JsonResource
             'seat_price' => $this->seat_price,
             'seat_price_label' => $this->seatPriceLabel(),
             'limits' => $this->limits,
+            'ai_budget_label' => $this->aiBudgetLabel(),
+            'ai_usage_multiplier' => $this->aiUsageMultiplier(),
             'features' => $this->features,
             // The client shows a "talk to us" card instead of a price and a
             // buy button when this is set; checkout refuses the plan either way.

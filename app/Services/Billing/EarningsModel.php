@@ -42,12 +42,13 @@ final class EarningsModel
     public const SYSTEM_PROMPT_TOKENS = 21_886;
 
     /**
-     * Anthropic bills a cache write at 1.25x the input rate and a read at 0.1x,
-     * against a five-minute TTL. Below roughly one message every five minutes
-     * the cache costs more than it saves, which is why the hit rate is a
+     * Anthropic bills a cache write at 2x the input rate for the one-hour TTL
+     * the product configures, and a read at 0.1x. A miss is therefore not
+     * free: a quiet deployment whose requests fall outside the TTL pays more
+     * than it would with caching off, which is why the hit rate is a
      * parameter rather than an assumption.
      */
-    public const CACHE_WRITE_MULTIPLIER = 1.25;
+    public const CACHE_WRITE_MULTIPLIER = 2.0;
 
     public const EMBEDDING_TOKENS_PER_DOCUMENT = 25_000;
 
@@ -75,14 +76,19 @@ final class EarningsModel
         'claude-sonnet-5' => ['label' => 'Claude Sonnet 5', 'input' => 2.00, 'output' => 10.00, 'cached_input' => 0.20],
         'claude-haiku-4-5' => ['label' => 'Claude Haiku 4.5', 'input' => 1.00, 'output' => 5.00, 'cached_input' => 0.10],
         'claude-opus-5' => ['label' => 'Claude Opus 5', 'input' => 5.00, 'output' => 25.00, 'cached_input' => 0.50],
-        'gemini-flash' => ['label' => 'Gemini 3.6 Flash', 'input' => 1.50, 'output' => 7.50, 'cached_input' => 0.15],
-        'gpt-4o-mini' => ['label' => 'gpt-4o-mini', 'input' => 0.15, 'output' => 0.60, 'cached_input' => 0.15],
-        'gpt-4o' => ['label' => 'gpt-4o', 'input' => 2.50, 'output' => 10.00, 'cached_input' => 2.50],
+        // The standing Gemini Flash rate. Google is running an introductory
+        // $0.75/$3.75 window (reported through 2026-12-31); the ladder is
+        // costed at the rate that survives it, with the intro row below for
+        // what-if runs.
+        'gemini-flash' => ['label' => 'Gemini Flash', 'input' => 1.50, 'output' => 7.50, 'cached_input' => 0.15],
+        'gemini-flash-intro' => ['label' => 'Gemini Flash (intro)', 'input' => 0.75, 'output' => 3.75, 'cached_input' => 0.075],
+        'gpt-4o-mini' => ['label' => 'gpt-4o-mini', 'input' => 0.15, 'output' => 0.60, 'cached_input' => 0.075],
+        'gpt-4o' => ['label' => 'gpt-4o', 'input' => 2.50, 'output' => 10.00, 'cached_input' => 1.25],
     ];
 
     public const EMBEDDING_PROVIDER = 'gemini-embedding-2';
 
-    private const EMBEDDING_USD_PER_1M_TOKENS = 0.10;
+    private const EMBEDDING_USD_PER_1M_TOKENS = 0.15;
 
     /**
      * Default plan definitions (price in centavos, message cap, per-message
@@ -94,12 +100,12 @@ final class EarningsModel
     public static function defaultPlans(): array
     {
         return [
-            ['slug' => 'standard', 'name' => 'Standard', 'price' => 150_000, 'messages' => 240, 'documents' => 25, 'overage' => null],
-            ['slug' => 'pro', 'name' => 'Pro', 'price' => 350_000, 'messages' => 300, 'documents' => 100, 'overage' => 900],
+            ['slug' => 'standard', 'name' => 'Standard', 'price' => 150_000, 'messages' => 250, 'documents' => 50, 'overage' => null],
+            ['slug' => 'pro', 'name' => 'Pro', 'price' => 350_000, 'messages' => 300, 'documents' => 200, 'overage' => null],
             // Per seat, and the price is for three of them. Costed here as one
             // seat against the whole base price, which flatters Firm — use
             // `costing:seats` for the figure that divides it properly.
-            ['slug' => 'firm', 'name' => 'Firm', 'price' => 1_100_000, 'messages' => 300, 'documents' => null, 'overage' => 850],
+            ['slug' => 'firm', 'name' => 'Firm', 'price' => 1_100_000, 'messages' => 300, 'documents' => null, 'overage' => null],
         ];
     }
 
@@ -140,9 +146,35 @@ final class EarningsModel
      */
     public static function paymongoFee(int $priceCents): float
     {
-        $pesos = $priceCents / 100;
+        return self::processingFee($priceCents, self::PAYMONGO_PERCENT, self::PAYMONGO_FIXED_PESOS);
+    }
 
-        return $pesos * self::PAYMONGO_PERCENT + self::PAYMONGO_FIXED_PESOS;
+    /**
+     * Processing fee for a monthly charge on any percentage-plus-fixed
+     * schedule, in pesos.
+     */
+    public static function processingFee(int $priceCents, float $percent, float $fixedPesos): float
+    {
+        return $priceCents / 100 * $percent + $fixedPesos;
+    }
+
+    /**
+     * Processing fee for a monthly charge on the active gateway's schedule, in
+     * pesos.
+     *
+     * The model used to hardcode the PayMongo schedule while the checkout
+     * could be PayPal or LemonSqueezy, so every margin it printed described a
+     * gateway the money did not travel through. The schedule now comes from
+     * `config/billing.php` and defaults to the PayMongo figures — set
+     * BILLING_FEE_PERCENT / BILLING_FEE_FIXED_PESOS for the gateway in use.
+     */
+    public static function gatewayFee(int $priceCents): float
+    {
+        return self::processingFee(
+            $priceCents,
+            (float) config('billing.fee_percent', self::PAYMONGO_PERCENT),
+            (float) config('billing.fee_fixed_pesos', self::PAYMONGO_FIXED_PESOS),
+        );
     }
 
     /**
@@ -165,7 +197,7 @@ final class EarningsModel
         $revenuePesos = $priceCents / 100;
         $documentCount = $documentCap ?? $assumedDocuments;
 
-        $fixedCosts = self::paymongoFee($priceCents)
+        $fixedCosts = self::gatewayFee($priceCents)
             + self::embeddingCostPerDocumentPesos($exchangeRate) * $documentCount;
 
         $perMessage = self::blendedMessageCostPesos($providerMix, $exchangeRate, $cached, $cacheHitRate)
@@ -218,7 +250,7 @@ final class EarningsModel
         $aiCogs = $messageCost * $messageCap;
         $embeddings = self::embeddingCostPerDocumentPesos($exchangeRate) * $documentCount;
         $webSearch = self::webSearchCostPerQueryPesos($exchangeRate) * ($webSearchRate * $messageCap);
-        $paymongo = self::paymongoFee($priceCents);
+        $paymongo = self::gatewayFee($priceCents);
 
         $net = $pricePesos - $aiCogs - $embeddings - $webSearch - $paymongo;
 
@@ -237,14 +269,14 @@ final class EarningsModel
     }
 
     /**
-     * Per-seat earnings for a pooled-allowance plan, in pesos.
+     * Per-seat earnings for a multi-seat plan, in pesos.
      *
-     * Seats are the unit firms budget in; the pooled message allowance is what
-     * actually costs money. Pooling the allowance across the org is what makes
-     * the plan work in both directions: it reads as generous to the buyer, and
-     * because most seats consume well under their share, the realised cost sits
-     * below the worst case rather than at it. `$utilisation` is that share —
-     * 1.0 prices the plan as if every seat drains its full allowance.
+     * Seats are the unit firms budget in; each seat carries its own message
+     * allowance (see PlanLimits::consumeMessage), so the allowance here is the
+     * sum of the per-seat allowances, not a shared pool any seat can draw
+     * from. Because most seats consume well under their share, the realised
+     * cost sits below the worst case rather than at it. `$utilisation` is that
+     * share — 1.0 prices the plan as if every seat drains its full allowance.
      *
      * `$costPerMessagePesos` overrides the modelled token cost with an observed
      * one, for when real spend is known and the token assumptions are not.
@@ -291,7 +323,7 @@ final class EarningsModel
         $embeddings = self::embeddingCostPerDocumentPesos($exchangeRate) * $documentsPerSeat * $seats;
         $webSearch = self::webSearchCostPerQueryPesos($exchangeRate) * ($webSearchRate * $consumed);
         // One subscription per organization, not per seat.
-        $paymongo = self::paymongoFee($pricePerSeatCents * $seats);
+        $paymongo = self::gatewayFee($pricePerSeatCents * $seats);
 
         $net = $revenue - $aiCogs - $embeddings - $webSearch - $paymongo;
 
@@ -367,10 +399,11 @@ final class EarningsModel
     /**
      * Input cost of the system prompt per message when caching is on, in USD.
      *
-     * A miss is not free: it writes the block at 1.25x the input rate, so a
-     * low-traffic deployment whose requests fall outside the five-minute TTL
-     * pays more than it would with caching off. The blend makes that visible
-     * rather than assuming every request lands on a warm cache.
+     * A miss is not free: it writes the block at 2x the input rate under the
+     * configured one-hour TTL, so a low-traffic deployment whose requests fall
+     * outside the TTL pays more than it would with caching off. The blend
+     * makes that visible rather than assuming every request lands on a warm
+     * cache.
      */
     private static function cachedInputCost(string $provider, float $cacheHitRate): float
     {

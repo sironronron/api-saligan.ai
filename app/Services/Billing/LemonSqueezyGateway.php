@@ -6,6 +6,7 @@ use App\Enums\BillingGateway;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\User;
+use Throwable;
 
 class LemonSqueezyGateway implements PaymentGateway
 {
@@ -26,45 +27,65 @@ class LemonSqueezyGateway implements PaymentGateway
 
         abort_if($variantId === null, 422, 'This plan is not yet available for checkout. Please try again.');
 
-        $subscription = Subscription::create([
-            'user_id' => $user->id,
-            'organization_id' => $user->organization_id,
-            'plan_id' => $plan->id,
-            'interval' => $interval,
-            'gateway' => BillingGateway::LemonSqueezy->value,
-            'status' => Subscription::STATUS_INCOMPLETE,
-            'seats_purchased' => $plan->included_seats,
-            // See PaymongoGateway: a plan without a seat price still prices the
-            // seat its list price covers.
-            'price_per_seat' => $plan->seat_price ?? $plan->price,
-        ]);
+        $subscription = null;
 
-        $checkout = $this->client->createCheckout(
-            variantId: (string) $variantId,
-            email: $user->email,
-            name: $user->name,
-            storeId: config('lemonsqueezy.store_id') !== null ? (string) config('lemonsqueezy.store_id') : null,
-            redirectUrl: $successUrl,
-            custom: [
+        try {
+            $subscription = Subscription::create([
                 'user_id' => $user->id,
-                'subscription_id' => $subscription->id,
-                'plan_slug' => $plan->slug,
-                'billing_interval' => $interval,
-            ],
-        );
+                'organization_id' => $user->organization_id,
+                'plan_id' => $plan->id,
+                'interval' => $interval,
+                'gateway' => BillingGateway::LemonSqueezy->value,
+                'status' => Subscription::STATUS_INCOMPLETE,
+                'seats_purchased' => $plan->included_seats,
+                // See PaymongoGateway: a plan without a seat price still prices the
+                // seat its list price covers.
+                'price_per_seat' => $plan->seat_price ?? $plan->price,
+            ]);
+
+            $checkout = $this->client->createCheckout(
+                variantId: (string) $variantId,
+                email: $user->email,
+                name: $user->name,
+                storeId: config('lemonsqueezy.store_id') !== null ? (string) config('lemonsqueezy.store_id') : null,
+                redirectUrl: $successUrl,
+                custom: [
+                    'user_id' => $user->id,
+                    'subscription_id' => $subscription->id,
+                    'plan_slug' => $plan->slug,
+                    'billing_interval' => $interval,
+                ],
+            );
+
+            $checkoutUrl = data_get($checkout, 'data.attributes.checkout_url');
+
+            abort_if(
+                ! is_string($checkoutUrl) || $checkoutUrl === '',
+                422,
+                'The subscription checkout could not be initialized. Please try again.',
+            );
+        } catch (Throwable $exception) {
+            $subscription?->delete();
+
+            throw $exception;
+        }
 
         return [
             'subscription' => $subscription->load('plan'),
             'checkout' => [
-                'checkout_url' => data_get($checkout, 'data.attributes.checkout_url'),
+                'checkout_url' => $checkoutUrl,
                 'payment_intent_id' => null,
                 'public_key' => null,
             ],
         ];
     }
 
-    public function changePlan(Subscription $subscription, Plan $plan): void
-    {
+    public function changePlan(
+        Subscription $subscription,
+        Plan $plan,
+        string $successUrl,
+        string $cancelUrl,
+    ): ?array {
         abort_if($subscription->lemonsqueezy_subscription_id === null, 422, 'This subscription is not active on LemonSqueezy yet.');
 
         $variantId = $plan->lemonSqueezyVariantIdForInterval($subscription->interval ?? Plan::INTERVAL_MONTHLY);
@@ -72,6 +93,8 @@ class LemonSqueezyGateway implements PaymentGateway
         abort_if($variantId === null, 422, 'This plan is not yet available on LemonSqueezy.');
 
         $this->client->changeSubscriptionVariant($subscription->lemonsqueezy_subscription_id, (string) $variantId);
+
+        return null;
     }
 
     public function cancel(Subscription $subscription, ?string $reason = null): void

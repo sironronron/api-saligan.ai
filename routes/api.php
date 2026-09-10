@@ -140,6 +140,7 @@ Route::middleware(['auth:supabase', 'track_last_used', 'not_suspended'])->group(
     Route::get('/subscription', [SubscriptionController::class, 'show']);
     Route::post('/subscription', [SubscriptionController::class, 'store']);
     Route::post('/subscription/change-plan', [SubscriptionController::class, 'changePlan']);
+    Route::post('/subscription/change-plan/cancel', [SubscriptionController::class, 'cancelPlanChange']);
     Route::post('/subscription/cancel', [SubscriptionController::class, 'cancel']);
     Route::post('/subscription/seats', [SubscriptionController::class, 'addSeats']);
     Route::delete('/subscription/seats', [SubscriptionController::class, 'removeSeats']);

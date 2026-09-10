@@ -13,6 +13,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'organization_id',
     'user_id',
     'plan_id',
+    'pending_plan_id',
+    'pending_plan_checkout_url',
     'interval',
     'gateway',
     'paymongo_subscription_id',
@@ -20,6 +22,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'lemonsqueezy_subscription_id',
     'lemonsqueezy_customer_id',
     'paypal_subscription_id',
+    'paypal_last_event_at',
+    'paypal_last_event_id',
     'status',
     'seats_purchased',
     'price_per_seat',
@@ -71,6 +75,7 @@ class Subscription extends Model
             'trial_ends_at' => 'datetime',
             'trial_warned_at' => 'datetime',
             'cancelled_at' => 'datetime',
+            'paypal_last_event_at' => 'datetime',
             'seats_purchased' => 'integer',
             'price_per_seat' => 'integer',
         ];
@@ -98,6 +103,14 @@ class Subscription extends Model
     public function plan(): BelongsTo
     {
         return $this->belongsTo(Plan::class);
+    }
+
+    /**
+     * The plan awaiting PayPal approval, if a revision is in flight.
+     */
+    public function pendingPlan(): BelongsTo
+    {
+        return $this->belongsTo(Plan::class, 'pending_plan_id');
     }
 
     /**

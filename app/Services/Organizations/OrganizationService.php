@@ -4,6 +4,7 @@ namespace App\Services\Organizations;
 
 use App\Models\Invitation;
 use App\Models\Organization;
+use App\Models\Subscription;
 use App\Models\User;
 use App\Notifications\OrganizationInvite;
 use Illuminate\Http\UploadedFile;
@@ -194,6 +195,16 @@ class OrganizationService
         abort_unless($invitation->isActive(), 422, 'This invitation is no longer valid. Ask an admin to send a new one.');
 
         abort_unless($user->organization_id === null, 422, 'You already belong to an organization.');
+
+        // A personal paid subscription would be hidden by the organization's
+        // subscription once the user joins, while billing continues. Force an
+        // explicit cancel first so no recurring charge goes invisible.
+        $personalActive = $user->subscriptions()
+            ->whereNull('organization_id')
+            ->where('status', '!=', Subscription::STATUS_CANCELLED)
+            ->exists();
+
+        abort_unless(! $personalActive, 422, 'Cancel your personal subscription before joining a workspace. You can resubscribe after leaving if needed.');
 
         $this->assertSeatAvailableForAcceptance($invitation->organization);
 

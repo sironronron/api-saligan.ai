@@ -7,10 +7,12 @@ use App\Ai\Tools\FlagAdvisoriesTool;
 use App\Enums\ChatProvider;
 use App\Enums\MessageRole;
 use App\Models\Advisory;
+use App\Models\AiUsage;
 use App\Models\Conversation;
 use App\Models\MatterMemory;
 use App\Models\Message;
 use App\Services\Ai\PythonConversationContext;
+use App\Services\Billing\AiBudget;
 use App\Services\MatterMemory\MatterMemoryService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -37,6 +39,7 @@ class InternalAiController extends Controller
         $validated = $request->validate([
             'message_id' => ['required', 'uuid'],
             'provider' => ['nullable', Rule::enum(ChatProvider::class)],
+            'reservation_id' => ['nullable', 'uuid'],
             'user' => ['required', 'array'],
             'user.content' => ['required', 'string', 'max:8000'],
             'user.attachment_ids' => ['sometimes', 'array', 'max:10'],
@@ -82,6 +85,11 @@ class InternalAiController extends Controller
                     ->all(),
             ]);
 
+            // Settle this turn's spend hold with the usage the engine
+            // reported. Idempotent with the message row above: a retried
+            // callback finds the existing message and returns before this.
+            self::settleTurnUsage($conversation, $validated, $metadata);
+
             Advisory::query()
                 ->where('conversation_id', $conversation->id)
                 ->whereNull('message_id')
@@ -106,6 +114,54 @@ class InternalAiController extends Controller
         });
 
         return response()->json($result);
+    }
+
+    /**
+     * Settle the turn's spend reservation from the engine-reported usage.
+     *
+     * Runs inside the persist transaction so a settled ledger row and its
+     * message can never part ways. Unknown or missing usage settles the
+     * pre-agreed hold rather than nothing — the turn demonstrably ran.
+     *
+     * @param  array<string, mixed>  $validated
+     * @param  array<string, mixed>  $metadata
+     */
+    protected static function settleTurnUsage(Conversation $conversation, array $validated, array $metadata): void
+    {
+        $summary = $metadata['usage'] ?? null;
+        $summary = is_array($summary) ? $summary : [];
+
+        if (($validated['reservation_id'] ?? null) !== null) {
+            $reservation = AiUsage::query()->find($validated['reservation_id']);
+
+            // The reservation must belong to this conversation: a mismatched
+            // id is a wiring bug, and settling a stranger's hold would
+            // corrupt both turns' accounting.
+            if ($reservation !== null && (string) $reservation->conversation_id === (string) $conversation->id) {
+                AiBudget::settleTurn($reservation, $summary, [
+                    'provider' => $validated['provider'] ?? null,
+                ]);
+
+                return;
+            }
+        }
+
+        // No reservation (older callers, direct posts): record the measured
+        // spend straight onto the window so the ledger stays complete.
+        $user = $conversation->user;
+
+        if ($user === null) {
+            return;
+        }
+
+        $reservation = AiBudget::reserve($user, AiUsage::OPERATION_CHAT, context: [
+            'conversation_id' => $conversation->id,
+            'engine' => 'python',
+        ]);
+
+        AiBudget::settleTurn($reservation, $summary, [
+            'provider' => $validated['provider'] ?? null,
+        ]);
     }
 
     public function todos(Request $request, Conversation $conversation): JsonResponse

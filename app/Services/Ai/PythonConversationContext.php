@@ -11,6 +11,7 @@ use App\Services\MatterMemory\MatterMemoryService;
 use App\Support\CaseContextBlock;
 use App\Support\PlanFeatures;
 use App\Support\UserProfile;
+use Illuminate\Support\Facades\Log;
 
 class PythonConversationContext
 {
@@ -72,8 +73,29 @@ class PythonConversationContext
             ChatProvider::Gemini => filled(config('ai.providers.gemini.key'))
                 ? ['gemini', (string) config('saligan.chat.gemini_model')]
                 : $this->ollama(),
+            // The Python provider speaks Anthropic, Gemini, and Ollama only —
+            // it has no Meta or OpenAI client, and its schema rejects anything
+            // else. Mapping them to Gemini here, loudly, beats the previous
+            // behavior of falling through to Ollama silently and billing the
+            // customer for a frontier plan while serving the local model. When
+            // native clients land, these arms should forward, not map.
+            ChatProvider::Meta, ChatProvider::OpenAI => $this->hostedFallback($provider),
             default => $this->ollama(),
         };
+    }
+
+    /** @return array{0: string, 1: string} */
+    protected function hostedFallback(ChatProvider $provider): array
+    {
+        Log::warning('Python AI provider has no client for the configured chat provider; serving Gemini instead.', [
+            'configured_provider' => $provider->value,
+        ]);
+
+        if (filled(config('ai.providers.gemini.key'))) {
+            return ['gemini', (string) config('saligan.chat.gemini_model')];
+        }
+
+        return $this->ollama();
     }
 
     /** @return array{0: string, 1: string} */

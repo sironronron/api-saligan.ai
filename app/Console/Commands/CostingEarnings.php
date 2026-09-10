@@ -19,7 +19,7 @@ class CostingEarnings extends Command
         {--exchange-rate=57 : PHP per USD}
         {--provider=claude-sonnet-5 : Model costed for plans carrying the frontier_model feature}
         {--base-provider=claude-haiku-4-5 : Model costed for plans without it}
-        {--cache-hit-rate=1.0 : Share of requests landing on a warm prompt cache (0-1)}
+        {--cache-hit-rate=0.7 : Share of requests landing on a warm prompt cache (0-1)}
         {--no-cache : Cost without prompt caching at all}';
 
     /**
@@ -91,7 +91,7 @@ class CostingEarnings extends Command
         });
 
         $this->table(
-            ['Plan', 'Price', 'Model', 'Seats', 'Msgs', 'Cost ₱/msg', 'Overage ₱/msg', 'AI COGS', 'PayMongo', 'Net', 'Margin'],
+            ['Plan', 'Price', 'Model', 'Seats', 'Msgs', 'Cost ₱/msg', 'Overage ₱/msg', 'AI COGS', 'Fees', 'Net', 'Margin'],
             $rows->all(),
         );
 

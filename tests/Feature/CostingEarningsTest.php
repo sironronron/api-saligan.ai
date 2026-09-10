@@ -28,8 +28,8 @@ it('cheapens the message when the cache is warm', function () {
 });
 
 it('costs more than no caching at all when every request misses the cache', function () {
-    // The five-minute TTL means a quiet deployment writes the block far more
-    // often than it reads it, and a write bills at 1.25x the input rate.
+    // The one-hour TTL means a quiet deployment writes the block far more
+    // often than it reads it, and a write bills at 2x the input rate.
     $uncached = EarningsModel::perMessageCostPesos('claude-sonnet-5', 57.0);
     $allMisses = EarningsModel::perMessageCostPesos('claude-sonnet-5', 57.0, cached: true, cacheHitRate: 0.0);
 
@@ -54,7 +54,7 @@ it('computes the PayMongo fee from centavos', function () {
 
 it('computes the embedding cost per document in pesos', function () {
     expect(EarningsModel::embeddingCostPerDocumentPesos(57.0))
-        ->toBe(0.10 * 25_000 / 1_000_000 * 57.0);
+        ->toBe(0.15 * 25_000 / 1_000_000 * 57.0);
 });
 
 it('computes a full plan earnings breakdown in pesos', function () {

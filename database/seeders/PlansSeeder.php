@@ -13,31 +13,40 @@ class PlansSeeder extends Seeder
     /**
      * The paid ladder, and the reasoning behind every number on it.
      *
-     * Messages are the cost driver, and what a message costs depends on which
-     * model writes it: ₱1.75 on the base model against ₱3.49 on the frontier
-     * one, measured by EarningsModel at a 70% prompt-cache hit rate. That
-     * halving is the whole shape of this ladder. Standard buys volume on the
-     * base model; Pro buys the frontier model, deeper retrieval, and scan
-     * reading, and therefore buys fewer messages per peso — not because it is
-     * worse value, but because its messages genuinely cost twice as much to
-     * serve. Firm buys the same messages as Pro for a team, and sells more
-     * seats at less than a Pro subscription each.
+     * Three self-serve tiers plus one contract tier, priced the way the
+     * solo-and-small-firm legal-AI market prices: one seat, one seat with the
+     * best model, then a team bundle — with annual at exactly ten months
+     * ("two months free") instead of a near-ten figure nobody can reproduce.
      *
-     * Every plan is sized to hold roughly 65% gross margin at a 70% cache-hit
-     * rate and to stay profitable if the cache never warms at all. Verify with
-     * `artisan costing:earnings --cache-hit-rate=0.7` after changing anything
-     * here — but note that command reads `messages_used` as a per-account
-     * figure, so it understates Firm, whose allowance is per seat.
+     * Tiers sell a monthly AI spend allowance, not a message count: the
+     * customer sees one percent meter while the ledger keeps every token (see
+     * AiBudget). Message volume is what the allowance buys, and what a turn
+     * costs depends on which model writes it — the base model costs roughly
+     * half the frontier one at our measured token sizes (see EarningsModel).
+     * Standard buys room on the base model; Pro buys the frontier model,
+     * deeper retrieval, and scan reading. Firm buys a shared team pool, and
+     * sells more seats at less than a Pro subscription each.
+     *
+     * Every tier is capped, never metered: allowances are prepaid and an
+     * exhausted allowance refuses the turn rather than growing the bill, so no
+     * invoice can surprise anyone. There is no per-message overage by design.
+     *
+     * Every plan is sized to hold roughly 40% contribution after AI, fees,
+     * and an operating reserve. Verify with `artisan costing:earnings` after
+     * changing anything here — it costs each tier at the model that tier is
+     * served and across every seat its price covers.
      */
     public function run(): void
     {
-        // Standard's allowances, named once: the trial is defined as a quarter
-        // of them rather than as its own set of numbers, so the two can never
-        // drift into a trial that is more or less generous than intended.
-        $standardLimits = [
-            'active_cases' => 15,
-            'documents_uploaded' => 25,
-            'messages_used' => 240,
+        // The customer-facing meter is the AI spend allowance
+        // (`ai_budget_usd_cents`); the legacy count caps below stay null on
+        // paid tiers so the budget is the single gate. Trials keep small
+        // explicit counts because the trial lifecycle (warnings, early end)
+        // is still expressed in messages as well as spend.
+        $paidLimits = [
+            'active_cases' => null,
+            'documents_uploaded' => null,
+            'messages_used' => null,
         ];
 
         // What every paid plan carries. Reading the template library is free
@@ -59,17 +68,20 @@ class PlansSeeder extends Seeder
                 'price' => 0,
                 'price_annual' => 0,
                 'overage_price' => null,
+                'ai_budget_usd_cents' => 200,
                 'included_seats' => 1,
                 'seat_price' => null,
                 'sort_order' => 0,
                 'is_active' => false,
-                // A quarter of Standard across every allowance: enough to run a
-                // real matter end to end and see cited answers, not enough to be
-                // a substitute for paying.
-                'limits' => array_map(
-                    fn (int $limit): int => (int) ceil($limit / 4),
-                    $standardLimits,
-                ),
+                // Enough to run a real matter end to end and see cited
+                // The $130 spend cap (₱2 × 65 FX) binds about as early as the
+                // message cap on the base model; either one ending the trial is
+                // correct.
+                'limits' => [
+                    'active_cases' => null,
+                    'documents_uploaded' => 12,
+                    'messages_used' => 60,
+                ],
                 // Exactly Standard's capabilities. A trial that hides features
                 // is trialling a product nobody is being asked to buy — and
                 // like Standard, it is answered by the base model.
@@ -78,35 +90,39 @@ class PlansSeeder extends Seeder
             [
                 'slug' => Plan::SLUG_STANDARD,
                 'name' => 'Standard',
-                'price' => 150000,
-                'price_annual' => 1494000,
+                'price' => 99900,
+                'price_annual' => 999000,
                 // Capped rather than metered, deliberately. Standard is where
                 // someone is still working out what they need; a bill that can
                 // grow while they do that is the wrong thing to hand them.
+                // ₱335/mo of AI spend at the budgeting FX rate.
                 'overage_price' => null,
+                'ai_budget_usd_cents' => 515,
+                'ai_usage_multiplier' => 1,
                 'included_seats' => 1,
                 'seat_price' => null,
                 'sort_order' => 1,
-                'limits' => $standardLimits,
+                'limits' => $paidLimits,
                 'features' => $baseFeatures,
             ],
             [
                 'slug' => Plan::SLUG_PRO,
                 'name' => 'Pro',
-                'price' => 350000,
-                'price_annual' => 3490000,
-                // Clears the ~₱3.49 marginal cost with room to spare. Priced at
-                // cost, as it once was, every extra message was a rounding error
-                // against the support burden it carries.
-                'overage_price' => 900,
+                'price' => 249900,
+                'price_annual' => 2499000,
+                // Capped like every other tier: an exhausted allowance refuses
+                // the turn with an upgrade prompt instead of billing per
+                // message, because per-message billing was accrued as displayed
+                // debt with no collection path behind it.
+                // 5x Standard's AI usage allowance: $25.75/mo at the
+                // budgeting FX rate.
+                'overage_price' => null,
+                'ai_budget_usd_cents' => 2575,
+                'ai_usage_multiplier' => 5,
                 'included_seats' => 1,
                 'seat_price' => null,
                 'sort_order' => 2,
-                'limits' => [
-                    'active_cases' => null,
-                    'documents_uploaded' => 100,
-                    'messages_used' => 300,
-                ],
+                'limits' => $paidLimits,
                 'features' => [
                     ...$baseFeatures,
                     PlanFeatures::FRONTIER_MODEL,
@@ -118,22 +134,24 @@ class PlansSeeder extends Seeder
             [
                 'slug' => Plan::SLUG_FIRM,
                 'name' => 'Firm',
-                'price' => 1100000,
-                'price_annual' => 10990000,
-                'overage_price' => 850,
-                // Three people for ₱11,000, against ₱10,500 for three separate
+                'price' => 699900,
+                'price_annual' => 6999000,
+                'overage_price' => null,
+                // 20x Standard's AI usage allowance: $103/mo shared across
+                // the workspace at the budgeting FX rate — one team pool,
+                // not three seat wallets. Three people for ₱6,999, against
+                // ₱7,497 for three separate
                 // Pro accounts that cannot share a matter between them. The
                 // fourth seat onwards costs less than a Pro subscription.
+                'ai_budget_usd_cents' => 10300,
+                'ai_usage_multiplier' => 20,
                 'included_seats' => 3,
-                'seat_price' => 320000,
+                'seat_price' => 199900,
                 'sort_order' => 3,
-                // Allowances are counted per seat (see PlanLimits::consumeMessage),
-                // so this is 300 messages each, not 300 shared between them.
-                'limits' => [
-                    'active_cases' => null,
-                    'documents_uploaded' => null,
-                    'messages_used' => 300,
-                ],
+                // Spend is pooled across the organization's active members
+                // (see AiBudget), so the team shares one allowance rather
+                // than drawing on per-seat wallets.
+                'limits' => $paidLimits,
                 'features' => [
                     ...$baseFeatures,
                     PlanFeatures::FRONTIER_MODEL,

@@ -3,10 +3,14 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\AiUsage;
 use App\Models\Message;
+use App\Services\Billing\AiBudget;
+use App\Services\Billing\AiCosting;
 use App\Services\TextRewrite\TextRewriteService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Throwable;
 
 /**
  * Rewrites a selected passage of a letter through the AI provider. The result
@@ -37,13 +41,31 @@ class TextRewriteController extends Controller
             'message_id' => ['nullable', 'uuid'],
         ]);
 
-        $rewritten = $this->service->rewrite(
-            text: $validated['text'],
-            instruction: $validated['instruction'],
-            conversation: $this->conversationFor($request, $validated['message_id'] ?? null),
-        );
+        $conversation = $this->conversationFor($request, $validated['message_id'] ?? null);
+
+        // Rewrites were the largest unmetered AI surface: every suggestion
+        // reserves spend up front like a chat turn, and empty replies release
+        // it rather than billing for nothing.
+        $reservation = AiBudget::reserve($request->user(), AiUsage::OPERATION_REWRITE, context: [
+            'conversation_id' => $conversation?->id,
+            'engine' => config('saligan.ai_provider.batch_engine'),
+        ]);
+
+        try {
+            $rewritten = $this->service->rewrite(
+                text: $validated['text'],
+                instruction: $validated['instruction'],
+                conversation: $conversation,
+            );
+        } catch (Throwable $exception) {
+            AiBudget::release($reservation, failed: true);
+
+            throw $exception;
+        }
 
         if ($rewritten === null) {
+            AiBudget::release($reservation);
+
             // Reported rather than silently answered with the original text: a
             // suggestion identical to what is already on screen is
             // indistinguishable, to the reader, from a rewrite that decided no
@@ -52,6 +74,12 @@ class TextRewriteController extends Controller
                 'message' => 'The assistant could not rewrite that passage. Please try again.',
             ], 422);
         }
+
+        // Measured tokens when the engine reported them, the pre-agreed
+        // estimate otherwise — never a surprise either way.
+        AiBudget::settle($reservation, $this->service->lastUsage ?? [
+            'cost_usd' => AiCosting::estimateFor(AiUsage::OPERATION_REWRITE),
+        ]);
 
         return response()->json(['data' => ['text' => $rewritten]]);
     }
