@@ -8,6 +8,8 @@ use App\Models\LegalCase;
 use App\Models\LegalChunk;
 use App\Models\MatterMemory;
 use App\Models\Message;
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\Todo;
 use App\Models\User;
 use App\Support\UserProfile;
@@ -22,6 +24,11 @@ beforeEach(function () {
 
     $this->user = User::factory()->create();
     $this->conversation = Conversation::factory()->for($this->user)->create();
+    // Turn persistence settles spend, so the user needs a funded
+    // subscription the way every front-door caller already does.
+    Subscription::factory()->for($this->user)->create([
+        'plan_id' => Plan::factory()->pro()->create()->id,
+    ]);
 });
 
 function internalAiPost(string $path, array $payload = []): TestResponse
@@ -99,6 +106,52 @@ it('persists a completed turn idempotently', function () {
     expect($assistant->role)->toBe(MessageRole::Assistant)
         ->and($assistant->provider->value)->toBe('gemini')
         ->and($assistant->metadata['activity'][0]['status'])->toBe('composing');
+});
+
+it('maps Meta to a hosted provider the Python service speaks', function () {
+    // Python has no Meta client and rejects the provider outright, so the
+    // context builder must never hand it `meta` — previously it fell through
+    // to Ollama without saying so.
+    config([
+        'saligan.chat.provider' => 'meta',
+        'ai.providers.meta.key' => 'test-meta-key',
+        'ai.providers.gemini.key' => 'test-gemini-key',
+    ]);
+
+    $this->withToken('test-internal-secret')
+        ->getJson("/internal/conversations/{$this->conversation->id}/context")
+        ->assertOk()
+        ->assertJsonPath('provider', 'gemini')
+        ->assertJsonPath('model', config('saligan.chat.gemini_model'));
+});
+
+it('persists the turn usage the provider reports', function () {
+    $messageId = (string) Str::uuid();
+
+    internalAiPost("/internal/conversations/{$this->conversation->id}/messages", [
+        'message_id' => $messageId,
+        'provider' => 'gemini',
+        'user' => ['content' => 'What does the law say?', 'attachment_ids' => []],
+        'assistant' => ['content' => 'It depends on the governing statute.'],
+        'metadata' => [
+            'activity' => [['status' => 'composing']],
+            'usage' => [
+                'provider' => 'gemini',
+                'model' => 'gemini-3.7-flash',
+                'input_tokens' => 1000,
+                'output_tokens' => 100,
+                'cache_read_tokens' => 800,
+                'cache_write_tokens' => 0,
+                'searches' => 1,
+            ],
+        ],
+    ])->assertOk();
+
+    $assistant = Message::findOrFail($messageId);
+
+    expect($assistant->metadata['usage']['model'])->toBe('gemini-3.7-flash')
+        ->and($assistant->metadata['usage']['input_tokens'])->toBe(1000)
+        ->and($assistant->metadata['usage']['searches'])->toBe(1);
 });
 
 it('persists standard chunk ids separately from generic callback metadata', function () {

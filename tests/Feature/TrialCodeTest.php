@@ -5,6 +5,7 @@ use App\Models\Organization;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\TrialCode;
+use App\Models\UsageCounter;
 use App\Models\User;
 use App\Services\Billing\TrialRedeemer;
 use App\Support\PlanLimits;
@@ -377,8 +378,9 @@ it('reports organization-wide usage on the trial meter', function () {
         ->assertJsonPath('data.usage.messages.used', 2);
 });
 
-it('leaves paid plans counting per seat and accruing overage', function () {
-    // The trial rules must not leak into paid billing.
+it('leaves paid plans counting per seat and blocking at the cap', function () {
+    // The trial rules must not leak into paid billing: one seat's allowance is
+    // its own, and an exhausted cap refuses the turn rather than billing it.
     $plan = Plan::factory()->create([
         'overage_price' => 900,
         'limits' => ['active_cases' => null, 'documents_uploaded' => null, 'messages_used' => 1],
@@ -392,9 +394,29 @@ it('leaves paid plans counting per seat and accruing overage', function () {
     ]);
 
     PlanLimits::consumeMessage($this->user->fresh());
-    PlanLimits::consumeMessage($this->user->fresh());
 
-    expect($this->user->fresh()->usageCounterForCurrentPeriod()->messages_overage)->toBe(1);
+    expect(fn () => PlanLimits::consumeMessage($this->user->fresh()))
+        ->toThrow(HttpResponseException::class);
+
+    expect($this->user->fresh()->usageCounterForCurrentPeriod()->messages_overage)->toBe(0);
+});
+
+it('excludes suspended members from the trial allowance', function () {
+    // A suspended member's past spend must not keep counting against the
+    // members who remain.
+    startTrialFor($this->user, messageCap: 3);
+
+    $suspended = User::factory()->memberOf($this->organization)->create([
+        'org_status' => User::ORG_STATUS_SUSPENDED,
+    ]);
+    UsageCounter::factory()->for($suspended)->create([
+        'period_key' => UsageCounter::currentPeriodKey(),
+        'messages_used' => 3,
+        'messages_overage' => 0,
+        'documents_uploaded' => 0,
+    ]);
+
+    expect($this->user->fresh()->subscription->onTrial())->toBeTrue();
 });
 
 it('tells a user their trial ran out of messages rather than to just subscribe', function () {

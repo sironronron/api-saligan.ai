@@ -42,8 +42,8 @@ class PlanFactory extends Factory
     }
 
     /**
-     * The free trial plan: a quarter of Standard's allowance, answered by the
-     * base model, and inactive so it is never sold.
+     * The free trial plan: a quarter of Standard's metered allowance, answered
+     * by the base model, and inactive so it is never sold.
      */
     public function trial(): static
     {
@@ -53,14 +53,16 @@ class PlanFactory extends Factory
             'price' => 0,
             'price_annual' => 0,
             'overage_price' => null,
+            'ai_budget_usd_cents' => 200,
+            'ai_usage_multiplier' => null,
             'included_seats' => 1,
             'seat_price' => null,
             'sort_order' => 0,
             'is_active' => false,
             'limits' => [
-                'active_cases' => 4,
-                'documents_uploaded' => 7,
-                'messages_used' => 60,
+                'active_cases' => null,
+                'documents_uploaded' => 13,
+                'messages_used' => 63,
             ],
             'features' => [
                 PlanFeatures::DRAFTING,
@@ -79,15 +81,17 @@ class PlanFactory extends Factory
             'slug' => Plan::SLUG_STANDARD,
             'name' => 'Standard',
             'price' => 150000,
-            'price_annual' => 1494000,
+            'price_annual' => 1500000,
             'overage_price' => null,
+            'ai_budget_usd_cents' => 515,
+            'ai_usage_multiplier' => 1,
             'included_seats' => 1,
             'seat_price' => null,
             'sort_order' => 1,
             'limits' => [
-                'active_cases' => 15,
-                'documents_uploaded' => 25,
-                'messages_used' => 240,
+                'active_cases' => null,
+                'documents_uploaded' => 50,
+                'messages_used' => 250,
             ],
             'features' => [
                 PlanFeatures::DRAFTING,
@@ -106,14 +110,16 @@ class PlanFactory extends Factory
             'slug' => Plan::SLUG_PRO,
             'name' => 'Pro',
             'price' => 350000,
-            'price_annual' => 3490000,
-            'overage_price' => 900,
+            'price_annual' => 3500000,
+            'overage_price' => null,
+            'ai_budget_usd_cents' => 2575,
+            'ai_usage_multiplier' => 5,
             'included_seats' => 1,
             'seat_price' => null,
             'sort_order' => 2,
             'limits' => [
                 'active_cases' => null,
-                'documents_uploaded' => 100,
+                'documents_uploaded' => 200,
                 'messages_used' => 300,
             ],
             'features' => [
@@ -137,8 +143,10 @@ class PlanFactory extends Factory
             'slug' => Plan::SLUG_FIRM,
             'name' => 'Firm',
             'price' => 1100000,
-            'price_annual' => 10990000,
-            'overage_price' => 850,
+            'price_annual' => 11000000,
+            'overage_price' => null,
+            'ai_budget_usd_cents' => 10300,
+            'ai_usage_multiplier' => 20,
             'included_seats' => 3,
             'seat_price' => 320000,
             'sort_order' => 3,

@@ -89,7 +89,7 @@ it('sends unique request ids on every mutating operation', function () {
     $client->captureOrder('ORDER-123');
     $client->voidAuthorization('AUTH-123');
     $client->refundCapture('CAPTURE-123');
-    $client->patchSubscriptionPlan('SUB-123', 'P-456');
+    $client->reviseSubscriptionPlan('SUB-123', 'P-456', 'https://app.test/settings/billing?paypal=plan-change-return', 'https://app.test/settings/billing?paypal=plan-change-cancelled');
     $client->cancelSubscription('SUB-123');
 
     $requests = collect(Http::recorded())
@@ -100,9 +100,16 @@ it('sends unique request ids on every mutating operation', function () {
     expect($requests)->toHaveCount(8)
         ->and($requestIds->filter()->unique())->toHaveCount(8);
 
-    Http::assertSent(fn ($request) => $request->url() === 'https://api-m.sandbox.paypal.com/v1/billing/subscriptions/SUB-123'
+    Http::assertSent(fn ($request) => $request->method() === 'POST'
+        && $request->url() === 'https://api-m.sandbox.paypal.com/v1/billing/subscriptions/SUB-123/revise'
         && $request->data() === [
-            ['op' => 'replace', 'path' => '/plan_id', 'value' => 'P-456'],
+            'plan_id' => 'P-456',
+            'application_context' => [
+                'brand_name' => 'Batayan',
+                'user_action' => 'SUBSCRIBE_NOW',
+                'return_url' => 'https://app.test/settings/billing?paypal=plan-change-return',
+                'cancel_url' => 'https://app.test/settings/billing?paypal=plan-change-cancelled',
+            ],
         ]);
 });
 
@@ -157,6 +164,6 @@ it('accepts successful PayPal mutations that return no response body', function 
     $client = app(PaypalClient::class);
 
     expect($client->voidAuthorization('AUTH-123'))->toBe([])
-        ->and($client->patchSubscriptionPlan('SUB-123', 'P-456'))->toBe([])
+        ->and($client->reviseSubscriptionPlan('SUB-123', 'P-456', 'https://app.test/return', 'https://app.test/cancel'))->toBe([])
         ->and($client->cancelSubscription('SUB-123'))->toBe([]);
 });

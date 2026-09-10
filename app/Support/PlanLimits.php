@@ -6,6 +6,7 @@ use App\Models\Subscription;
 use App\Models\UsageCounter;
 use App\Models\User;
 use App\Services\Billing\TrialWarner;
+use Illuminate\Database\Eloquent\Builder;
 
 class PlanLimits
 {
@@ -71,7 +72,7 @@ class PlanLimits
 
         // Distinguishes the two ways a trial ends. Both are over, but only one
         // of them is worth telling someone they still had days left for.
-        if ($limit !== null && self::organizationUsed($user, self::MESSAGE_KEY) >= $limit) {
+        if ($limit !== null && self::trialUsed($user, self::MESSAGE_KEY) >= $limit) {
             return 'Your free trial has used all of its messages. Subscribe to a plan to keep going.';
         }
 
@@ -114,12 +115,15 @@ class PlanLimits
     /**
      * Record one AI message for the user.
      *
-     * On a paid plan: messages within the cap are counted normally, and once
-     * the cap is reached they become overage when the plan prices it, or are
-     * blocked when it does not.
+     * Allowances are prepaid: messages within the cap are counted normally,
+     * and once the cap is reached the turn is refused. There is deliberately
+     * no post-pay overage — an overage counter was accrued with no collection
+     * path behind it, so it could only ever become displayed debt. A plan row
+     * that still carries an `overage_price` is treated the same as one without:
+     * the cap is a wall, not a meter.
      *
      * On a trial: the cap is counted across the organization and is the end of
-     * the trial rather than the start of overage.
+     * the trial rather than the start of anything billable.
      */
     public static function consumeMessage(User $user): void
     {
@@ -129,7 +133,6 @@ class PlanLimits
 
         $limit = self::limitFor($user, self::MESSAGE_KEY);
         $subscription = $user->subscription;
-        $plan = $subscription?->plan;
 
         if ($user->is_admin || $limit === null) {
             $counter->increment(self::MESSAGE_KEY);
@@ -153,13 +156,34 @@ class PlanLimits
             return;
         }
 
-        if ($plan?->overage_price !== null) {
-            $counter->increment('messages_overage');
+        abort(self::upgradeResponse("You have used this month's message allowance. Upgrade your plan for a larger allowance, or continue when allowances reset next month."));
+    }
+
+    /**
+     * Give one AI message back to the user.
+     *
+     * `consumeMessage()` charges before any AI work runs, so a turn that
+     * delivered nothing — the provider failed before producing output, the
+     * client disconnected before anything was persisted — must hand the charge
+     * back, or failures silently eat the allowance. Only call this on paths
+     * where no assistant reply was persisted; a turn that persisted even a
+     * partial reply delivered value and keeps its charge.
+     */
+    public static function refundMessage(User $user): void
+    {
+        $counter = $user->usageCounterForCurrentPeriod();
+
+        if ($counter->messages_used > 0) {
+            $counter->decrement(self::MESSAGE_KEY);
 
             return;
         }
 
-        abort(self::upgradeResponse('Monthly message limit reached. Upgrade your plan or wait for your next billing cycle.'));
+        // Historical balances from before overage was removed: prefer to unwind
+        // the current counter first, and only then touch legacy debt.
+        if ($counter->messages_overage > 0) {
+            $counter->decrement('messages_overage');
+        }
     }
 
     /**
@@ -177,7 +201,7 @@ class PlanLimits
         UsageCounter $counter,
         int $limit,
     ): void {
-        if (self::organizationUsed($user, self::MESSAGE_KEY) >= $limit) {
+        if (self::trialUsed($user, self::MESSAGE_KEY) >= $limit) {
             self::endTrial($subscription);
 
             abort(self::upgradeResponse(
@@ -188,7 +212,7 @@ class PlanLimits
         $counter->increment(self::MESSAGE_KEY);
 
         // Re-read after the increment: this message may have been the last one.
-        $used = self::organizationUsed($user, self::MESSAGE_KEY);
+        $used = self::trialUsed($user, self::MESSAGE_KEY);
 
         if ($used >= $limit) {
             self::endTrial($subscription);
@@ -215,6 +239,10 @@ class PlanLimits
      * Total usage for a key across every member of the user's organization in
      * the current period. Falls back to the user's own counter when they are
      * not in an organization.
+     *
+     * Only active memberships count: suspended or merely invited members can
+     * neither spend the allowance nor should their past spend keep counting
+     * against the members who remain.
      */
     public static function organizationUsed(User $user, string $key): int
     {
@@ -226,14 +254,52 @@ class PlanLimits
 
         return (int) UsageCounter::query()
             ->where('period_key', UsageCounter::currentPeriodKey())
-            ->whereIn('user_id', User::query()
-                ->where('organization_id', $organizationId)
-                ->select('id'))
+            ->whereIn('user_id', self::activeMemberIds($organizationId))
             ->sum($key);
     }
 
     /**
+     * Total trial usage for a key across the organization since the trial
+     * began — not just in the current calendar month.
+     *
+     * Counters reset on the calendar month while a 14-day trial can straddle
+     * two of them, so summing only the current period would hand a trial that
+     * crosses a month boundary a second allowance. The trial's start is the
+     * subscription row's creation, which is when the trial was granted.
+     */
+    public static function trialUsed(User $user, string $key): int
+    {
+        $organizationId = $user->organization_id;
+
+        if ($organizationId === null) {
+            return self::used($user, $key);
+        }
+
+        $since = $user->subscription?->created_at ?? now();
+
+        return (int) UsageCounter::query()
+            ->where('period_key', '>=', $since->format('Y-m'))
+            ->whereIn('user_id', self::activeMemberIds($organizationId))
+            ->sum($key);
+    }
+
+    /**
+     * @return Builder<User>
+     */
+    protected static function activeMemberIds(int $organizationId)
+    {
+        return User::query()
+            ->where('organization_id', $organizationId)
+            ->where('org_status', User::ORG_STATUS_ACTIVE)
+            ->select('id');
+    }
+
+    /**
      * Abort with a 402 when the user cannot use the feature this cycle.
+     *
+     * Allowances reset every calendar month (`UsageCounter::currentPeriodKey`),
+     * not on the subscription anniversary — the message says so, so nobody
+     * plans around a renewal date that does not move the counters.
      */
     public static function ensureCanUse(User $user, string $key): void
     {
@@ -246,7 +312,7 @@ class PlanLimits
         }
 
         if (self::used($user, $key) >= $limit) {
-            abort(self::upgradeResponse('Monthly limit reached. Upgrade your plan to continue.'));
+            abort(self::upgradeResponse("You've reached this month's allowance. Allowances reset every calendar month — upgrade your plan for more room."));
         }
     }
 

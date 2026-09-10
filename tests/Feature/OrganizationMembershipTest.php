@@ -84,6 +84,27 @@ it('joins an organization by accepting an emailed invite', function () {
     expect($invitation->fresh()->status)->toBe(Invitation::STATUS_ACCEPTED);
 });
 
+it('rejects accepting an invite while a personal subscription is active', function () {
+    $invitation = Invitation::factory()->for($this->organization)->create([
+        'invited_by' => $this->owner->id,
+        'email' => 'solo-paid@example.com',
+    ]);
+
+    $user = User::factory()->create(['email' => 'solo-paid@example.com']);
+    Subscription::factory()->for($user)->create([
+        'organization_id' => null,
+        'plan_id' => Plan::factory()->pro()->create()->id,
+        'status' => Subscription::STATUS_ACTIVE,
+    ]);
+
+    $this->signInAs($user)
+        ->postJson('/api/organizations/invitations/accept', ['token' => $invitation->token])
+        ->assertUnprocessable();
+
+    expect($user->fresh()->organization_id)->toBeNull()
+        ->and($invitation->fresh()->status)->toBe(Invitation::STATUS_PENDING);
+});
+
 it('rejects accepting an invite when the user already belongs to an organization', function () {
     $invitation = Invitation::factory()->for($this->organization)->create([
         'invited_by' => $this->owner->id,

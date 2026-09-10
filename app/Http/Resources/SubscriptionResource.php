@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Models\Plan;
+use App\Services\Billing\AiBudget;
 use App\Support\PlanLimits;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -16,32 +17,53 @@ class SubscriptionResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
-        // A trial's allowance is enforced across the organization, so the meter
-        // has to report the same total the cap is checked against — a per-seat
-        // figure here would show room that spending it proves is not there.
+        // Usage is per-seat on paid plans, so show the requesting member's own
+        // counters — not the purchaser's — while the limit comes from the
+        // shared plan they both sit on. Trials pool across the org.
+        $displayUser = $request->user() ?? $this->user;
         $onTrial = $this->onTrial();
+        $requester = $request->user();
+        $canManageBilling = $requester !== null && (
+            ($this->organization_id === null && $this->user_id === $requester->id)
+            || ($this->organization_id !== null
+                && $requester->organization_id === $this->organization_id
+                && $requester->hasActiveMembership()
+                && $requester->canManageOrganization())
+        );
 
-        $usage = function (string $key) use ($onTrial): array {
+        $usage = function (string $key) use ($onTrial, $displayUser): array {
             return [
                 'used' => $onTrial
-                    ? PlanLimits::organizationUsed($this->user, $key)
-                    : PlanLimits::used($this->user, $key),
-                'limit' => PlanLimits::limitFor($this->user, $key),
+                    ? PlanLimits::organizationUsed($displayUser, $key)
+                    : PlanLimits::used($displayUser, $key),
+                'limit' => PlanLimits::limitFor($displayUser, $key),
             ];
         };
 
         $plan = $this->whenLoaded('plan');
 
         $messages = $usage('messages_used');
-        $overage = PlanLimits::used($this->user, 'messages_overage');
+        $overage = $displayUser ? PlanLimits::used($displayUser, 'messages_overage') : 0;
         $overageRate = $plan instanceof Plan ? $plan->overage_price : null;
+
+        // The customer-facing meter: one percent of the anniversary window's
+        // spend allowance, pooled across the subscription. Legacy count keys
+        // stay below so older surfaces keep rendering while they migrate.
+        $aiUsage = $displayUser
+            ? AiBudget::customerSnapshot($displayUser)
+            : AiBudget::emptyCustomerSnapshot();
 
         return [
             'id' => $this->id,
+            'organization_id' => $this->organization_id,
             'status' => $this->status,
             'gateway' => $this->gateway,
             'interval' => $this->interval,
             'plan' => new PlanResource($plan),
+            'pending_plan_id' => $this->pending_plan_id,
+            // PayPal approval URLs are continuation credentials. Do not hand
+            // one for shared billing to a member who cannot manage the plan.
+            'pending_plan_checkout_url' => $canManageBilling ? $this->pending_plan_checkout_url : null,
             'current_period_start' => $this->current_period_start?->toDateString(),
             'current_period_end' => $this->current_period_end?->toDateString(),
             'cancelled_at' => $this->cancelled_at?->toIso8601String(),
@@ -61,6 +83,7 @@ class SubscriptionResource extends JsonResource
                 'next_invoice_pesos' => round($this->nextInvoiceAmount() / 100, 2),
             ],
             'usage' => [
+                'ai_usage' => $aiUsage,
                 'messages' => $messages + [
                     'overage' => $overage,
                     'overage_rate' => $overageRate,
@@ -69,11 +92,11 @@ class SubscriptionResource extends JsonResource
                 ],
                 'documents' => $usage('documents_uploaded'),
                 'active_cases' => [
-                    'used' => $this->user->cases()
+                    'used' => $displayUser ? $displayUser->cases()
                         ->where('status', '!=', 'closed')
                         ->whereNull('archived_at')
-                        ->count(),
-                    'limit' => PlanLimits::limitFor($this->user, 'active_cases'),
+                        ->count() : 0,
+                    'limit' => $displayUser ? PlanLimits::limitFor($displayUser, 'active_cases') : null,
                 ],
             ],
         ];

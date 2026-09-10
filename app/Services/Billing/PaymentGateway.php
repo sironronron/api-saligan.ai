@@ -27,8 +27,15 @@ interface PaymentGateway
 
     /**
      * Change an existing subscription to a different plan.
+     *
+     * @return array{checkout_url: ?string, payment_intent_id: ?string, public_key: ?string}|null
      */
-    public function changePlan(Subscription $subscription, Plan $plan): void;
+    public function changePlan(
+        Subscription $subscription,
+        Plan $plan,
+        string $successUrl,
+        string $cancelUrl,
+    ): ?array;
 
     /**
      * Cancel an existing subscription.

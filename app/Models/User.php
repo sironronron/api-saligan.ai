@@ -265,7 +265,11 @@ class User extends Authenticatable
     }
 
     /**
-     * The usage counter for the current billing period, created on demand.
+     * The usage counter for the current calendar month, created on demand.
+     *
+     * This is intentionally not the subscription anniversary: every counter in
+     * the product keys off `UsageCounter::currentPeriodKey()`, so plan changes
+     * mid-month inherit what was already spent rather than resetting it.
      */
     public function usageCounterForCurrentPeriod(): UsageCounter
     {

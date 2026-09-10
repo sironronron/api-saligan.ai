@@ -1378,6 +1378,10 @@ it('rolls back the user message when the stream fails', function () {
     expect($body)->toContain('event: error');
 
     $this->assertDatabaseCount('messages', 0);
+
+    // The turn persisted nothing, so the pre-charge comes back: a failed turn
+    // must not eat the allowance.
+    expect($this->user->fresh()->usageCounterForCurrentPeriod()->messages_used)->toBe(0);
 });
 
 it('preserves the user and partial assistant reply when the stream fails after output', function () {

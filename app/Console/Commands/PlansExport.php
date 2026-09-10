@@ -36,6 +36,8 @@ class PlansExport extends Command
                 'price_annual_label' => $plan->priceAnnualLabel(),
                 'overage_price' => $plan->overage_price,
                 'overage_label' => $plan->overage_price === null ? null : $plan->overageLabel(),
+                'ai_budget_label' => $plan->aiBudgetLabel(),
+                'ai_usage_multiplier' => $plan->aiUsageMultiplier(),
                 'included_seats' => $plan->included_seats,
                 'seat_price' => $plan->seat_price,
                 'seat_price_label' => $plan->seatPriceLabel(),

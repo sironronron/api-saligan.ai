@@ -6,6 +6,7 @@ use App\Enums\BillingGateway;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\User;
+use Throwable;
 
 class PaymongoGateway implements PaymentGateway
 {
@@ -31,56 +32,99 @@ class PaymongoGateway implements PaymentGateway
             'billing_interval' => $interval,
         ]);
 
-        $subscription = Subscription::create([
-            'user_id' => $user->id,
-            'organization_id' => $user->organization_id,
-            'plan_id' => $plan->id,
-            'interval' => $interval,
-            'gateway' => BillingGateway::Paymongo->value,
-            'paymongo_subscription_id' => $paymongoSubscription['id'],
-            'paymongo_customer_id' => $customerId,
-            'status' => Subscription::STATUS_INCOMPLETE,
-            'seats_purchased' => $plan->included_seats,
-            // A plan that does not sell seats still has to price the one it
-            // covers, or the seat ledger would record every change against
-            // nothing. That price is the plan itself.
-            'price_per_seat' => $plan->seat_price ?? $plan->price,
-        ]);
+        $paymongoSubscriptionId = $paymongoSubscription['id'] ?? null;
 
-        $paymentIntent = data_get($paymongoSubscription, 'attributes.latest_invoice.payment_intent');
-
-        abort_if(data_get($paymentIntent, 'id') === null, 422, 'The subscription payment could not be initialized. Please try again.');
-
-        $checkout = $this->paymongo->createCheckoutSession(
-            paymentIntentId: $paymentIntent['id'],
-            customerId: $customerId,
-            description: "{$plan->name} ".($interval === Plan::INTERVAL_ANNUAL ? 'annual' : 'monthly').' subscription',
-            amount: $plan->priceForInterval($interval),
-            successUrl: $successUrl,
-            cancelUrl: $cancelUrl,
-            metadata: [
-                'user_id' => $user->id,
-                'subscription_id' => $subscription->id,
-                'plan_slug' => $plan->slug,
-                'billing_interval' => $interval,
-            ],
+        abort_if(
+            ! is_string($paymongoSubscriptionId) || $paymongoSubscriptionId === '',
+            422,
+            'The subscription could not be initialized. Please try again.',
         );
+
+        $subscription = null;
+
+        try {
+            $subscription = Subscription::create([
+                'user_id' => $user->id,
+                'organization_id' => $user->organization_id,
+                'plan_id' => $plan->id,
+                'interval' => $interval,
+                'gateway' => BillingGateway::Paymongo->value,
+                'paymongo_subscription_id' => $paymongoSubscriptionId,
+                'paymongo_customer_id' => $customerId,
+                'status' => Subscription::STATUS_INCOMPLETE,
+                'seats_purchased' => $plan->included_seats,
+                // A plan that does not sell seats still has to price the one it
+                // covers, or the seat ledger would record every change against
+                // nothing. That price is the plan itself.
+                'price_per_seat' => $plan->seat_price ?? $plan->price,
+            ]);
+
+            $paymentIntentId = data_get($paymongoSubscription, 'attributes.latest_invoice.payment_intent.id');
+
+            abort_if(
+                ! is_string($paymentIntentId) || $paymentIntentId === '',
+                422,
+                'The subscription payment could not be initialized. Please try again.',
+            );
+
+            $checkout = $this->paymongo->createCheckoutSession(
+                paymentIntentId: $paymentIntentId,
+                customerId: $customerId,
+                description: "{$plan->name} ".($interval === Plan::INTERVAL_ANNUAL ? 'annual' : 'monthly').' subscription',
+                amount: $plan->priceForInterval($interval),
+                successUrl: $successUrl,
+                cancelUrl: $cancelUrl,
+                metadata: [
+                    'user_id' => $user->id,
+                    'subscription_id' => $subscription->id,
+                    'plan_slug' => $plan->slug,
+                    'billing_interval' => $interval,
+                ],
+            );
+
+            $checkoutUrl = data_get($checkout, 'attributes.checkout_url');
+
+            abort_if(
+                ! is_string($checkoutUrl) || $checkoutUrl === '',
+                422,
+                'The subscription checkout could not be initialized. Please try again.',
+            );
+        } catch (Throwable $exception) {
+            $subscription?->delete();
+
+            try {
+                $this->paymongo->cancelSubscription(
+                    $paymongoSubscriptionId,
+                    'Checkout initialization failed',
+                );
+            } catch (Throwable $cleanupException) {
+                report($cleanupException);
+            }
+
+            throw $exception;
+        }
 
         return [
             'subscription' => $subscription->load('plan'),
             'checkout' => [
-                'checkout_url' => data_get($checkout, 'attributes.checkout_url'),
-                'payment_intent_id' => $paymentIntent['id'],
+                'checkout_url' => $checkoutUrl,
+                'payment_intent_id' => $paymentIntentId,
                 'public_key' => config('paymongo.public_key'),
             ],
         ];
     }
 
-    public function changePlan(Subscription $subscription, Plan $plan): void
-    {
+    public function changePlan(
+        Subscription $subscription,
+        Plan $plan,
+        string $successUrl,
+        string $cancelUrl,
+    ): ?array {
         $paymongoPlanId = $this->resolvePlanId($plan, $subscription->interval ?? Plan::INTERVAL_MONTHLY);
 
         $this->paymongo->changeSubscriptionPlan($subscription->paymongo_subscription_id, $paymongoPlanId);
+
+        return null;
     }
 
     public function cancel(Subscription $subscription, ?string $reason = null): void

@@ -6,6 +6,7 @@ use App\Enums\MessageRole;
 use App\Http\Controllers\Controller;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Billing\AiBudget;
 use App\Support\PlanLimits;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -55,6 +56,7 @@ class DashboardController extends Controller
         };
 
         return [
+            'ai_usage' => AiBudget::customerSnapshot($user),
             'messages' => $meter('messages_used'),
             'documents' => $meter('documents_uploaded'),
             'active_cases' => [

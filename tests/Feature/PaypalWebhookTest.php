@@ -1,8 +1,10 @@
 <?php
 
+use App\Models\Organization;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\User;
+use App\Services\Integrations\IntegrationEligibility;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 
@@ -51,11 +53,16 @@ function fakePaypalWebhookVerification(bool $verified = true): void
     ]);
 }
 
-function paypalSubscriptionEvent(string $eventType, array $resource = []): array
-{
+function paypalSubscriptionEvent(
+    string $eventType,
+    array $resource = [],
+    string $createdAt = '2026-08-26T12:00:00Z',
+    ?string $eventId = null,
+): array {
     return [
-        'id' => 'WH-123',
+        'id' => $eventId ?? 'WH-'.str_replace('.', '-', $eventType),
         'event_type' => $eventType,
+        'create_time' => $createdAt,
         'resource' => ['id' => 'I-SUB-123', ...$resource],
     ];
 }
@@ -112,6 +119,99 @@ it('reactivates the local subscription after a PayPal renewal sale', function ()
     $this->postJson('/api/paypal/webhook', $payload, paypalWebhookHeaders())->assertOk();
 
     expect($this->subscription->fresh()->status)->toBe(Subscription::STATUS_ACTIVE);
+});
+
+it('applies the revised PayPal plan only after the webhook arrives', function () {
+    $pro = Plan::factory()->pro()->create();
+    config(['paypal.plans.pro.monthly' => 'P-PRO-MONTHLY']);
+    fakePaypalWebhookVerification();
+
+    $payload = paypalSubscriptionEvent('BILLING.SUBSCRIPTION.UPDATED', [
+        'status' => 'ACTIVE',
+        'plan_id' => 'P-PRO-MONTHLY',
+    ]);
+
+    $this->postJson('/api/paypal/webhook', $payload, paypalWebhookHeaders())->assertOk();
+
+    expect($this->subscription->fresh()->plan_id)->toBe($pro->id)
+        ->and($this->subscription->fresh()->interval)->toBe('monthly');
+});
+
+it('ignores an older PayPal webhook after a newer event was processed', function () {
+    $this->subscription->update([
+        'status' => Subscription::STATUS_ACTIVE,
+        'paypal_last_event_at' => '2026-08-26 13:00:00',
+    ]);
+    fakePaypalWebhookVerification();
+
+    $payload = paypalSubscriptionEvent('BILLING.SUBSCRIPTION.UPDATED', [
+        'status' => 'SUSPENDED',
+    ], '2026-08-26T12:00:00Z');
+
+    $this->postJson('/api/paypal/webhook', $payload, paypalWebhookHeaders())->assertOk();
+
+    expect($this->subscription->fresh()->status)->toBe(Subscription::STATUS_ACTIVE);
+});
+
+it('syncs entitlements for the subscription organization', function () {
+    $subscriptionOrganization = $this->subscription->organization;
+    $differentOrganization = Organization::factory()->create();
+    $this->user->update(['organization_id' => $differentOrganization->id]);
+    $pro = Plan::factory()->pro()->create();
+    config(['paypal.plans.pro.monthly' => 'P-PRO-MONTHLY']);
+
+    $this->mock(IntegrationEligibility::class, function ($mock) use ($subscriptionOrganization) {
+        $mock->shouldReceive('syncOrganization')->once()->with(
+            Mockery::on(fn (Organization $organization): bool => $organization->getKey() === $subscriptionOrganization->getKey()),
+        )->andReturn([
+            'paused' => 0,
+            'resumed' => 0,
+        ]);
+        $mock->shouldReceive('syncUser')->never();
+    });
+
+    fakePaypalWebhookVerification();
+
+    $payload = paypalSubscriptionEvent('BILLING.SUBSCRIPTION.UPDATED', [
+        'status' => 'ACTIVE',
+        'plan_id' => 'P-PRO-MONTHLY',
+    ]);
+
+    $this->postJson('/api/paypal/webhook', $payload, paypalWebhookHeaders())->assertOk();
+
+    expect($this->subscription->fresh()->plan_id)->toBe($pro->id);
+});
+
+it('retries a PayPal webhook when entitlement reconciliation fails', function () {
+    $pro = Plan::factory()->pro()->create();
+    config(['paypal.plans.pro.monthly' => 'P-PRO-MONTHLY']);
+    $attempts = 0;
+
+    $this->mock(IntegrationEligibility::class, function ($mock) use (&$attempts) {
+        $mock->shouldReceive('syncOrganization')->twice()->andReturnUsing(function () use (&$attempts) {
+            $attempts++;
+
+            if ($attempts === 1) {
+                throw new RuntimeException('eligibility service unavailable');
+            }
+
+            return ['paused' => 0, 'resumed' => 0];
+        });
+        $mock->shouldReceive('syncUser')->never();
+    });
+
+    fakePaypalWebhookVerification();
+
+    $payload = paypalSubscriptionEvent('BILLING.SUBSCRIPTION.UPDATED', [
+        'status' => 'ACTIVE',
+        'plan_id' => 'P-PRO-MONTHLY',
+    ]);
+
+    $this->postJson('/api/paypal/webhook', $payload, paypalWebhookHeaders())->assertStatus(500);
+    $this->postJson('/api/paypal/webhook', $payload, paypalWebhookHeaders())->assertOk();
+
+    expect($attempts)->toBe(2)
+        ->and($this->subscription->fresh()->plan_id)->toBe($pro->id);
 });
 
 it('accepts repeated PayPal webhook delivery without changing the result', function () {

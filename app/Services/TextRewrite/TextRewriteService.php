@@ -25,6 +25,15 @@ class TextRewriteService
     ) {}
 
     /**
+     * Provider-reported token counts for the last successful rewrite, in the
+     * ledger's actuals shape — or null when the engine did not report any
+     * (the Laravel path) and the caller must settle the estimate instead.
+     *
+     * @var array<string, mixed>|null
+     */
+    public ?array $lastUsage = null;
+
+    /**
      * Rewrite the passage.
      *
      * Returns null when every attempt comes back with nothing usable. It used
@@ -37,6 +46,8 @@ class TextRewriteService
      */
     public function rewrite(string $text, string $instruction, ?Conversation $conversation = null): ?string
     {
+        $this->lastUsage = null;
+
         if (config('saligan.ai_provider.batch_engine') === 'python') {
             for ($attempt = 1; $attempt <= 3; $attempt++) {
                 $response = $this->python->call('/agents/rewrite', [
@@ -46,7 +57,12 @@ class TextRewriteService
                 ]);
                 $rewritten = $this->extractText((string) ($response['text'] ?? ''));
 
+                // Retries share the caller's single reservation: only the
+                // successful attempt's usage settles, so empty replies never
+                // multiply the charge.
                 if ($rewritten !== '') {
+                    $this->lastUsage = $this->reportedUsage($response['usage'] ?? null, $attempt);
+
                     return $rewritten;
                 }
             }
@@ -137,6 +153,31 @@ class TextRewriteService
         }
 
         return implode("\n\n", $blocks);
+    }
+
+    /**
+     * Normalize the engine-reported usage into the ledger's actuals shape.
+     * Missing counts settle as zero — local inference genuinely bills no
+     * tokens — while the attempt count records how many tries the success
+     * took, so retry pressure stays visible even though it is not billed.
+     *
+     * @return array<string, mixed>|null
+     */
+    protected function reportedUsage(mixed $reported, int $attempts): ?array
+    {
+        if (! is_array($reported)) {
+            return null;
+        }
+
+        return [
+            'provider' => $reported['provider'] ?? null,
+            'model' => $reported['model'] ?? null,
+            'input_tokens' => (int) ($reported['input_tokens'] ?? 0),
+            'output_tokens' => (int) ($reported['output_tokens'] ?? 0),
+            'cache_read_tokens' => (int) ($reported['cache_read_tokens'] ?? 0),
+            'cache_write_tokens' => (int) ($reported['cache_write_tokens'] ?? 0),
+            'attempts' => $attempts,
+        ];
     }
 
     /**

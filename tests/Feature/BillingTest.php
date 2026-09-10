@@ -2,11 +2,13 @@
 
 use App\Models\Conversation;
 use App\Models\LegalCase;
+use App\Models\Organization;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\UsageCounter;
 use App\Models\User;
 use App\Services\Auth\SupabaseJwtService;
+use App\Services\Integrations\IntegrationEligibility;
 use App\Support\PlanLimits;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\UploadedFile;
@@ -180,6 +182,36 @@ it('reuses an existing PayMongo customer by email instead of creating one', func
     });
 });
 
+it('removes a PayMongo checkout row when the first payment cannot be initialized', function () {
+    Http::fake([
+        'api.paymongo.com/v1/customers*' => Http::response([
+            'data' => ['id' => 'cus_failed', 'type' => 'customer', 'attributes' => []],
+        ]),
+        'api.paymongo.com/v1/subscriptions/plans' => Http::response([
+            'data' => ['id' => 'plan_failed', 'type' => 'plan', 'attributes' => []],
+        ]),
+        'api.paymongo.com/v1/subscriptions' => Http::response([
+            'data' => [
+                'id' => 'subs_failed',
+                'type' => 'subscription',
+                'attributes' => ['latest_invoice' => ['payment_intent' => null]],
+            ],
+        ]),
+        'api.paymongo.com/v1/subscriptions/subs_failed/cancel' => Http::response([
+            'data' => ['id' => 'subs_failed'],
+        ]),
+    ]);
+
+    $this->signInAs($this->user)
+        ->postJson('/api/subscription', ['plan_id' => $this->pro->id])
+        ->assertStatus(422)
+        ->assertJsonPath('message', 'The subscription payment could not be initialized. Please try again.');
+
+    $this->assertDatabaseCount('subscriptions', 0);
+    Http::assertSent(fn ($request) => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/v1/subscriptions/subs_failed/cancel'));
+});
+
 it('rejects subscribing while an active subscription exists', function () {
     Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
 
@@ -260,13 +292,41 @@ it('shows the current subscription with usage', function () {
         ->and($response->json('data.usage.messages.used'))->toBe(42)
         ->and($response->json('data.usage.messages.limit'))->toBe(300)
         ->and($response->json('data.usage.messages.overage'))->toBe(0)
-        ->and($response->json('data.usage.documents.limit'))->toBe(100);
+        ->and($response->json('data.usage.documents.limit'))->toBe(200);
 });
 
 it('returns null subscription for users without one', function () {
     $this->signInAs($this->user)->getJson('/api/subscription')
         ->assertOk()
         ->assertJson(['data' => null]);
+});
+
+it('returns PHP-only pricing and usage fields from subscription endpoints', function () {
+    Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
+
+    $response = $this->signInAs($this->user)->getJson('/api/subscription')->assertOk();
+
+    $response->assertJsonPath('data.plan.ai_budget_label', '5x usage')
+        ->assertJsonPath('data.plan.ai_usage_multiplier', 5)
+        ->assertJsonMissingPath('data.plan.ai_budget_pesos')
+        ->assertJsonMissingPath('data.plan.ai_budget_usd_cents')
+        ->assertJsonMissingPath('data.plan.ai_budget_usd')
+        ->assertJsonMissingPath('data.usage.ai_usage.used_usd')
+        ->assertJsonMissingPath('data.usage.ai_usage.budget_usd');
+});
+
+it('rejects seat endpoints for a personal subscription with a useful error', function () {
+    Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
+
+    $this->signInAs($this->user)
+        ->postJson('/api/subscription/seats', ['quantity' => 1])
+        ->assertStatus(422)
+        ->assertJsonPath('message', 'Seat management is only available for organization subscriptions.');
+
+    $this->signInAs($this->user)
+        ->deleteJson('/api/subscription/seats', ['quantity' => 1])
+        ->assertStatus(422)
+        ->assertJsonPath('message', 'Seat management is only available for organization subscriptions.');
 });
 
 it('changes the subscription plan', function () {
@@ -413,6 +473,52 @@ it('mirrors a subscription status update webhook', function () {
         ->toBe(Subscription::STATUS_PAST_DUE);
 });
 
+it('syncs organization integrations after a PayMongo status webhook', function () {
+    $organization = Organization::factory()->create();
+    $this->user->update([
+        'organization_id' => $organization->id,
+        'org_role' => User::ORG_ROLE_OWNER,
+        'org_status' => User::ORG_STATUS_ACTIVE,
+    ]);
+    $subscription = Subscription::factory()->for($this->user)->create([
+        'organization_id' => $organization->id,
+        'plan_id' => $this->pro->id,
+        'paymongo_subscription_id' => 'subs_test123',
+        'status' => Subscription::STATUS_ACTIVE,
+    ]);
+
+    $this->mock(IntegrationEligibility::class, function ($mock) use ($organization) {
+        $mock->shouldReceive('syncOrganization')->once()->with(
+            Mockery::on(fn (Organization $actual): bool => $actual->getKey() === $organization->getKey()),
+        )->andReturn(['paused' => 0, 'resumed' => 0]);
+        $mock->shouldReceive('syncUser')->never();
+    });
+
+    config(['paymongo.webhook_secret' => 'test-secret']);
+
+    $payload = [
+        'data' => [
+            'type' => 'event',
+            'attributes' => [
+                'type' => 'subscription.updated',
+                'data' => [
+                    'id' => 'subs_test123',
+                    'type' => 'subscription',
+                    'attributes' => ['status' => 'cancelled'],
+                ],
+            ],
+        ],
+    ];
+
+    $signature = 'paymongo_'.hash_hmac('sha256', json_encode($payload), 'test-secret');
+
+    $this->postJson('/api/subscriptions/webhook', $payload, [
+        'Paymongo-Signature' => $signature,
+    ])->assertOk();
+
+    expect($subscription->fresh()->status)->toBe(Subscription::STATUS_CANCELLED);
+});
+
 it('rejects webhooks with an invalid signature', function () {
     config(['paymongo.webhook_secret' => 'test-secret']);
 
@@ -486,9 +592,13 @@ it('increments document upload usage', function () {
 });
 
 it('blocks creating a case over the active case limit', function () {
-    Subscription::factory()->for($this->user)->create(['plan_id' => $this->standard->id]);
-    LegalCase::factory()->for($this->user)->state(['status' => 'open'])
-        ->count($this->standard->limits['active_cases'])->create();
+    // The gate is exercised with an explicitly capped plan: the shipped tiers
+    // leave matters unlimited, so the test must not depend on their numbers.
+    $capped = Plan::factory()->create([
+        'limits' => ['active_cases' => 1, 'documents_uploaded' => null, 'messages_used' => null],
+    ]);
+    Subscription::factory()->for($this->user)->create(['plan_id' => $capped->id]);
+    LegalCase::factory()->for($this->user)->state(['status' => 'open'])->create();
 
     $response = $this->signInAs($this->user)->postJson('/api/cases', [
         'title' => 'Another case',
@@ -500,7 +610,11 @@ it('blocks creating a case over the active case limit', function () {
     expect($response->json('upgrade_required'))->toBeTrue();
 });
 
-it('counts messages beyond the cap as overage when the plan has an overage price', function () {
+it('blocks over-cap messages instead of accruing overage', function () {
+    // Allowances are prepaid: an exhausted cap refuses the turn rather than
+    // growing the bill, even when the plan row still carries a legacy
+    // overage price from before metered billing was removed.
+    $this->pro->update(['overage_price' => 900]);
     Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
     UsageCounter::factory()->for($this->user)->create([
         'messages_used' => $this->pro->limits['messages_used'],
@@ -508,12 +622,29 @@ it('counts messages beyond the cap as overage when the plan has an overage price
         'documents_uploaded' => 0,
     ]);
 
-    PlanLimits::consumeMessage($this->user);
+    expect(fn () => PlanLimits::consumeMessage($this->user))
+        ->toThrow(HttpResponseException::class);
 
     $counter = UsageCounter::firstWhere('user_id', $this->user->id);
 
     expect($counter->messages_used)->toBe($this->pro->limits['messages_used'])
-        ->and($counter->messages_overage)->toBe(3);
+        ->and($counter->messages_overage)->toBe(2);
+});
+
+it('refunds the pre-charge when a turn delivers nothing', function () {
+    Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
+    PlanLimits::consumeMessage($this->user);
+
+    expect(PlanLimits::used($this->user, 'messages_used'))->toBe(1);
+
+    PlanLimits::refundMessage($this->user);
+
+    expect(PlanLimits::used($this->user, 'messages_used'))->toBe(0);
+
+    // Refunding an empty counter never drives it negative.
+    PlanLimits::refundMessage($this->user);
+
+    expect(PlanLimits::used($this->user, 'messages_used'))->toBe(0);
 });
 
 it('blocks over-cap messages when the plan has no overage price', function () {
@@ -529,6 +660,9 @@ it('blocks over-cap messages when the plan has no overage price', function () {
 });
 
 it('exposes the overage balance in the subscription payload', function () {
+    // Historical balances from before metered billing was removed stay
+    // visible; no new overage accrues.
+    $this->pro->update(['overage_price' => 900]);
     Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
     UsageCounter::factory()->for($this->user)->create([
         'messages_used' => $this->pro->limits['messages_used'] + 10,
@@ -596,12 +730,12 @@ it('starts an annual subscription with a yearly PayMongo plan', function () {
     Http::assertSent(function ($request) {
         return str_contains($request->url(), '/v1/subscriptions/plans')
             && data_get($request->data(), 'data.attributes.interval') === 'yearly'
-            && data_get($request->data(), 'data.attributes.amount') === 3490000;
+            && data_get($request->data(), 'data.attributes.amount') === 3500000;
     });
 
     Http::assertSent(function ($request) {
         return str_contains($request->url(), '/v1/checkout_sessions')
-            && data_get($request->data(), 'data.attributes.line_items.0.amount') === 3490000;
+            && data_get($request->data(), 'data.attributes.line_items.0.amount') === 3500000;
     });
 });
 

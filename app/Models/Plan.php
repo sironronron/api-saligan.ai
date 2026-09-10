@@ -15,6 +15,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'price',
     'price_annual',
     'overage_price',
+    'ai_budget_usd_cents',
+    'ai_usage_multiplier',
     'included_seats',
     'seat_price',
     'currency',
@@ -71,6 +73,8 @@ class Plan extends Model
             'price' => 'integer',
             'price_annual' => 'integer',
             'overage_price' => 'integer',
+            'ai_budget_usd_cents' => 'integer',
+            'ai_usage_multiplier' => 'integer',
             'included_seats' => 'integer',
             'seat_price' => 'integer',
             'limits' => 'array',
@@ -156,6 +160,50 @@ class Plan extends Model
         return $interval === self::INTERVAL_ANNUAL
             ? $this->lemonsqueezy_variant_id_annual
             : $this->lemonsqueezy_variant_id;
+    }
+
+    /**
+     * The monthly AI spend allowance in USD, or null when the plan is not
+     * spend-gated (contract tiers negotiated per deal).
+     */
+    public function aiBudgetUsd(): ?float
+    {
+        return $this->ai_budget_usd_cents === null ? null : $this->ai_budget_usd_cents / 100;
+    }
+
+    /**
+     * The monthly AI spend allowance converted to PHP using the configured
+     * budgeting FX rate.
+     */
+    public function aiBudgetPesos(): ?float
+    {
+        $usd = $this->aiBudgetUsd();
+
+        return $usd === null ? null : $usd * (float) config('billing.fx_usd_php', 65.0);
+    }
+
+    /**
+     * The plan's AI usage allowance relative to Standard, or null for a
+     * contract/trial tier outside the paid ladder.
+     */
+    public function aiUsageMultiplier(): ?int
+    {
+        return $this->ai_usage_multiplier;
+    }
+
+    /**
+     * The allowance tier as the customer reads it: no internal budget figure
+     * is quoted on the pricing table.
+     */
+    public function aiBudgetLabel(): ?string
+    {
+        if ($this->ai_budget_usd_cents === null) {
+            return null;
+        }
+
+        $multiplier = $this->aiUsageMultiplier();
+
+        return $multiplier === null ? 'Included usage' : "{$multiplier}x usage";
     }
 
     /**

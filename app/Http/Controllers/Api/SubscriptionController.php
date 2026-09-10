@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\BillingGateway;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\SubscriptionResource;
 use App\Models\Plan;
@@ -12,10 +13,13 @@ use App\Services\Billing\LemonSqueezyClient;
 use App\Services\Billing\PaymongoClient;
 use App\Services\Billing\SeatBillingService;
 use App\Services\Integrations\IntegrationEligibility;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
+use Throwable;
 
 class SubscriptionController extends Controller
 {
@@ -46,11 +50,14 @@ class SubscriptionController extends Controller
         $this->assertSelfServe($plan);
 
         $user = $request->user();
+        $this->assertCanStartCheckout($user);
 
-        // Serialize checkout creation per user so two concurrent requests
-        // cannot both pass the "no active subscription" check below and each
-        // create a subscription (and a provider charge).
-        $lock = Cache::lock("subscription.checkout.{$user->id}", 30);
+        // Serialize checkout creation per billing owner so two concurrent
+        // requests cannot create a subscription (and a provider charge).
+        $lockKey = $user->organization_id !== null
+            ? "subscription.checkout.organization.{$user->organization_id}"
+            : "subscription.checkout.{$user->id}";
+        $lock = Cache::lock($lockKey, 30);
 
         if (! $lock->get()) {
             abort(response()->json([
@@ -93,6 +100,12 @@ class SubscriptionController extends Controller
                 'data' => (new SubscriptionResource($result['subscription']))->resolve(),
                 'checkout' => $result['checkout'],
             ], 201);
+        } catch (HttpResponseException|HttpExceptionInterface $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return $this->providerUnavailableResponse();
         } finally {
             $lock->release();
         }
@@ -139,42 +152,169 @@ class SubscriptionController extends Controller
 
         $subscription = $request->user()->subscription;
         abort_unless($subscription !== null && $subscription->status !== Subscription::STATUS_CANCELLED, 422);
+        $this->assertCanManageBilling($request->user(), $subscription);
 
         $plan = Plan::findOrFail($validated['plan_id']);
         abort_unless($plan->is_active, 422);
         $this->assertSelfServe($plan);
+        $this->assertProviderSubscription($subscription);
 
-        $this->gateways->for($subscription)->changePlan($subscription, $plan);
+        $lock = Cache::lock("subscription.plan-change.{$subscription->id}", 30);
 
-        // The seat price travels with the plan: a subscription that moved off a
-        // team plan must stop billing that plan's seat rate, and one that moved
-        // onto it must start.
-        //
-        // Seat count moves in one direction only. Upgrading has to hand over the
-        // seats the new plan bundles — that is what was bought — so the count
-        // rises to `included_seats`. It never falls: seats bought on top of the
-        // old plan stay bought, and taking seats away here would lock out
-        // members still using them, which is the owner's decision rather than a
-        // side effect of changing plans.
+        if (! $lock->get()) {
+            abort(response()->json([
+                'message' => 'A plan change is already being created. Please try again.',
+            ], 409));
+        }
+
+        try {
+            $subscription = $subscription->fresh();
+            abort_unless($subscription->status !== Subscription::STATUS_CANCELLED, 422);
+
+            if ($subscription->pending_plan_id !== null) {
+                if ($subscription->pending_plan_id === $plan->id
+                    && is_string($subscription->pending_plan_checkout_url)
+                    && $subscription->pending_plan_checkout_url !== '') {
+                    return $this->planChangeResponse($subscription, [
+                        'checkout_url' => $subscription->pending_plan_checkout_url,
+                        'payment_intent_id' => null,
+                        'public_key' => null,
+                    ]);
+                }
+
+                abort(response()->json([
+                    'message' => 'A plan change is already awaiting approval. Complete or cancel it before choosing another plan.',
+                ], 409));
+            }
+
+            $gateway = $this->gateways->for($subscription);
+            $paypalRevision = $gateway->name() === BillingGateway::Paypal;
+            $frontendUrl = rtrim((string) config('app.frontend_url'), '/');
+
+            if ($paypalRevision) {
+                // Mark the intent before calling PayPal so a fast webhook can
+                // distinguish this revision from an ordinary subscription update.
+                $subscription->update([
+                    'pending_plan_id' => $plan->id,
+                    'pending_plan_checkout_url' => null,
+                ]);
+            }
+
+            try {
+                $checkout = $gateway->changePlan(
+                    subscription: $subscription,
+                    plan: $plan,
+                    successUrl: $paypalRevision
+                        ? "{$frontendUrl}/settings/billing?paypal=plan-change-return&plan={$plan->id}"
+                        : '',
+                    cancelUrl: $paypalRevision
+                        ? "{$frontendUrl}/settings/billing?paypal=plan-change-cancelled"
+                        : '',
+                );
+
+                // A PayPal revision is pending buyer approval. Its webhook applies
+                // the plan locally; changing the row before approval would grant
+                // unpaid access. Do not restore the marker if that webhook already
+                // completed the revision while the provider request was in flight.
+                if ($checkout !== null) {
+                    $latest = $subscription->fresh();
+
+                    if ($latest->pending_plan_id === $plan->id) {
+                        $latest->update([
+                            'pending_plan_checkout_url' => $checkout['checkout_url'],
+                        ]);
+                    } elseif ($latest->plan_id === $plan->id) {
+                        $checkout = null;
+                    }
+
+                    $subscription = $latest->fresh();
+                } else {
+                    $this->applyPlanChange($subscription, $plan);
+                    $this->syncSubscriptionEligibility($subscription->fresh());
+                }
+
+                return $this->planChangeResponse($subscription, $checkout);
+            } catch (Throwable $exception) {
+                if ($paypalRevision && $subscription->fresh()?->pending_plan_id === $plan->id) {
+                    $subscription->update([
+                        'pending_plan_id' => null,
+                        'pending_plan_checkout_url' => null,
+                    ]);
+                }
+
+                if (! $exception instanceof HttpResponseException
+                    && ! $exception instanceof HttpExceptionInterface) {
+                    report($exception);
+
+                    return $this->providerUnavailableResponse();
+                }
+
+                throw $exception;
+            }
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Clear a PayPal plan revision after the buyer cancels its approval flow.
+     */
+    public function cancelPlanChange(Request $request): JsonResponse
+    {
+        $subscription = $request->user()->subscription;
+
+        if ($subscription === null) {
+            return $this->planChangeResponse(null, null);
+        }
+
+        $this->assertCanManageBilling($request->user(), $subscription);
+
+        $lock = Cache::lock("subscription.plan-change.{$subscription->id}", 30);
+
+        if (! $lock->get()) {
+            abort(response()->json([
+                'message' => 'A plan change is already being created. Please try again.',
+            ], 409));
+        }
+
+        try {
+            $subscription = $subscription->fresh();
+
+            if ($subscription->pending_plan_id !== null) {
+                $subscription->update([
+                    'pending_plan_id' => null,
+                    'pending_plan_checkout_url' => null,
+                ]);
+            }
+
+            return $this->planChangeResponse($subscription->fresh(), null);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Apply the local portion of a plan change after the provider accepts it.
+     */
+    protected function applyPlanChange(Subscription $subscription, Plan $plan): void
+    {
         $subscription->update([
             'plan_id' => $plan->id,
             'price_per_seat' => $plan->seat_price ?? $plan->price,
             'seats_purchased' => max($subscription->seats_purchased, $plan->included_seats ?? 1),
         ]);
+    }
 
-        // A plan change can carry add-ons in or take them away; reconcile the
-        // organization's integrations now rather than waiting for the sweep.
-        $eligibility = app(IntegrationEligibility::class);
-        $organization = $request->user()->organization;
-
-        if ($organization !== null) {
-            $eligibility->syncOrganization($organization);
-        } else {
-            $eligibility->syncUser($request->user());
-        }
-
+    /**
+     * Return a plan-change response for both immediate and hosted flows.
+     */
+    protected function planChangeResponse(?Subscription $subscription, ?array $checkout): JsonResponse
+    {
         return response()->json([
-            'data' => (new SubscriptionResource($subscription->fresh()->load('plan')))->resolve(),
+            'data' => $subscription === null
+                ? null
+                : (new SubscriptionResource($subscription->load('plan')))->resolve(),
+            'checkout' => $checkout,
         ]);
     }
 
@@ -185,29 +325,129 @@ class SubscriptionController extends Controller
     {
         $subscription = $request->user()->subscription;
         abort_unless($subscription !== null && $subscription->status !== Subscription::STATUS_CANCELLED, 422);
+        $this->assertCanManageBilling($request->user(), $subscription);
 
-        $this->gateways->for($subscription)->cancel($subscription);
+        $lock = Cache::lock("subscription.plan-change.{$subscription->id}", 30);
 
-        $subscription->update([
-            'status' => Subscription::STATUS_CANCELLED,
-            'cancelled_at' => now(),
-        ]);
-
-        // Cancelling drops the account below the tiers that carry add-ons, so
-        // pause its integrations now rather than at the next sweep. Settings
-        // are kept; reconnecting is one upgrade away.
-        $eligibility = app(IntegrationEligibility::class);
-        $organization = $request->user()->organization;
-
-        if ($organization !== null) {
-            $eligibility->syncOrganization($organization);
-        } else {
-            $eligibility->syncUser($request->user());
+        if (! $lock->get()) {
+            abort(response()->json([
+                'message' => 'A plan change is already being created. Please try again.',
+            ], 409));
         }
 
+        try {
+            $subscription = $subscription->fresh();
+            abort_unless($subscription->status !== Subscription::STATUS_CANCELLED, 422);
+
+            try {
+                $this->gateways->for($subscription)->cancel($subscription);
+            } catch (Throwable $exception) {
+                report($exception);
+
+                return $this->providerUnavailableResponse();
+            }
+
+            $subscription->update([
+                'status' => Subscription::STATUS_CANCELLED,
+                'pending_plan_id' => null,
+                'pending_plan_checkout_url' => null,
+                'cancelled_at' => now(),
+            ]);
+
+            // Cancelling drops the account below the tiers that carry add-ons, so
+            // pause its integrations now rather than at the next sweep. Settings
+            // are kept; reconnecting is one upgrade away.
+            $this->syncSubscriptionEligibility($subscription->fresh());
+
+            return response()->json([
+                'data' => (new SubscriptionResource($subscription->fresh()->load('plan')))->resolve(),
+            ]);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Ensure only an organization manager can start shared billing.
+     */
+    protected function assertCanStartCheckout(User $user): void
+    {
+        if ($user->organization_id === null) {
+            return;
+        }
+
+        abort_unless(
+            $user->hasActiveMembership() && $user->canManageOrganization(),
+            403,
+            'Only organization admins can manage billing.',
+        );
+    }
+
+    /**
+     * Ensure shared subscriptions can only be managed by organization admins.
+     */
+    protected function assertCanManageBilling(User $user, Subscription $subscription): void
+    {
+        if ($subscription->organization_id === null || $user->organization_id === null) {
+            abort_unless($subscription->user_id === $user->id, 403, 'Only the subscription owner can manage billing.');
+
+            return;
+        }
+
+        abort_unless(
+            $subscription->organization_id === $user->organization_id
+                && $user->hasActiveMembership()
+                && $user->canManageOrganization(),
+            403,
+            'Only organization admins can manage billing.',
+        );
+    }
+
+    /**
+     * Reject local or incomplete rows before dispatching to a provider client.
+     */
+    protected function assertProviderSubscription(Subscription $subscription): void
+    {
+        $providerSubscriptionId = match ($subscription->gateway) {
+            BillingGateway::Paypal->value => $subscription->paypal_subscription_id,
+            BillingGateway::Paymongo->value => $subscription->paymongo_subscription_id,
+            BillingGateway::LemonSqueezy->value => $subscription->lemonsqueezy_subscription_id,
+            default => null,
+        };
+
+        abort_unless(
+            is_string($providerSubscriptionId) && $providerSubscriptionId !== '',
+            422,
+            'This subscription is not managed by a payment provider yet.',
+        );
+    }
+
+    /**
+     * Reconcile integrations against the subscription's billing owner.
+     */
+    protected function syncSubscriptionEligibility(Subscription $subscription): void
+    {
+        $eligibility = app(IntegrationEligibility::class);
+
+        if ($subscription->organization_id !== null && $subscription->organization !== null) {
+            $eligibility->syncOrganization($subscription->organization);
+
+            return;
+        }
+
+        if ($subscription->user !== null) {
+            $eligibility->syncUser($subscription->user);
+        }
+    }
+
+    /**
+     * Keep provider outages from surfacing as framework 500 pages to the SPA.
+     */
+    protected function providerUnavailableResponse(): JsonResponse
+    {
         return response()->json([
-            'data' => (new SubscriptionResource($subscription->fresh()->load('plan')))->resolve(),
-        ]);
+            'message' => 'The payment provider is temporarily unavailable. Please try again.',
+        ], 502);
     }
 
     /**
@@ -221,10 +461,16 @@ class SubscriptionController extends Controller
         ]);
 
         $user = $request->user();
+        $organization = $user->organization;
 
+        abort_unless(
+            $organization !== null,
+            422,
+            'Seat management is only available for organization subscriptions.',
+        );
         abort_unless($user->hasActiveMembership(), 403);
 
-        $subscription = $this->seats->addSeats($user->organization, $user, (int) $validated['quantity']);
+        $subscription = $this->seats->addSeats($organization, $user, (int) $validated['quantity']);
 
         return response()->json([
             'data' => (new SubscriptionResource($subscription->load('plan')))->resolve(),
@@ -243,10 +489,16 @@ class SubscriptionController extends Controller
         ]);
 
         $user = $request->user();
+        $organization = $user->organization;
 
+        abort_unless(
+            $organization !== null,
+            422,
+            'Seat management is only available for organization subscriptions.',
+        );
         abort_unless($user->hasActiveMembership(), 403);
 
-        $subscription = $this->seats->removeSeats($user->organization, $user, (int) $validated['quantity']);
+        $subscription = $this->seats->removeSeats($organization, $user, (int) $validated['quantity']);
 
         return response()->json([
             'data' => (new SubscriptionResource($subscription->load('plan')))->resolve(),
@@ -336,6 +588,7 @@ class SubscriptionController extends Controller
         $subscription = Subscription::query()
             ->where('lemonsqueezy_subscription_id', $lsSubscriptionId)
             ->first();
+        $created = false;
 
         if ($subscription === null) {
             $subscription = $this->createLemonSqueezySubscriptionFromWebhook($payload);
@@ -343,17 +596,24 @@ class SubscriptionController extends Controller
             if ($subscription === null) {
                 return;
             }
+
+            $created = true;
         }
 
         $localStatus = $this->mapLemonSqueezyStatus($status);
 
         if ($localStatus !== null) {
+            $statusChanged = $subscription->status !== $localStatus;
             $subscription->update([
                 'status' => $localStatus,
                 'current_period_start' => $payload['created_at'] ?? $subscription->current_period_start,
                 'current_period_end' => $payload['renews_at'] ?? $subscription->current_period_end,
                 'cancelled_at' => $payload['cancelled_at'] ?? ($localStatus === Subscription::STATUS_CANCELLED ? now() : $subscription->cancelled_at),
             ]);
+
+            if ($created || $statusChanged) {
+                $this->syncSubscriptionEligibility($subscription->fresh());
+            }
         }
     }
 
@@ -372,6 +632,7 @@ class SubscriptionController extends Controller
         $subscription = Subscription::query()
             ->where('lemonsqueezy_subscription_id', $lsSubscriptionId)
             ->first();
+        $created = false;
 
         if ($subscription === null) {
             $subscription = $this->createLemonSqueezySubscriptionFromWebhook($payload);
@@ -379,14 +640,21 @@ class SubscriptionController extends Controller
             if ($subscription === null) {
                 return;
             }
+
+            $created = true;
         }
 
+        $statusChanged = $subscription->status !== Subscription::STATUS_ACTIVE;
         $subscription->update([
             'status' => Subscription::STATUS_ACTIVE,
             'current_period_start' => $payload['created_at'] ?? now(),
             'current_period_end' => $payload['renews_at'] ?? $this->periodEnd($subscription),
             'cancelled_at' => null,
         ]);
+
+        if ($created || $statusChanged) {
+            $this->syncSubscriptionEligibility($subscription->fresh());
+        }
     }
 
     /**
@@ -530,12 +798,17 @@ class SubscriptionController extends Controller
             ? now()->addYear()->endOfMonth()
             : now()->addMonth()->endOfMonth();
 
+        $statusChanged = $subscription->status !== Subscription::STATUS_ACTIVE;
         $subscription->update([
             'status' => Subscription::STATUS_ACTIVE,
             'current_period_start' => now()->startOfDay(),
             'current_period_end' => $periodEnd,
             'cancelled_at' => null,
         ]);
+
+        if ($statusChanged) {
+            $this->syncSubscriptionEligibility($subscription->fresh());
+        }
     }
 
     /**
@@ -564,7 +837,12 @@ class SubscriptionController extends Controller
         ];
 
         if (in_array($status, $allowed, true)) {
+            $statusChanged = $subscription->status !== $status;
             $subscription->update(['status' => $status]);
+
+            if ($statusChanged) {
+                $this->syncSubscriptionEligibility($subscription->fresh());
+            }
         }
     }
 }

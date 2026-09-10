@@ -15,12 +15,15 @@ use App\Enums\DocumentStatus;
 use App\Enums\MessageRole;
 use App\Jobs\CaptureCitedLegalPage;
 use App\Models\Advisory;
+use App\Models\AiUsage;
 use App\Models\Conversation;
 use App\Models\LegalCase;
 use App\Models\Message;
 use App\Models\SystemPrompt;
 use App\Models\Template;
 use App\Models\User;
+use App\Services\Billing\AiBudget;
+use App\Services\Billing\AiCosting;
 use App\Services\MatterMemory\MatterMemoryService;
 use App\Services\MatterMemory\MemoryWriteBackParser;
 use App\Services\Retrieval\RetrievalResult;
@@ -126,6 +129,110 @@ class ChatService
      * @var array<int, array{kind: string, message: string}>
      */
     protected array $toolNotices = [];
+
+    /**
+     * The spend reservation this turn settles against, set by the controller
+     * from the front-door reserve call. Request-scoped like everything else
+     * on this instance: never a singleton.
+     */
+    protected ?AiUsage $usageReservation = null;
+
+    /**
+     * Attach the spend reservation the current turn settles or releases.
+     */
+    public function setUsageReservation(?AiUsage $usage): void
+    {
+        $this->usageReservation = $usage;
+    }
+
+    /**
+     * Settle the turn's reservation with the measured cost of the work.
+     *
+     * Helper calls are modeled add-ons, not measured: whether web_search or
+     * draft_letter ran is observed on the wire, and each is costed at its
+     * estimate. The answering call itself is always measured from provider
+     * usage. Releasing (not settling) is for turns that persisted nothing —
+     * see the controller's failure paths.
+     */
+    protected function settleTurnUsage(
+        Lab|string $provider,
+        string $model,
+        array $tokenUsage,
+        ?int $latencyMs = null,
+    ): void {
+        $reservation = $this->usageReservation;
+        $this->usageReservation = null;
+
+        if ($reservation === null) {
+            return;
+        }
+
+        $providerValue = $provider instanceof Lab ? $provider->value : (string) $provider;
+        $actuals = [
+            'provider' => $providerValue,
+            'model' => $model,
+            'input_tokens' => (int) ($tokenUsage['input'] ?? 0),
+            'output_tokens' => (int) ($tokenUsage['output'] ?? 0),
+            'cache_read_tokens' => (int) ($tokenUsage['cache_read'] ?? 0),
+            'cache_write_tokens' => (int) ($tokenUsage['cache_write'] ?? 0),
+            'latency_ms' => $latencyMs,
+        ];
+
+        $cost = AiCosting::callCostUsd(
+            $actuals['provider'],
+            $actuals['model'],
+            $actuals['input_tokens'],
+            $actuals['output_tokens'],
+            $actuals['cache_read_tokens'],
+            $actuals['cache_write_tokens'],
+        );
+
+        if ($this->toolRuns()->completed('web_search')) {
+            $cost += AiCosting::estimateFor(AiUsage::OPERATION_RESEARCH)
+                + AiCosting::GROUNDING_USD_PER_QUERY;
+            $actuals['grounding_queries'] = 1;
+        }
+
+        if ($this->toolRuns()->completed('draft_letter')) {
+            $cost += AiCosting::estimateFor(AiUsage::OPERATION_LETTER);
+        }
+
+        $actuals['cost_usd'] = $cost;
+
+        try {
+            AiBudget::settle($reservation, $actuals);
+        } catch (\Throwable $exception) {
+            // Settlement must never fail the turn: the answer is already
+            // persisted and the ledger row stays reserved for the prune to
+            // release or an operator to reconcile.
+            Log::error('Failed to settle chat turn usage', [
+                'reservation_id' => $reservation->id,
+                'exception' => $exception->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Release the turn's reservation for work that persisted nothing.
+     */
+    public function releaseTurnUsage(bool $failed = false): void
+    {
+        $reservation = $this->usageReservation;
+        $this->usageReservation = null;
+
+        if ($reservation === null) {
+            return;
+        }
+
+        try {
+            AiBudget::release($reservation, $failed);
+        } catch (\Throwable $exception) {
+            Log::error('Failed to release chat turn usage', [
+                'reservation_id' => $reservation->id,
+                'exception' => $exception->getMessage(),
+            ]);
+        }
+    }
 
     public function __construct(
         private readonly RetrievalService $retrieval,
@@ -371,7 +478,7 @@ class ChatService
             model: $model,
         );
 
-        $stream->then(function (StreamedAgentResponse $response) use ($conversation, $retrieval, $provider, $assistantMessageId, $prompt, $draftingTemplate, $question): void {
+        $stream->then(function (StreamedAgentResponse $response) use ($conversation, $retrieval, $provider, $model, $assistantMessageId, $prompt, $draftingTemplate, $question): void {
             $this->persistCompletedResponse(
                 $conversation,
                 $response,
@@ -381,6 +488,7 @@ class ChatService
                 $prompt,
                 $question,
                 $draftingTemplate?->id,
+                $model,
             );
         });
 
@@ -404,6 +512,7 @@ class ChatService
         string $prompt,
         string $question,
         ?string $templateId = null,
+        ?string $model = null,
     ): void {
         try {
             Log::info('Chat stream completed', [
@@ -420,6 +529,7 @@ class ChatService
                 DraftingIntent::isIntakeSubmission($prompt),
                 DraftingIntent::matches($question),
                 $templateId,
+                $model,
             );
         } catch (\Throwable $exception) {
             Log::error('Failed to persist assistant response', [
@@ -1980,6 +2090,25 @@ PROMPT;
                 'metadata' => $metadata,
             ]);
 
+            // A partial reply still delivered value, but its token counts
+            // died with the stream — settle the pre-agreed hold rather than
+            // metering nothing or inventing measurements.
+            $reservation = $this->usageReservation;
+            $this->usageReservation = null;
+
+            if ($reservation !== null) {
+                try {
+                    AiBudget::settle($reservation, [
+                        'cost_usd' => AiCosting::estimateFor(AiUsage::OPERATION_CHAT),
+                    ]);
+                } catch (\Throwable $settleException) {
+                    Log::error('Failed to settle interrupted chat turn usage', [
+                        'reservation_id' => $reservation->id,
+                        'exception' => $settleException->getMessage(),
+                    ]);
+                }
+            }
+
             $this->lastAssistantMessageId = $message->id;
 
             Advisory::query()
@@ -2360,6 +2489,7 @@ PROMPT;
         bool $isIntakeSubmission = false,
         bool $isDraftingRequest = false,
         ?string $templateId = null,
+        ?string $model = null,
     ): void {
         $text = trim((string) $response->text);
 
@@ -2567,6 +2697,16 @@ PROMPT;
             'metadata' => $metadata,
         ]);
 
+        // The reply is durable now, so the turn's spend settles with it: the
+        // answering call measured from provider usage, helpers modeled from
+        // what the wire observed. See settleTurnUsage.
+        $this->settleTurnUsage(
+            $provider,
+            $model ?? $response->meta?->model ?? '',
+            $metadata['usage'] ?? [],
+            $activity['duration_ms'] ?? null,
+        );
+
         $this->lastAssistantMessageId = $assistantMessageId;
 
         // flag_advisories runs mid-stream, before this message exists, so the
@@ -2588,9 +2728,9 @@ PROMPT;
      * The provider-reported token usage for a completed turn.
      *
      * `input` is what was billed at the full rate; the cache figures stay
-     * separate because a read bills at a tenth of that and a write at 1.25x,
-     * so collapsing them into one number would hide whether the prompt cache
-     * did anything at all.
+     * separate because a read bills at a tenth of that and a one-hour write
+     * at 2x, so collapsing them into one number would hide whether the prompt
+     * cache did anything at all.
      *
      * @return array{input: int, output: int, cache_read: int, cache_write: int}
      */

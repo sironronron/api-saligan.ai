@@ -84,13 +84,15 @@ class PythonAiClient
         array $attachmentIds,
         bool $isDraftingRequest,
         bool $isIntakeSubmission,
+        ?string $reservationId = null,
     ): Response {
-        return $this->stream("/chat/{$conversationId}/stream", [
+        return $this->stream("/chat/{$conversationId}/stream", array_filter([
             'message' => $message,
             'attachment_ids' => $attachmentIds,
             'is_drafting_request' => $isDraftingRequest,
             'is_intake_submission' => $isIntakeSubmission,
-        ]);
+            'reservation_id' => $reservationId,
+        ], fn (mixed $value): bool => $value !== null));
     }
 
     /** @return Generator<int, string> */

@@ -72,8 +72,12 @@ class PaypalGateway implements PaymentGateway
         ];
     }
 
-    public function changePlan(Subscription $subscription, Plan $plan): void
-    {
+    public function changePlan(
+        Subscription $subscription,
+        Plan $plan,
+        string $successUrl,
+        string $cancelUrl,
+    ): ?array {
         $interval = $subscription->interval ?? Plan::INTERVAL_MONTHLY;
         $planId = $this->planId($plan, $interval);
 
@@ -83,7 +87,27 @@ class PaypalGateway implements PaymentGateway
             'This subscription is not active on PayPal yet.',
         );
 
-        $this->paypal->patchSubscriptionPlan($subscription->paypal_subscription_id, $planId);
+        $revision = $this->paypal->reviseSubscriptionPlan(
+            subscriptionId: $subscription->paypal_subscription_id,
+            planId: $planId,
+            returnUrl: $successUrl,
+            cancelUrl: $cancelUrl,
+        );
+
+        $approvalUrl = collect($revision['links'] ?? [])
+            ->firstWhere('rel', 'approve')['href'] ?? null;
+
+        abort_if(
+            ! is_string($approvalUrl),
+            422,
+            'The PayPal plan change could not be initialized. Please try again.',
+        );
+
+        return [
+            'checkout_url' => $approvalUrl,
+            'payment_intent_id' => null,
+            'public_key' => null,
+        ];
     }
 
     public function cancel(Subscription $subscription, ?string $reason = null): void

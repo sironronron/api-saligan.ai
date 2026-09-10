@@ -7,6 +7,7 @@ use App\Models\Organization;
 use App\Models\Subscription;
 use App\Models\User;
 use App\Support\PlanFeatures;
+use Illuminate\Support\Facades\DB;
 
 class SeatBillingService
 {
@@ -19,26 +20,28 @@ class SeatBillingService
         abort_if($quantity < 1, 422, 'Seat quantity must be at least 1.');
         abort_unless($organization->canManage($actor), 403, 'Only organization admins can change seat counts.');
 
-        // Buying a seat is gated; giving one back never is, so an organization
-        // that downgrades can still shrink to fit the plan it moved to.
-        PlanFeatures::ensureHas($actor, PlanFeatures::TEAMS);
+        return DB::transaction(function () use ($organization, $actor, $quantity): Subscription {
+            // Buying a seat is gated; giving one back never is, so an organization
+            // that downgrades can still shrink to fit the plan it moved to.
+            PlanFeatures::ensureHas($actor, PlanFeatures::TEAMS);
 
-        $subscription = $this->requireSubscription($organization);
+            $subscription = $this->requireSubscription($organization, true);
 
-        abort_if(
-            $subscription->plan?->seat_price === null,
-            422,
-            'Your plan does not sell additional seats. Talk to us about a Business plan sized to your team.',
-        );
+            abort_if(
+                $subscription->plan?->seat_price === null,
+                422,
+                'Your plan does not sell additional seats. Talk to us about a Business plan sized to your team.',
+            );
 
-        $seatsBefore = $subscription->seats_purchased;
-        $seatsAfter = $seatsBefore + $quantity;
+            $seatsBefore = $subscription->seats_purchased;
+            $seatsAfter = $seatsBefore + $quantity;
 
-        $subscription->update(['seats_purchased' => $seatsAfter]);
+            $subscription->update(['seats_purchased' => $seatsAfter]);
 
-        $this->log($subscription, BillingEvent::EVENT_SEAT_ADDED, $seatsBefore, $seatsAfter, $actor, $quantity);
+            $this->log($subscription, BillingEvent::EVENT_SEAT_ADDED, $seatsBefore, $seatsAfter, $actor, $quantity);
 
-        return $subscription->fresh();
+            return $subscription->fresh();
+        });
     }
 
     /**
@@ -50,20 +53,22 @@ class SeatBillingService
         abort_if($quantity < 1, 422, 'Seat quantity must be at least 1.');
         abort_unless($organization->canManage($actor), 403, 'Only organization admins can change seat counts.');
 
-        $subscription = $this->requireSubscription($organization);
+        return DB::transaction(function () use ($organization, $actor, $quantity): Subscription {
+            $subscription = $this->requireSubscription($organization, true);
 
-        $seatsBefore = $subscription->seats_purchased;
-        $seatsAfter = $seatsBefore - $quantity;
+            $seatsBefore = $subscription->seats_purchased;
+            $seatsAfter = $seatsBefore - $quantity;
 
-        $activeMembers = $organization->seatsUsed();
+            $activeMembers = $organization->seatsUsed();
 
-        abort_if($seatsAfter < $activeMembers, 422, "You cannot reduce seats below the {$activeMembers} active member(s) of your organization. Remove members first.");
+            abort_if($seatsAfter < $activeMembers, 422, "You cannot reduce seats below the {$activeMembers} active member(s) of your organization. Remove members first.");
 
-        $subscription->update(['seats_purchased' => $seatsAfter]);
+            $subscription->update(['seats_purchased' => $seatsAfter]);
 
-        $this->log($subscription, BillingEvent::EVENT_SEAT_REMOVED, $seatsBefore, $seatsAfter, $actor, $quantity);
+            $this->log($subscription, BillingEvent::EVENT_SEAT_REMOVED, $seatsBefore, $seatsAfter, $actor, $quantity);
 
-        return $subscription->fresh();
+            return $subscription->fresh();
+        });
     }
 
     /**
@@ -79,9 +84,15 @@ class SeatBillingService
      * The subscription governing the organization, or a clear error when the
      * organization is not on an active subscription.
      */
-    protected function requireSubscription(Organization $organization): Subscription
+    protected function requireSubscription(Organization $organization, bool $lock = false): Subscription
     {
-        $subscription = $organization->subscription;
+        $query = $organization->subscriptions()->latest('id');
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        $subscription = $query->first();
 
         abort_if($subscription === null, 422, 'Your organization does not have a subscription yet.');
 

@@ -37,7 +37,12 @@ jobs:
         working-directory: ${{ env.APP_DIR }}
         shell: bash
 
-      - name: 4. Put updated files to nginx
+      - name: 4. Rebuild Laravel caches
+        run: php artisan optimize
+        working-directory: ${{ env.APP_DIR }}
+        shell: bash
+
+      - name: 5. Put updated files to nginx
         run: |
           if [ "$APP_DIR" != "$WEBROOT" ]; then
             rsync -a --delete \
@@ -54,6 +59,6 @@ jobs:
         shell: bash
 
       # Requires passwordless sudo for the runner user.
-      - name: 5. Restart supervisor
+      - name: 6. Restart supervisor
         run: sudo supervisorctl restart all
         shell: bash

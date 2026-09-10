@@ -3,10 +3,13 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\AiUsage;
 use App\Models\Conversation;
 use App\Models\Document;
 use App\Models\Todo;
+use App\Models\User;
 use App\Services\Ai\PythonAiClient;
+use App\Services\Billing\AiBudget;
 use App\Services\Chat\AdvisoryRecorder;
 use App\Services\Chat\ChatService;
 use App\Services\Export\DocumentExportService;
@@ -16,7 +19,6 @@ use App\Support\ChatFrames;
 use App\Support\ChatStatus;
 use App\Support\ChoicePrompt;
 use App\Support\DraftingIntent;
-use App\Support\PlanLimits;
 use App\Support\WebCitationParser;
 use Closure;
 use Generator;
@@ -56,7 +58,18 @@ class ChatController extends Controller
             'attachment_ids.*' => ['uuid'],
         ]);
 
-        PlanLimits::consumeMessage($request->user());
+        // One spend reservation covers the whole turn on either engine: the
+        // answering call plus whatever helpers it fans out to. Helpers never
+        // reserve on their own, so a turn with three searches costs one hold
+        // and settles one measured total.
+        $reservation = AiBudget::reserve(
+            $request->user(),
+            AiUsage::OPERATION_CHAT,
+            context: [
+                'conversation_id' => $conversation->id,
+                'engine' => config('saligan.chat.engine'),
+            ],
+        );
 
         $message = $validated['message'];
 
@@ -66,21 +79,37 @@ class ChatController extends Controller
         $isIntakeSubmission = DraftingIntent::isIntakeSubmission($message);
 
         if (config('saligan.chat.engine') === 'python') {
-            $upstream = $this->pythonAi->streamChat(
-                $conversation->id,
-                $message,
-                $attachmentIds,
-                $isDraftingRequest,
-                $isIntakeSubmission,
-            );
+            try {
+                $upstream = $this->pythonAi->streamChat(
+                    $conversation->id,
+                    $message,
+                    $attachmentIds,
+                    $isDraftingRequest,
+                    $isIntakeSubmission,
+                    $reservation->id,
+                );
+            } catch (Throwable $exception) {
+                // The provider never started, so neither side persisted a
+                // message for this turn: release the hold. Failures later in
+                // the relay are deliberately not released here — the provider
+                // may already have persisted the reply through its callback
+                // and settled it, and releasing that would make completed
+                // work free.
+                AiBudget::release($reservation);
+
+                throw $exception;
+            }
             $frames = $this->pythonAi->body($upstream);
         } else {
+            $this->chatService->setUsageReservation($reservation);
             $frames = $this->chatFrames(
                 $conversation,
                 $message,
                 $isDraftingRequest,
                 $isIntakeSubmission,
                 $attachmentIds,
+                $request->user(),
+                $reservation,
             );
         }
 
@@ -157,7 +186,7 @@ class ChatController extends Controller
      * @param  array<int, string>  $attachmentIds
      * @return Generator<int, string>
      */
-    protected function chatFrames(Conversation $conversation, string $message, bool $isDraftingRequest, bool $isIntakeSubmission, array $attachmentIds = []): Generator
+    protected function chatFrames(Conversation $conversation, string $message, bool $isDraftingRequest, bool $isIntakeSubmission, array $attachmentIds = [], ?User $user = null, ?AiUsage $reservation = null): Generator
     {
         // Status frames raised by the chat service (e.g. "checking sources")
         // cannot be yielded from inside its callback, so they are queued and
@@ -653,6 +682,13 @@ class ChatController extends Controller
 
             if (! $this->chatService->persistInterruptedResponse($conversation, $lastText)) {
                 $this->chatService->discardCurrentUserMessage();
+
+                // Nothing was persisted, so the turn delivered nothing:
+                // release the hold rather than billing a cancelled request.
+                // (A partial persist settles inside persistInterruptedResponse.)
+                if ($reservation !== null) {
+                    AiBudget::release($reservation);
+                }
             }
 
             return;
@@ -666,8 +702,13 @@ class ChatController extends Controller
             if (! $this->chatService->persistInterruptedResponse($conversation, $lastText)) {
                 // A failure before any useful output keeps the existing retry
                 // contract: remove the attempted user turn so retrying it does
-                // not create a duplicate.
+                // not create a duplicate — and release the hold, since a turn
+                // that persisted nothing billed nothing worth keeping.
                 $this->chatService->discardCurrentUserMessage();
+
+                if ($reservation !== null) {
+                    AiBudget::release($reservation, failed: true);
+                }
             }
 
             $error = 'The AI provider could not complete the response. Please try again.';
