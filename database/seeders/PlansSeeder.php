@@ -13,7 +13,7 @@ class PlansSeeder extends Seeder
     /**
      * The paid ladder, and the reasoning behind every number on it.
      *
-     * Three self-serve tiers plus one contract tier, priced the way the
+     * Three self-serve tiers, priced the way the
      * solo-and-small-firm legal-AI market prices: one seat, one seat with the
      * best model, then a team bundle — with annual at exactly ten months
      * ("two months free") instead of a near-ten figure nobody can reproduce.
@@ -24,8 +24,8 @@ class PlansSeeder extends Seeder
      * costs depends on which model writes it — the base model costs roughly
      * half the frontier one at our measured token sizes (see EarningsModel).
      * Standard buys room on the base model; Pro buys the frontier model,
-     * deeper retrieval, and scan reading. Firm buys a shared team pool, and
-     * sells more seats at less than a Pro subscription each.
+     * deeper retrieval, and scan reading. Firm buys a shared team pool,
+     * includes the former Business services, and is available annually.
      *
      * Every tier is capped, never metered: allowances are prepaid and an
      * exhausted allowance refuses the turn rather than growing the bill, so no
@@ -55,20 +55,23 @@ class PlansSeeder extends Seeder
         $baseFeatures = [
             PlanFeatures::DRAFTING,
             PlanFeatures::EXPORTS,
+            PlanFeatures::PDF_DOCUMENTS,
             PlanFeatures::WEB_SEARCH,
         ];
 
         $plans = [
             [
-                // Seeded inactive so it never appears on the pricing page or in
-                // checkout — only {@see \App\Services\Billing\TrialRedeemer}
-                // reaches it.
+                // Seeded inactive so it never appears in paid pricing or
+                // checkout. The registration plan selector requests it
+                // explicitly, and only the automatic/code trial paths reach it.
                 'slug' => Plan::SLUG_TRIAL,
                 'name' => 'Free trial',
                 'price' => 0,
                 'price_annual' => 0,
                 'overage_price' => null,
-                'ai_budget_usd_cents' => 200,
+                // Standard is $5.15; the automatic trial receives 10%, rounded
+                // up to the next cent so the promise is never under-delivered.
+                'ai_budget_usd_cents' => 52,
                 'included_seats' => 1,
                 'seat_price' => null,
                 'sort_order' => 0,
@@ -82,10 +85,13 @@ class PlansSeeder extends Seeder
                     'documents_uploaded' => 12,
                     'messages_used' => 60,
                 ],
-                // Exactly Standard's capabilities. A trial that hides features
-                // is trialling a product nobody is being asked to buy — and
-                // like Standard, it is answered by the base model.
-                'features' => $baseFeatures,
+                // Free users can draft and export Word, but PDFs are a paid
+                // document capability and are refused at every file boundary.
+                'features' => [
+                    PlanFeatures::DRAFTING,
+                    PlanFeatures::EXPORTS,
+                    PlanFeatures::WEB_SEARCH,
+                ],
             ],
             [
                 'slug' => Plan::SLUG_STANDARD,
@@ -136,6 +142,7 @@ class PlansSeeder extends Seeder
                 'name' => 'Firm',
                 'price' => 699900,
                 'price_annual' => 6999000,
+                'annual_only' => true,
                 'overage_price' => null,
                 // 20x Standard's AI usage allowance: $103/mo shared across
                 // the workspace at the budgeting FX rate — one team pool,
@@ -160,43 +167,8 @@ class PlansSeeder extends Seeder
                     PlanFeatures::INTEGRATIONS,
                     PlanFeatures::TEAMS,
                     PlanFeatures::SUPPORT_24_7,
-                ],
-            ],
-            [
-                // Sold by conversation, not by card. Organizations at this size
-                // negotiate seats, allowance, and term, so the row carries no
-                // list price and no allowance of its own — the contract sets
-                // both, and `plan:business` writes them onto the subscription.
-                // Active so it is listed, `contact_sales` so checkout refuses
-                // it and the pricing page asks for a conversation instead.
-                'slug' => Plan::SLUG_BUSINESS,
-                'name' => 'Business',
-                'price' => 0,
-                'price_annual' => 0,
-                'overage_price' => null,
-                'included_seats' => 1,
-                // Seat terms are agreed, not listed, so there is no number to
-                // print — the same reason the row carries no price.
-                'seat_price' => null,
-                'sort_order' => 4,
-                'contact_sales' => true,
-                'limits' => [
-                    'active_cases' => null,
-                    'documents_uploaded' => null,
-                    'messages_used' => null,
-                ],
-                // Everything Firm has, plus what only a contract can carry: the
-                // account set up and the team trained by us.
-                'features' => [
-                    ...$baseFeatures,
-                    PlanFeatures::FRONTIER_MODEL,
-                    PlanFeatures::DEEP_RESEARCH,
-                    PlanFeatures::DOCUMENT_INTELLIGENCE,
-                    PlanFeatures::INTEGRATIONS,
-                    PlanFeatures::TEAMS,
                     PlanFeatures::GUIDED_SETUP,
                     PlanFeatures::TEAM_TRAINING,
-                    PlanFeatures::SUPPORT_24_7,
                 ],
             ],
         ];
@@ -206,7 +178,12 @@ class PlansSeeder extends Seeder
                 ['slug' => $plan['slug']],
                 // Union, not merge: a plan above that sets `is_active` itself
                 // keeps its own value.
-                $plan + ['currency' => 'PHP', 'interval' => Plan::INTERVAL_MONTHLY, 'is_active' => true],
+                $plan + [
+                    'currency' => 'PHP',
+                    'interval' => Plan::INTERVAL_MONTHLY,
+                    'annual_only' => false,
+                    'is_active' => true,
+                ],
             );
 
             // Nothing is ever charged for a free plan, so it needs no gateway
@@ -218,14 +195,15 @@ class PlansSeeder extends Seeder
     }
 
     /**
-     * Provision the matching PayMongo billing plans (monthly and annual) and
+     * Provision the matching PayMongo billing plans for the supported intervals and
      * persist their ids so a subscription can be created with just a
      * customer_id and plan_id.
      */
     protected function syncPayMongoPlan(Plan $plan): void
     {
-        $this->provisionPlan($plan, Plan::INTERVAL_MONTHLY);
-        $this->provisionPlan($plan, Plan::INTERVAL_ANNUAL);
+        foreach ($plan->supportedIntervals() as $interval) {
+            $this->provisionPlan($plan, $interval);
+        }
     }
 
     protected function provisionPlan(Plan $plan, string $interval): void

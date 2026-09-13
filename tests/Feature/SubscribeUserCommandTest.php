@@ -52,6 +52,19 @@ it('supports an annual interval', function () {
         ->and($subscription->current_period_end->toDateString())->toBe(now()->addYear()->toDateString());
 });
 
+it('rejects a monthly Firm grant', function () {
+    $user = User::factory()->create();
+    Plan::factory()->firm()->create();
+
+    $this->artisan('subscribe:user', [
+        'user' => $user->email,
+        '--plan' => Plan::SLUG_FIRM,
+        '--interval' => Plan::INTERVAL_MONTHLY,
+    ])->assertExitCode(1);
+
+    expect($user->fresh()->subscription)->toBeNull();
+});
+
 it('moves an existing subscription to the new plan', function () {
     $user = User::factory()->create();
     Plan::factory()->standard()->create();
@@ -84,6 +97,7 @@ it('grants the seats the plan bundles', function () {
     $this->artisan('subscribe:user', [
         'user' => $user->email,
         '--plan' => Plan::SLUG_FIRM,
+        '--interval' => Plan::INTERVAL_ANNUAL,
     ])->assertExitCode(0);
 
     expect($user->subscription->seats_purchased)->toBe(3)
@@ -105,6 +119,7 @@ it('raises an existing subscription to the new plan seats without dropping extra
     $this->artisan('subscribe:user', [
         'user' => $user->email,
         '--plan' => Plan::SLUG_FIRM,
+        '--interval' => Plan::INTERVAL_ANNUAL,
     ])->assertExitCode(0);
 
     expect($user->subscription->seats_purchased)->toBe(3);
@@ -115,6 +130,7 @@ it('raises an existing subscription to the new plan seats without dropping extra
     $this->artisan('subscribe:user', [
         'user' => $user->email,
         '--plan' => Plan::SLUG_FIRM,
+        '--interval' => Plan::INTERVAL_ANNUAL,
     ])->assertExitCode(0);
 
     expect($user->fresh()->subscription->seats_purchased)->toBe(5);

@@ -35,6 +35,37 @@ it('lists the active plans for a guest', function () {
         ->and($response->json('data.1.slug'))->toBe('pro');
 });
 
+it('includes the inactive free trial only when requested', function () {
+    $trial = Plan::factory()->trial()->create();
+
+    $this->getJson('/api/plans')
+        ->assertOk()
+        ->assertJsonMissing(['slug' => $trial->slug]);
+
+    $this->getJson('/api/plans?include_trial=1')
+        ->assertOk()
+        ->assertJsonPath('data.0.slug', Plan::SLUG_TRIAL)
+        ->assertJsonPath('data.0.contact_sales', false);
+});
+
+it('starts the automatic trial idempotently from the plan selector', function () {
+    Plan::factory()->trial()->create();
+    $user = User::factory()->create();
+
+    $this->signInAs($user)
+        ->postJson('/api/subscription/trial')
+        ->assertOk()
+        ->assertJsonPath('data.status', Subscription::STATUS_TRIALING)
+        ->assertJsonPath('data.plan.slug', Plan::SLUG_TRIAL)
+        ->assertJsonPath('data.trial.on_trial', true);
+
+    $this->postJson('/api/subscription/trial')
+        ->assertOk()
+        ->assertJsonPath('data.id', Subscription::where('user_id', $user->id)->value('id'));
+
+    expect(Subscription::where('user_id', $user->id)->count())->toBe(1);
+});
+
 it('provisions a first-time Supabase user without any subscription', function () {
     // There is no registration endpoint any more: the account is created in
     // Supabase and imported here the first time its token reaches the API.
@@ -220,41 +251,44 @@ it('rejects subscribing while an active subscription exists', function () {
         ->assertStatus(422);
 });
 
-it('refuses to check out a contact-sales plan', function () {
-    $business = Plan::factory()->business()->create();
-
-    $this->signInAs($this->user)
-        ->postJson('/api/subscription', ['plan_id' => $business->id])
-        ->assertStatus(422)
-        ->assertJsonPath('contact_sales', true);
-
-    // Nothing was created: a Business account is granted by `plan:business`
-    // once the contract is signed, never by the checkout route.
-    $this->assertDatabaseCount('subscriptions', 0);
-});
-
-it('refuses to switch an existing subscription onto a contact-sales plan', function () {
-    $business = Plan::factory()->business()->create();
-    Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
-
-    $this->signInAs($this->user)
-        ->postJson('/api/subscription/change-plan', ['plan_id' => $business->id])
-        ->assertStatus(422)
-        ->assertJsonPath('contact_sales', true);
-
-    expect($this->user->subscription->plan_id)->toBe($this->pro->id);
-});
-
-it('lists a contact-sales plan without quoting a price', function () {
-    Plan::factory()->business()->create();
+it('lists only the three paid tiers', function () {
+    $firm = Plan::factory()->firm()->create();
 
     $response = $this->getJson('/api/plans')->assertOk();
 
-    $business = collect($response->json('data'))->firstWhere('slug', Plan::SLUG_BUSINESS);
+    expect(collect($response->json('data'))->pluck('slug')->all())
+        ->toBe([Plan::SLUG_STANDARD, Plan::SLUG_PRO, Plan::SLUG_FIRM])
+        ->and($response->json('data.2.annual_only'))->toBeTrue()
+        ->and($firm->isSelfServe())->toBeTrue();
+});
 
-    expect($business['contact_sales'])->toBeTrue()
-        ->and($business['price_label'])->toBe('Custom')
-        ->and($business['price_annual_label'])->toBe('Custom');
+it('refuses to check out Firm monthly', function () {
+    $firm = Plan::factory()->firm()->create();
+
+    $this->signInAs($this->user)
+        ->postJson('/api/subscription', [
+            'plan_id' => $firm->id,
+            'billing_interval' => Plan::INTERVAL_MONTHLY,
+        ])
+        ->assertStatus(422)
+        ->assertJsonPath('message', 'The Firm plan is only available with annual billing.');
+
+    $this->assertDatabaseCount('subscriptions', 0);
+});
+
+it('refuses to switch an existing subscription onto Firm monthly', function () {
+    $firm = Plan::factory()->firm()->create();
+    Subscription::factory()->for($this->user)->create(['plan_id' => $this->pro->id]);
+
+    $this->signInAs($this->user)
+        ->postJson('/api/subscription/change-plan', [
+            'plan_id' => $firm->id,
+            'billing_interval' => Plan::INTERVAL_MONTHLY,
+        ])
+        ->assertStatus(422)
+        ->assertJsonPath('message', 'The Firm plan is only available with annual billing.');
+
+    expect($this->user->subscription->plan_id)->toBe($this->pro->id);
 });
 
 it('rejects starting a checkout while a payment is already pending', function () {
@@ -350,8 +384,38 @@ it('changes the subscription plan', function () {
     Http::assertSent(fn ($request) => str_contains($request->url(), '/v1/subscriptions/subs_test123/plan'));
 });
 
+it('changes a PayMongo subscription to annual billing', function () {
+    $this->standard->update(['paymongo_plan_id' => 'plan_standard']);
+    $this->pro->update([
+        'paymongo_plan_id' => 'plan_pro',
+        'paymongo_plan_id_annual' => 'plan_pro_annual',
+    ]);
+
+    $subscription = Subscription::factory()->for($this->user)->create([
+        'plan_id' => $this->standard->id,
+        'interval' => Plan::INTERVAL_MONTHLY,
+        'paymongo_subscription_id' => 'subs_test123',
+    ]);
+
+    Http::fake(['api.paymongo.com/*' => Http::response(['data' => []])]);
+
+    $response = $this->signInAs($this->user)
+        ->postJson('/api/subscription/change-plan', [
+            'plan_id' => $this->pro->id,
+            'billing_interval' => Plan::INTERVAL_ANNUAL,
+        ])
+        ->assertOk();
+
+    expect($response->json('data.plan.slug'))->toBe('pro')
+        ->and($response->json('data.interval'))->toBe(Plan::INTERVAL_ANNUAL)
+        ->and($subscription->fresh()->interval)->toBe(Plan::INTERVAL_ANNUAL);
+
+    Http::assertSent(fn ($request) => str_contains($request->url(), '/v1/subscriptions/subs_test123/plan')
+        && data_get($request->data(), 'data.attributes.plan_id') === 'plan_pro_annual');
+});
+
 it('hands over the new plan\'s included seats when upgrading', function () {
-    $firm = Plan::factory()->firm()->create(['paymongo_plan_id' => 'plan_firm']);
+    $firm = Plan::factory()->firm()->create(['paymongo_plan_id_annual' => 'plan_firm_annual']);
     $this->standard->update(['paymongo_plan_id' => 'plan_standard']);
 
     Subscription::factory()->for($this->user)->create([
@@ -363,7 +427,10 @@ it('hands over the new plan\'s included seats when upgrading', function () {
     Http::fake(['api.paymongo.com/*' => Http::response(['data' => []])]);
 
     $this->signInAs($this->user)
-        ->postJson('/api/subscription/change-plan', ['plan_id' => $firm->id])
+        ->postJson('/api/subscription/change-plan', [
+            'plan_id' => $firm->id,
+            'billing_interval' => Plan::INTERVAL_ANNUAL,
+        ])
         ->assertOk()
         ->assertJsonPath('data.seats.purchased', 3);
 });

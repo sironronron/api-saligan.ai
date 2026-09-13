@@ -9,7 +9,7 @@ use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 
-#[Signature('subscribe:user {user : User id or email} {--plan= : Plan slug (starter, pro, firm)} {--interval=monthly : Billing interval (monthly, annual)}')]
+#[Signature('subscribe:user {user : User id or email} {--plan= : Plan slug (standard, pro, firm)} {--interval=monthly : Billing interval (monthly, annual)}')]
 #[Description('Manually grant a user an active subscription on a specific plan')]
 class SubscribeUser extends Command
 {
@@ -35,6 +35,18 @@ class SubscribeUser extends Command
         }
 
         $interval = $this->option('interval') ?? Plan::INTERVAL_MONTHLY;
+
+        if (! in_array($interval, [Plan::INTERVAL_MONTHLY, Plan::INTERVAL_ANNUAL], true)) {
+            $this->error('Interval must be monthly or annual.');
+
+            return self::FAILURE;
+        }
+
+        if (! $plan->supportsInterval($interval)) {
+            $this->error("The {$plan->name} plan is only available with annual billing.");
+
+            return self::FAILURE;
+        }
 
         $subscription = $this->grantSubscription($user, $plan, $interval);
 

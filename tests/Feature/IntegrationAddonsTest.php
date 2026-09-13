@@ -126,7 +126,7 @@ it('refuses toggles and syncs below the add-on tiers', function () {
         ->assertStatus(402);
 });
 
-it('lets Pro, Firm, and Business plans start a connection', function () {
+it('lets Pro and Firm plans start a connection', function () {
     config()->set('integrations.google.client_id', 'google-client-id');
 
     Http::fake();

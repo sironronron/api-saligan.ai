@@ -60,6 +60,7 @@ class ExportController extends Controller
     public function pdf(Request $request, Message $message): StreamedResponse
     {
         PlanFeatures::ensureHas($request->user(), PlanFeatures::EXPORTS);
+        PlanFeatures::ensureHas($request->user(), PlanFeatures::PDF_DOCUMENTS);
 
         abort_unless($message->conversation->isAccessibleBy($request->user()), 403);
 

@@ -30,8 +30,11 @@ final class PlanFeatures
     /** Fill a template and generate a DOCX from it. Reading the library is free. */
     public const DRAFTING = 'drafting';
 
-    /** Export an answer as Word or PDF. */
+    /** Export an answer or draft as a Word document. */
     public const EXPORTS = 'exports';
+
+    /** Upload, extract, preview, and download PDF documents. */
+    public const PDF_DOCUMENTS = 'pdf_documents';
 
     /** Offer the chat model live web search on a turn. */
     public const WEB_SEARCH = 'web_search';
@@ -48,7 +51,7 @@ final class PlanFeatures
     /** Create an organization, invite members, and buy seats. */
     public const TEAMS = 'teams';
 
-    /** Connect Google Workspace and Microsoft SharePoint add-ons. */
+    /** Connect Google Drive and Microsoft SharePoint add-ons. */
     public const INTEGRATIONS = 'integrations';
 
     /**
@@ -83,8 +86,13 @@ final class PlanFeatures
                 'group' => self::GROUP_CAPABILITY,
             ],
             self::EXPORTS => [
-                'label' => 'Word & PDF export',
-                'description' => 'Export any answer or draft as a formatted Word or PDF file.',
+                'label' => 'Word document export',
+                'description' => 'Export any answer or draft as a formatted Word file.',
+                'group' => self::GROUP_CAPABILITY,
+            ],
+            self::PDF_DOCUMENTS => [
+                'label' => 'PDF access & export',
+                'description' => 'Upload, read, preview, download, and export PDF documents.',
                 'group' => self::GROUP_CAPABILITY,
             ],
             self::WEB_SEARCH => [
@@ -113,8 +121,8 @@ final class PlanFeatures
                 'group' => self::GROUP_CAPABILITY,
             ],
             self::INTEGRATIONS => [
-                'label' => 'Add-ons & integrations',
-                'description' => 'Connect Google Workspace and Microsoft SharePoint and choose exactly which capabilities each one gets.',
+                'label' => 'Google Drive & Microsoft SharePoint add-ons',
+                'description' => 'Connect Google Drive and Microsoft SharePoint to import, sync, and save matter documents.',
                 'group' => self::GROUP_CAPABILITY,
             ],
             self::SUPPORT_24_7 => [

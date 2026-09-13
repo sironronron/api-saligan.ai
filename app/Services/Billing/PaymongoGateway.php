@@ -117,10 +117,11 @@ class PaymongoGateway implements PaymentGateway
     public function changePlan(
         Subscription $subscription,
         Plan $plan,
+        string $interval,
         string $successUrl,
         string $cancelUrl,
     ): ?array {
-        $paymongoPlanId = $this->resolvePlanId($plan, $subscription->interval ?? Plan::INTERVAL_MONTHLY);
+        $paymongoPlanId = $this->resolvePlanId($plan, $interval);
 
         $this->paymongo->changeSubscriptionPlan($subscription->paymongo_subscription_id, $paymongoPlanId);
 

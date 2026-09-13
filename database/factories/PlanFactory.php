@@ -36,14 +36,15 @@ class PlanFactory extends Factory
                 'messages_used' => 200,
             ],
             'features' => PlanFeatures::capabilities(),
+            'annual_only' => false,
             'is_active' => true,
             'sort_order' => 0,
         ];
     }
 
     /**
-     * The free trial plan: a quarter of Standard's metered allowance, answered
-     * by the base model, and inactive so it is never sold.
+     * The free trial plan: 10% of Standard's metered allowance, answered by the
+     * base model, and inactive so it is only offered by the trial flow.
      */
     public function trial(): static
     {
@@ -53,7 +54,7 @@ class PlanFactory extends Factory
             'price' => 0,
             'price_annual' => 0,
             'overage_price' => null,
-            'ai_budget_usd_cents' => 200,
+            'ai_budget_usd_cents' => 52,
             'ai_usage_multiplier' => null,
             'included_seats' => 1,
             'seat_price' => null,
@@ -61,12 +62,13 @@ class PlanFactory extends Factory
             'is_active' => false,
             'limits' => [
                 'active_cases' => null,
-                'documents_uploaded' => 13,
-                'messages_used' => 63,
+                'documents_uploaded' => 12,
+                'messages_used' => 60,
             ],
             'features' => [
                 PlanFeatures::DRAFTING,
                 PlanFeatures::EXPORTS,
+                PlanFeatures::PDF_DOCUMENTS,
                 PlanFeatures::WEB_SEARCH,
             ],
         ]);
@@ -87,6 +89,7 @@ class PlanFactory extends Factory
             'ai_usage_multiplier' => 1,
             'included_seats' => 1,
             'seat_price' => null,
+            'annual_only' => false,
             'sort_order' => 1,
             'limits' => [
                 'active_cases' => null,
@@ -116,6 +119,7 @@ class PlanFactory extends Factory
             'ai_usage_multiplier' => 5,
             'included_seats' => 1,
             'seat_price' => null,
+            'annual_only' => false,
             'sort_order' => 2,
             'limits' => [
                 'active_cases' => null,
@@ -125,6 +129,7 @@ class PlanFactory extends Factory
             'features' => [
                 PlanFeatures::DRAFTING,
                 PlanFeatures::EXPORTS,
+                PlanFeatures::PDF_DOCUMENTS,
                 PlanFeatures::WEB_SEARCH,
                 PlanFeatures::FRONTIER_MODEL,
                 PlanFeatures::DEEP_RESEARCH,
@@ -142,13 +147,14 @@ class PlanFactory extends Factory
         return $this->state(fn (array $attributes) => [
             'slug' => Plan::SLUG_FIRM,
             'name' => 'Firm',
-            'price' => 1100000,
-            'price_annual' => 11000000,
+            'price' => 699900,
+            'price_annual' => 6999000,
             'overage_price' => null,
             'ai_budget_usd_cents' => 10300,
             'ai_usage_multiplier' => 20,
             'included_seats' => 3,
-            'seat_price' => 320000,
+            'seat_price' => 199900,
+            'annual_only' => true,
             'sort_order' => 3,
             'limits' => [
                 'active_cases' => null,
@@ -158,6 +164,7 @@ class PlanFactory extends Factory
             'features' => [
                 PlanFeatures::DRAFTING,
                 PlanFeatures::EXPORTS,
+                PlanFeatures::PDF_DOCUMENTS,
                 PlanFeatures::WEB_SEARCH,
                 PlanFeatures::FRONTIER_MODEL,
                 PlanFeatures::DEEP_RESEARCH,
@@ -165,43 +172,8 @@ class PlanFactory extends Factory
                 PlanFeatures::INTEGRATIONS,
                 PlanFeatures::TEAMS,
                 PlanFeatures::SUPPORT_24_7,
-            ],
-        ]);
-    }
-
-    /**
-     * The Business plan: contract-priced, so it carries no list price, no
-     * allowance, and no seat price, and is never reachable through checkout.
-     */
-    public function business(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'slug' => Plan::SLUG_BUSINESS,
-            'name' => 'Business',
-            'price' => 0,
-            'price_annual' => 0,
-            'overage_price' => null,
-            'included_seats' => 1,
-            'seat_price' => null,
-            'sort_order' => 4,
-            'contact_sales' => true,
-            'limits' => [
-                'active_cases' => null,
-                'documents_uploaded' => null,
-                'messages_used' => null,
-            ],
-            'features' => [
-                PlanFeatures::DRAFTING,
-                PlanFeatures::EXPORTS,
-                PlanFeatures::WEB_SEARCH,
-                PlanFeatures::FRONTIER_MODEL,
-                PlanFeatures::DEEP_RESEARCH,
-                PlanFeatures::DOCUMENT_INTELLIGENCE,
-                PlanFeatures::INTEGRATIONS,
-                PlanFeatures::TEAMS,
                 PlanFeatures::GUIDED_SETUP,
                 PlanFeatures::TEAM_TRAINING,
-                PlanFeatures::SUPPORT_24_7,
             ],
         ]);
     }

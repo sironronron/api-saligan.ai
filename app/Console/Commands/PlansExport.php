@@ -25,6 +25,7 @@ class PlansExport extends Command
     {
         $plans = Plan::query()
             ->where('is_active', true)
+            ->where('slug', '!=', Plan::SLUG_BUSINESS)
             ->orderBy('sort_order')
             ->get()
             ->map(fn (Plan $plan): array => [
@@ -44,6 +45,7 @@ class PlansExport extends Command
                 'limits' => $plan->limits,
                 'features' => $plan->features,
                 'contact_sales' => (bool) $plan->contact_sales,
+                'annual_only' => (bool) $plan->annual_only,
             ]);
 
         if ($plans->isEmpty()) {

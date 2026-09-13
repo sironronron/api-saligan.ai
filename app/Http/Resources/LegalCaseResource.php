@@ -36,6 +36,8 @@ class LegalCaseResource extends JsonResource
             'status' => $this->status,
             'closed_at' => $this->closed_at,
             'description' => $this->description,
+            'digest' => $this->digest,
+            'digest_generated_at' => $this->digest_generated_at,
             'related_parties' => $this->related_parties ?? [],
             'due_date' => $this->due_date?->toDateString(),
             'tags' => $this->tags ?? [],

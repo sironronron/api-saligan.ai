@@ -65,7 +65,7 @@ class IntegrationManager
             'eligible' => $eligible,
             'upgrade_message' => $eligible
                 ? null
-                : 'Add-ons are available on the Pro, Firm, and Business plans.',
+                : 'Add-ons are available on the Pro and Firm plans.',
             'providers' => $providers,
             'admin' => $this->adminPayload($user),
         ];

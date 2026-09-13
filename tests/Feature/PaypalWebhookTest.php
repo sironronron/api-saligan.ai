@@ -124,6 +124,7 @@ it('reactivates the local subscription after a PayPal renewal sale', function ()
 it('applies the revised PayPal plan only after the webhook arrives', function () {
     $pro = Plan::factory()->pro()->create();
     config(['paypal.plans.pro.monthly' => 'P-PRO-MONTHLY']);
+    $this->subscription->update(['pending_plan_id' => $pro->id]);
     fakePaypalWebhookVerification();
 
     $payload = paypalSubscriptionEvent('BILLING.SUBSCRIPTION.UPDATED', [
@@ -135,6 +136,54 @@ it('applies the revised PayPal plan only after the webhook arrives', function ()
 
     expect($this->subscription->fresh()->plan_id)->toBe($pro->id)
         ->and($this->subscription->fresh()->interval)->toBe('monthly');
+});
+
+it('applies an annual PayPal revision and clears its pending interval', function () {
+    $pro = Plan::factory()->pro()->create();
+    config(['paypal.plans.pro.annual' => 'P-PRO-ANNUAL']);
+    $this->subscription->update([
+        'status' => Subscription::STATUS_ACTIVE,
+        'pending_plan_id' => $pro->id,
+        'pending_plan_interval' => Plan::INTERVAL_ANNUAL,
+    ]);
+    fakePaypalWebhookVerification();
+
+    $payload = paypalSubscriptionEvent('BILLING.SUBSCRIPTION.UPDATED', [
+        'status' => 'ACTIVE',
+        'plan_id' => 'P-PRO-ANNUAL',
+    ]);
+
+    $this->postJson('/api/paypal/webhook', $payload, paypalWebhookHeaders())->assertOk();
+
+    expect($this->subscription->fresh()->plan_id)->toBe($pro->id)
+        ->and($this->subscription->fresh()->interval)->toBe(Plan::INTERVAL_ANNUAL)
+        ->and($this->subscription->fresh()->pending_plan_id)->toBeNull()
+        ->and($this->subscription->fresh()->pending_plan_interval)->toBeNull();
+});
+
+it('does not clear an annual same-plan revision for a stale monthly webhook', function () {
+    config([
+        'paypal.plans.standard.monthly' => 'P-STANDARD-MONTHLY',
+        'paypal.plans.standard.annual' => 'P-STANDARD-ANNUAL',
+    ]);
+    $this->subscription->update([
+        'status' => Subscription::STATUS_ACTIVE,
+        'pending_plan_id' => $this->plan->id,
+        'pending_plan_interval' => Plan::INTERVAL_ANNUAL,
+    ]);
+    fakePaypalWebhookVerification();
+
+    $payload = paypalSubscriptionEvent('BILLING.SUBSCRIPTION.UPDATED', [
+        'status' => 'ACTIVE',
+        'plan_id' => 'P-STANDARD-MONTHLY',
+    ]);
+
+    $this->postJson('/api/paypal/webhook', $payload, paypalWebhookHeaders())->assertOk();
+
+    expect($this->subscription->fresh()->plan_id)->toBe($this->plan->id)
+        ->and($this->subscription->fresh()->interval)->toBe(Plan::INTERVAL_MONTHLY)
+        ->and($this->subscription->fresh()->pending_plan_id)->toBe($this->plan->id)
+        ->and($this->subscription->fresh()->pending_plan_interval)->toBe(Plan::INTERVAL_ANNUAL);
 });
 
 it('ignores an older PayPal webhook after a newer event was processed', function () {
@@ -159,6 +208,7 @@ it('syncs entitlements for the subscription organization', function () {
     $this->user->update(['organization_id' => $differentOrganization->id]);
     $pro = Plan::factory()->pro()->create();
     config(['paypal.plans.pro.monthly' => 'P-PRO-MONTHLY']);
+    $this->subscription->update(['pending_plan_id' => $pro->id]);
 
     $this->mock(IntegrationEligibility::class, function ($mock) use ($subscriptionOrganization) {
         $mock->shouldReceive('syncOrganization')->once()->with(
@@ -185,6 +235,7 @@ it('syncs entitlements for the subscription organization', function () {
 it('retries a PayPal webhook when entitlement reconciliation fails', function () {
     $pro = Plan::factory()->pro()->create();
     config(['paypal.plans.pro.monthly' => 'P-PRO-MONTHLY']);
+    $this->subscription->update(['pending_plan_id' => $pro->id]);
     $attempts = 0;
 
     $this->mock(IntegrationEligibility::class, function ($mock) use (&$attempts) {

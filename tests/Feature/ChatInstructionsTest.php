@@ -68,6 +68,11 @@ beforeEach(function () {
             return $this->buildInstructions($retrieval, $provider, null, null, null, null, $user);
         }
 
+        public function instructionsForModel(RetrievalResult $retrieval, Lab|string $provider, string $model, ?User $user = null): string
+        {
+            return $this->buildInstructions($retrieval, $provider, model: $model, user: $user);
+        }
+
         /**
          * @param  array<int, string>  $toolCalls  Tools the model called on the
          *                                         turn, by name.
@@ -193,6 +198,37 @@ it('keeps the missing-information rules when no context is retrieved and there i
         ->toContain('RETRIEVED CONTEXT: No relevant material was retrieved');
 });
 
+it('gives the model authoritative metadata for serving-model questions', function () {
+    config()->set('saligan.chat.effort', 'medium');
+
+    $instructions = $this->chat->instructionsForModel(
+        new RetrievalResult(collect(), collect()),
+        Lab::Anthropic,
+        'claude-sonnet-5',
+        User::factory()->create(),
+    );
+
+    expect($instructions)
+        ->toContain('Provider: Anthropic')
+        ->toContain('Model: claude-sonnet-5')
+        ->toContain('Variation: base')
+        ->toContain('Effort: medium')
+        ->toContain('Never infer serving metadata')
+        ->toContain('never claim access to private chain-of-thought');
+});
+
+it('does not claim Anthropic effort support for a Haiku turn', function () {
+    config()->set('saligan.chat.effort', 'medium');
+
+    $instructions = $this->chat->instructionsForModel(
+        new RetrievalResult(collect(), collect()),
+        Lab::Anthropic,
+        'claude-haiku-4-5',
+    );
+
+    expect($instructions)->toContain('Effort: not supported by this model');
+});
+
 it('instructs web search on a provider without one of its own when the search is delegated', function () {
     config()->set('saligan.web_search.enabled', true);
 
@@ -293,6 +329,35 @@ it('seeds matching standards citation and banking technical boundaries', functio
         ->toContain('edition and status')
         ->toContain('banking message formats, identifiers, and interoperability')
         ->toContain('ISO certification is not automatically legally required');
+});
+
+it('prefers the canonical Batayan prompt when a legacy alias is also active', function () {
+    SystemPrompt::query()->delete();
+    SystemPrompt::factory()->create([
+        'name' => 'saligan',
+        'content' => 'Legacy Saligan prompt.',
+        'version' => 99,
+    ]);
+    SystemPrompt::factory()->create([
+        'name' => 'batayan',
+        'content' => 'Canonical Batayan prompt.',
+        'version' => 1,
+    ]);
+
+    expect($this->chat->staticFor())->toStartWith('Canonical Batayan prompt.');
+});
+
+it('keeps search availability conditional and punctuation export-safe in the seeded prompt', function () {
+    SystemPrompt::query()->delete();
+    $this->seed(SystemPromptSeeder::class);
+    $persona = SystemPrompt::activeFor('batayan')->content;
+
+    expect($persona)
+        ->toContain('Search only when the current turn provides the web-search tool')
+        ->not->toContain('searching is always allowed')
+        ->toContain('Philippine law plus clearly bounded international technical standards')
+        ->toContain('ASCII hyphens consistently')
+        ->not->toContain('standard hyphen/en dash/em dash');
 });
 
 it('drafts directly with known facts and triggers intake only when facts are missing', function () {

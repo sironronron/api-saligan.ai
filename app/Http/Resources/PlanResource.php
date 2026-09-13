@@ -39,6 +39,7 @@ class PlanResource extends JsonResource
             // The client shows a "talk to us" card instead of a price and a
             // buy button when this is set; checkout refuses the plan either way.
             'contact_sales' => (bool) $this->contact_sales,
+            'annual_only' => (bool) $this->annual_only,
             'sort_order' => $this->sort_order,
         ];
     }

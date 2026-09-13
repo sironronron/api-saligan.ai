@@ -3,11 +3,13 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\BillingGateway;
+use App\Exceptions\AutomaticTrialException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\SubscriptionResource;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\User;
+use App\Services\Billing\AutomaticTrialProvisioner;
 use App\Services\Billing\BillingGatewayManager;
 use App\Services\Billing\LemonSqueezyClient;
 use App\Services\Billing\PaymongoClient;
@@ -28,6 +30,7 @@ class SubscriptionController extends Controller
         private readonly LemonSqueezyClient $lemonsqueezy,
         private readonly BillingGatewayManager $gateways,
         private readonly SeatBillingService $seats,
+        private readonly AutomaticTrialProvisioner $trialProvisioner,
     ) {
         //
     }
@@ -47,6 +50,7 @@ class SubscriptionController extends Controller
 
         $plan = Plan::findOrFail($validated['plan_id']);
         abort_unless($plan->is_active, 422);
+        $this->assertIntervalAvailable($plan, $billingInterval);
         $this->assertSelfServe($plan);
 
         $user = $request->user();
@@ -68,7 +72,7 @@ class SubscriptionController extends Controller
         try {
             $current = $user->fresh()->subscription;
 
-            if ($current?->isActive() === true) {
+            if ($current?->isActive() === true && ! $current->onTrial()) {
                 abort(response()->json([
                     'message' => 'You already have an active subscription. Change your plan instead.',
                 ], 422));
@@ -112,10 +116,43 @@ class SubscriptionController extends Controller
     }
 
     /**
-     * Refuse a contract-priced plan at checkout. Such a plan has no list
-     * price and no gateway plan behind it, so letting one through would
-     * either charge nothing or fail at the gateway; it is granted by the
-     * `plan:business` command once the contract is signed.
+     * Start the signed-in account's no-card trial from the plan selector.
+     */
+    public function startTrial(Request $request): JsonResponse
+    {
+        try {
+            $subscription = $this->trialProvisioner->provision($request->user());
+        } catch (AutomaticTrialException $exception) {
+            return response()->json(['message' => $exception->getMessage()], 422);
+        }
+
+        if ($subscription === null) {
+            return response()->json([
+                'message' => 'The free trial is not available right now. Please try again shortly.',
+            ], 503);
+        }
+
+        return response()->json([
+            'data' => new SubscriptionResource($subscription->load('plan')),
+        ]);
+    }
+
+    /**
+     * Refuse a plan that is not available at the requested billing interval.
+     */
+    protected function assertIntervalAvailable(Plan $plan, string $interval): void
+    {
+        abort_unless(
+            $plan->supportsInterval($interval),
+            422,
+            "The {$plan->name} plan is only available with annual billing.",
+        );
+    }
+
+    /**
+     * Refuse a contact-sales plan at checkout. Such a plan has no list price
+     * and no gateway plan behind it, so letting one through would either charge
+     * nothing or fail at the gateway.
      */
     protected function assertSelfServe(Plan $plan): void
     {
@@ -148,14 +185,18 @@ class SubscriptionController extends Controller
     {
         $validated = $request->validate([
             'plan_id' => ['required', 'uuid', 'exists:plans,id'],
+            'billing_interval' => ['sometimes', 'in:monthly,annual'],
         ]);
 
         $subscription = $request->user()->subscription;
         abort_unless($subscription !== null && $subscription->status !== Subscription::STATUS_CANCELLED, 422);
         $this->assertCanManageBilling($request->user(), $subscription);
 
+        $billingInterval = $validated['billing_interval'] ?? ($subscription->interval ?? Plan::INTERVAL_MONTHLY);
+
         $plan = Plan::findOrFail($validated['plan_id']);
         abort_unless($plan->is_active, 422);
+        $this->assertIntervalAvailable($plan, $billingInterval);
         $this->assertSelfServe($plan);
         $this->assertProviderSubscription($subscription);
 
@@ -172,7 +213,11 @@ class SubscriptionController extends Controller
             abort_unless($subscription->status !== Subscription::STATUS_CANCELLED, 422);
 
             if ($subscription->pending_plan_id !== null) {
+                $pendingInterval = $subscription->pending_plan_interval
+                    ?? ($subscription->interval ?? Plan::INTERVAL_MONTHLY);
+
                 if ($subscription->pending_plan_id === $plan->id
+                    && $pendingInterval === $billingInterval
                     && is_string($subscription->pending_plan_checkout_url)
                     && $subscription->pending_plan_checkout_url !== '') {
                     return $this->planChangeResponse($subscription, [
@@ -196,6 +241,7 @@ class SubscriptionController extends Controller
                 // distinguish this revision from an ordinary subscription update.
                 $subscription->update([
                     'pending_plan_id' => $plan->id,
+                    'pending_plan_interval' => $billingInterval,
                     'pending_plan_checkout_url' => null,
                 ]);
             }
@@ -204,6 +250,7 @@ class SubscriptionController extends Controller
                 $checkout = $gateway->changePlan(
                     subscription: $subscription,
                     plan: $plan,
+                    interval: $billingInterval,
                     successUrl: $paypalRevision
                         ? "{$frontendUrl}/settings/billing?paypal=plan-change-return&plan={$plan->id}"
                         : '',
@@ -229,7 +276,7 @@ class SubscriptionController extends Controller
 
                     $subscription = $latest->fresh();
                 } else {
-                    $this->applyPlanChange($subscription, $plan);
+                    $this->applyPlanChange($subscription, $plan, $billingInterval);
                     $this->syncSubscriptionEligibility($subscription->fresh());
                 }
 
@@ -238,6 +285,7 @@ class SubscriptionController extends Controller
                 if ($paypalRevision && $subscription->fresh()?->pending_plan_id === $plan->id) {
                     $subscription->update([
                         'pending_plan_id' => null,
+                        'pending_plan_interval' => null,
                         'pending_plan_checkout_url' => null,
                     ]);
                 }
@@ -283,6 +331,7 @@ class SubscriptionController extends Controller
             if ($subscription->pending_plan_id !== null) {
                 $subscription->update([
                     'pending_plan_id' => null,
+                    'pending_plan_interval' => null,
                     'pending_plan_checkout_url' => null,
                 ]);
             }
@@ -296,10 +345,11 @@ class SubscriptionController extends Controller
     /**
      * Apply the local portion of a plan change after the provider accepts it.
      */
-    protected function applyPlanChange(Subscription $subscription, Plan $plan): void
+    protected function applyPlanChange(Subscription $subscription, Plan $plan, string $interval): void
     {
         $subscription->update([
             'plan_id' => $plan->id,
+            'interval' => $interval,
             'price_per_seat' => $plan->seat_price ?? $plan->price,
             'seats_purchased' => max($subscription->seats_purchased, $plan->included_seats ?? 1),
         ]);
@@ -350,6 +400,7 @@ class SubscriptionController extends Controller
             $subscription->update([
                 'status' => Subscription::STATUS_CANCELLED,
                 'pending_plan_id' => null,
+                'pending_plan_interval' => null,
                 'pending_plan_checkout_url' => null,
                 'cancelled_at' => now(),
             ]);
@@ -388,7 +439,7 @@ class SubscriptionController extends Controller
      */
     protected function assertCanManageBilling(User $user, Subscription $subscription): void
     {
-        if ($subscription->organization_id === null || $user->organization_id === null) {
+        if ($subscription->organization_id === null) {
             abort_unless($subscription->user_id === $user->id, 403, 'Only the subscription owner can manage billing.');
 
             return;

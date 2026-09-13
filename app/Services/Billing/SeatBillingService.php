@@ -30,7 +30,7 @@ class SeatBillingService
             abort_if(
                 $subscription->plan?->seat_price === null,
                 422,
-                'Your plan does not sell additional seats. Talk to us about a Business plan sized to your team.',
+                'Your plan does not sell additional seats. Talk to us about a Firm plan sized to your team.',
             );
 
             $seatsBefore = $subscription->seats_purchased;

@@ -42,11 +42,12 @@ class SystemPromptController extends Controller
     }
 
     /**
-     * Activate a system prompt, deactivating other versions of the same name.
+     * Activate a system prompt, deactivating every version under the Batayan
+     * brand, including legacy Saligan rows.
      */
     public function activate(Request $request, SystemPrompt $systemPrompt): JsonResponse
     {
-        SystemPrompt::where('name', $systemPrompt->name)
+        SystemPrompt::whereIn('name', ['batayan', 'saligan'])
             ->whereKeyNot($systemPrompt->id)
             ->update(['is_active' => false]);
 

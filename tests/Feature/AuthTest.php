@@ -1,5 +1,7 @@
 <?php
 
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\User;
 use App\Services\Auth\SupabaseJwtService;
 use Illuminate\Support\Str;
@@ -32,6 +34,26 @@ it('imports a new Supabase user on first request', function () {
         'supabase_uid' => $uid,
         'is_admin' => false,
     ]);
+});
+
+it('does not start any subscription when it imports a new Supabase user', function () {
+    // The trial starts only when the user picks it on /choose-plan
+    // (POST /api/subscription/trial). Importing must leave the account
+    // subscription-less even when the trial plan exists, or the new user
+    // skips the plan selector straight to the dashboard.
+    Plan::factory()->trial()->create();
+    $uid = (string) Str::uuid();
+
+    $token = app(SupabaseJwtService::class)->mintToken($uid, 'trial@example.com');
+
+    $this->withHeader('Authorization', 'Bearer '.$token)
+        ->getJson('/api/user')
+        ->assertSuccessful();
+
+    $user = User::where('supabase_uid', $uid)->firstOrFail();
+
+    expect($user->subscription)->toBeNull()
+        ->and(Subscription::where('user_id', $user->id)->count())->toBe(0);
 });
 
 it('does not allow importing the admin flag from token claims', function () {

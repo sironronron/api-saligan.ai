@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\MessageRole;
+use App\Services\Cases\CaseDigestService;
 use Database\Factories\LegalCaseFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Builder;
@@ -26,6 +27,9 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
     'closed_at',
     'retention_status',
     'description',
+    'digest',
+    'digest_generated_at',
+    'digest_source_hash',
     'related_parties',
     'due_date',
     'deadline_reminded_at',
@@ -45,6 +49,20 @@ class LegalCase extends Model
      * The table associated with the model.
      */
     protected $table = 'cases';
+
+    protected static function booted(): void
+    {
+        static::saved(function (LegalCase $case): void {
+            $digestFields = ['digest', 'digest_generated_at', 'digest_source_hash'];
+            $changed = array_keys($case->getChanges());
+
+            if ($changed !== [] && count(array_diff($changed, $digestFields)) === 0) {
+                return;
+            }
+
+            app(CaseDigestService::class)->queue($case);
+        });
+    }
 
     /**
      * Retention status options for matter memory governance.
@@ -66,6 +84,7 @@ class LegalCase extends Model
         return [
             'related_parties' => 'array',
             'tags' => 'array',
+            'digest_generated_at' => 'datetime',
             'due_date' => 'date',
             'deadline_reminded_at' => 'datetime',
             'deadline_reminded_due_date' => 'date',

@@ -188,3 +188,21 @@ it('activates a system prompt and deactivates its peers', function () {
     expect($old->fresh()->is_active)->toBeFalse()
         ->and($new->fresh()->is_active)->toBeTrue();
 });
+
+it('deactivates legacy prompt aliases when activating the canonical Batayan prompt', function () {
+    $legacy = SystemPrompt::factory()->create([
+        'name' => 'saligan',
+        'is_active' => true,
+    ]);
+    $canonical = SystemPrompt::factory()->create([
+        'name' => 'batayan',
+        'is_active' => false,
+    ]);
+
+    $this->signInAs($this->admin)
+        ->postJson("/api/admin/system-prompts/{$canonical->id}/activate")
+        ->assertOk();
+
+    expect($legacy->fresh()->is_active)->toBeFalse()
+        ->and($canonical->fresh()->is_active)->toBeTrue();
+});

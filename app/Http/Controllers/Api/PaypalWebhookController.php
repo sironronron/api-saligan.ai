@@ -148,16 +148,26 @@ class PaypalWebhookController extends Controller
 
             $plan = $this->planFor($resource['plan_id'] ?? null);
 
-            $planChangeMatchesPending = $plan !== null && $subscription->pending_plan_id === $plan['id'];
+            $planChangeMatchesPending = $plan !== null
+                && $subscription->pending_plan_id === $plan['id']
+                && ($subscription->pending_plan_interval === null
+                    || $subscription->pending_plan_interval === $plan['interval']);
             $providerPlanMatchesLocal = $plan !== null
                 && $subscription->plan_id === $plan['id']
                 && $subscription->interval === $plan['interval'];
+
+            // Once a revision is marked pending, only that exact plan and
+            // interval may consume the marker. A webhook for the current
+            // subscription can arrive while the revision is still in flight.
+            $planMatchesExpectedState = $subscription->pending_plan_id !== null
+                ? $planChangeMatchesPending
+                : $providerPlanMatchesLocal;
 
             // A cleared PayPal revision can still deliver its old webhook after
             // the user cancelled the approval flow. Only apply a plan that was
             // already local or explicitly awaiting approval; never let a stale
             // provider callback resurrect a cancelled local change.
-            if (($planChangeMatchesPending || $providerPlanMatchesLocal) && ! $approvalPending) {
+            if ($planMatchesExpectedState && ! $approvalPending) {
                 $planChanged = $subscription->plan_id !== $plan['id']
                     || $subscription->interval !== $plan['interval'];
 
@@ -171,6 +181,7 @@ class PaypalWebhookController extends Controller
 
                 if ($subscription->pending_plan_id === $plan['id']) {
                     $updates['pending_plan_id'] = null;
+                    $updates['pending_plan_interval'] = null;
                     $updates['pending_plan_checkout_url'] = null;
                 }
             }

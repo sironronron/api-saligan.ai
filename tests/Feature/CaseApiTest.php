@@ -26,7 +26,7 @@ it('creates a case from the intake form with an auto reference and conversation'
         'priority' => 'high',
         'description' => 'Tenant failed to pay three months of rent.',
         'related_parties' => ['Juan Dela Cruz (tenant)'],
-        'due_date' => '2026-09-01',
+        'due_date' => now()->addDays(7)->toDateString(),
         'tags' => ['rent', 'collections'],
     ])->assertCreated();
 
@@ -43,6 +43,38 @@ it('validates required intake fields', function () {
         ->postJson('/api/cases', ['title' => 'Missing type and status'])
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['case_type', 'status']);
+});
+
+it('rejects past due dates when creating or updating a case', function () {
+    $past = now()->subDay()->toDateString();
+
+    $this->signInAs($this->user)
+        ->postJson('/api/cases', [
+            'title' => 'Past deadline',
+            'case_type' => 'legal',
+            'status' => 'open',
+            'due_date' => $past,
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['due_date']);
+
+    $case = LegalCase::factory()->for($this->user)->create();
+
+    $this->signInAs($this->user)
+        ->patchJson("/api/cases/{$case->id}", ['due_date' => $past])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['due_date']);
+});
+
+it('allows editing an existing case without changing its past due date', function () {
+    $case = LegalCase::factory()->for($this->user)->create([
+        'due_date' => now()->subDay()->toDateString(),
+    ]);
+
+    $this->signInAs($this->user)
+        ->patchJson("/api/cases/{$case->id}", ['title' => 'Updated overdue case'])
+        ->assertOk()
+        ->assertJsonPath('data.title', 'Updated overdue case');
 });
 
 it('accepts an explicit reference', function () {

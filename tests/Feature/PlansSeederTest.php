@@ -10,7 +10,7 @@ beforeEach(function () {
     $this->seeder = new PlansSeeder;
 });
 
-it('provisions monthly and annual PayMongo plans and persists their ids', function () {
+it('provisions the supported PayMongo plans and persists their ids', function () {
     Http::fake([
         'api.paymongo.com/v1/subscriptions/plans' => Http::response([
             'data' => ['id' => 'plan_provisioned_'.fake()->word(), 'type' => 'plan', 'attributes' => []],
@@ -21,14 +21,19 @@ it('provisions monthly and annual PayMongo plans and persists their ids', functi
 
     $this->seeder->run();
 
-    expect(Plan::count())->toBe(5);
+    expect(Plan::count())->toBe(4);
 
     foreach (Plan::where('price', '>', 0)->get() as $plan) {
-        expect($plan->paymongo_plan_id)->not->toBeNull()
-            ->and($plan->paymongo_plan_id_annual)->not->toBeNull();
+        expect($plan->paymongo_plan_id_annual)->not->toBeNull();
+
+        if ($plan->supportsInterval(Plan::INTERVAL_MONTHLY)) {
+            expect($plan->paymongo_plan_id)->not->toBeNull();
+        } else {
+            expect($plan->paymongo_plan_id)->toBeNull();
+        }
     }
 
-    Http::assertSentCount(6);
+    Http::assertSentCount(5);
 
     Http::assertSent(function ($request) {
         return str_contains($request->url(), '/v1/subscriptions/plans')
@@ -48,7 +53,7 @@ it('skips PayMongo provisioning when no secret key is configured', function () {
 
     $this->seeder->run();
 
-    expect(Plan::count())->toBe(5);
+    expect(Plan::count())->toBe(4);
 
     foreach (Plan::all() as $plan) {
         expect($plan->paymongo_plan_id)->toBeNull()
@@ -110,6 +115,7 @@ it('seeds the simplified pricing: round numbers, capped tiers, no overage', func
         ->and($pro->ai_usage_multiplier)->toBe(5)
         ->and($firm->price)->toBe(699900)
         ->and($firm->price_annual)->toBe(6999000)
+        ->and($firm->annual_only)->toBeTrue()
         ->and($firm->overage_price)->toBeNull()
         // One team pool, not three seat wallets: the spend allowance is
         // shared across the organization's active members.
@@ -118,12 +124,28 @@ it('seeds the simplified pricing: round numbers, capped tiers, no overage', func
         ->and($firm->ai_usage_multiplier)->toBe(20)
         ->and($firm->included_seats)->toBe(3)
         ->and($firm->seat_price)->toBe(199900)
+        ->and($firm->features)->toContain(PlanFeatures::GUIDED_SETUP, PlanFeatures::TEAM_TRAINING)
         // The single-seat tiers sell no seats at all, which is a different
         // statement from selling them for nothing.
         ->and($standard->included_seats)->toBe(1)
         ->and($standard->ai_usage_multiplier)->toBe(1)
         ->and($standard->seat_price)->toBeNull()
         ->and($pro->seat_price)->toBeNull();
+});
+
+it('includes Google Drive and SharePoint add-ons on Firm', function () {
+    Http::fake(['api.paymongo.com/*' => Http::response(['data' => []])]);
+    config(['paymongo.secret_key' => '']);
+
+    $this->seeder->run();
+
+    $firm = Plan::where('slug', Plan::SLUG_FIRM)->firstOrFail();
+
+    expect($firm->features)->toContain(PlanFeatures::INTEGRATIONS)
+        ->and(PlanFeatures::catalogue()[PlanFeatures::INTEGRATIONS]['label'])
+        ->toBe('Google Drive & Microsoft SharePoint add-ons')
+        ->and(PlanFeatures::catalogue()[PlanFeatures::INTEGRATIONS]['description'])
+        ->toContain('Google Drive', 'Microsoft SharePoint');
 });
 
 it('seeds the free trial plan small and unsold', function () {
@@ -135,70 +157,37 @@ it('seeds the free trial plan small and unsold', function () {
     $trial = Plan::where('slug', Plan::SLUG_TRIAL)->firstOrFail();
     $standard = Plan::where('slug', Plan::SLUG_STANDARD)->firstOrFail();
 
-    // Explicit small numbers, not a quarter of anything: paid tiers no
-    // longer carry count caps to quarter. The $2 spend cap binds about as
-    // early as the message cap on the base model.
+    // Explicit small numbers, not a quarter of anything: 10% of Standard's
+    // $5.15 allowance, rounded up to $0.52.
     expect($trial->limits['active_cases'])->toBeNull()
         ->and($trial->limits['documents_uploaded'])->toBe(12)
         ->and($trial->limits['messages_used'])->toBe(60)
-        ->and($trial->ai_budget_usd_cents)->toBe(200)
+        ->and($trial->ai_budget_usd_cents)->toBe(52)
         ->and($trial->ai_usage_multiplier)->toBeNull();
 
-    // Free and hidden: it must never reach the pricing page, checkout, or a
-    // gateway plan.
+    // Free and hidden from paid pricing: the registration selector requests it
+    // explicitly, while checkout and gateways still cannot sell it.
     expect($trial->price)->toBe(0)
         ->and($trial->is_active)->toBeFalse()
         ->and($trial->paymongo_plan_id)->toBeNull()
         ->and($trial->paymongo_plan_id_annual)->toBeNull()
-        ->and($trial->features)->toBe($standard->features);
+        ->and($trial->features)->not->toContain(PlanFeatures::PDF_DOCUMENTS)
+        ->and($standard->features)->toContain(PlanFeatures::PDF_DOCUMENTS);
 });
 
-it('seeds the Business plan as listed but not self-serve', function () {
-    Http::fake(['api.paymongo.com/*' => Http::response(['data' => []])]);
-    config(['paymongo.secret_key' => 'sk_test_123']);
-
-    $this->seeder->run();
-
-    $business = Plan::where('slug', Plan::SLUG_BUSINESS)->firstOrFail();
-
-    // Listed so it can be asked for, contact-only so it can never be bought,
-    // and with no gateway plan behind it because nothing is charged here.
-    expect($business->is_active)->toBeTrue()
-        ->and($business->contact_sales)->toBeTrue()
-        ->and($business->isSelfServe())->toBeFalse()
-        ->and($business->price)->toBe(0)
-        ->and($business->priceLabel())->toBe('Custom')
-        ->and($business->priceAnnualLabel())->toBe('Custom')
-        ->and($business->paymongo_plan_id)->toBeNull()
-        ->and($business->paymongo_plan_id_annual)->toBeNull()
-        ->and($business->limits['messages_used'])->toBeNull()
-        ->and($business->limits['active_cases'])->toBeNull()
-        ->and($business->limits['documents_uploaded'])->toBeNull();
-});
-
-it('sells the Business plan on what only a contract can carry', function () {
+it('puts the former Business services on Firm', function () {
     Http::fake(['api.paymongo.com/*' => Http::response(['data' => []])]);
     config(['paymongo.secret_key' => '']);
 
     $this->seeder->run();
 
-    $business = Plan::where('slug', Plan::SLUG_BUSINESS)->firstOrFail();
     $firm = Plan::where('slug', Plan::SLUG_FIRM)->firstOrFail();
 
-    expect($business->features)->toContain(
+    expect($firm->features)->toContain(
         PlanFeatures::GUIDED_SETUP,
         PlanFeatures::TEAM_TRAINING,
         PlanFeatures::SUPPORT_24_7,
-    )
-        // There is one support promise, and Firm already has it. What Business
-        // adds over Firm is the setup and training a contract pays for, not a
-        // better grade of the same thing.
-        ->and($firm->features)->toContain(PlanFeatures::SUPPORT_24_7);
-
-    // Everything the tier below it has, plus what only a contract can carry.
-    foreach ($firm->features as $feature) {
-        expect($business->features)->toContain($feature);
-    }
+    );
 });
 
 it('advertises only features that some code path enforces', function () {
@@ -226,7 +215,7 @@ it('gives every paid tier a capability the one below it lacks', function () {
 
     $this->seeder->run();
 
-    $ladder = Plan::whereIn('slug', [Plan::SLUG_STANDARD, Plan::SLUG_PRO, Plan::SLUG_FIRM, Plan::SLUG_BUSINESS])
+    $ladder = Plan::whereIn('slug', [Plan::SLUG_STANDARD, Plan::SLUG_PRO, Plan::SLUG_FIRM])
         ->orderBy('sort_order')
         ->get();
 
@@ -295,7 +284,7 @@ it('logs a warning and continues when PayMongo provisioning fails', function () 
 
     $this->seeder->run();
 
-    expect(Plan::count())->toBe(5);
+    expect(Plan::count())->toBe(4);
 
     foreach (Plan::all() as $plan) {
         expect($plan->paymongo_plan_id)->toBeNull();

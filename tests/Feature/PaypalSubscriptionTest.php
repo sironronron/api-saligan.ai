@@ -182,6 +182,48 @@ it('changes a PayPal subscription plan through PayPal', function () {
         && data_get($request->data(), 'application_context.cancel_url') === 'http://localhost:3000/settings/billing?paypal=plan-change-cancelled');
 });
 
+it('starts an annual PayPal plan change with the annual provider plan', function () {
+    $subscription = Subscription::factory()->for($this->user)->create([
+        'plan_id' => $this->standard->id,
+        'interval' => 'monthly',
+        'gateway' => Subscription::GATEWAY_PAYPAL,
+        'paypal_subscription_id' => 'I-SUB-123',
+    ]);
+
+    Http::fake([
+        'https://api-m.sandbox.paypal.com/v1/oauth2/token' => Http::response([
+            'access_token' => 'access-token',
+            'expires_in' => 3600,
+        ]),
+        'https://api-m.sandbox.paypal.com/v1/billing/subscriptions/I-SUB-123/revise' => Http::response([
+            'id' => 'I-SUB-123',
+            'status' => 'ACTIVE',
+            'links' => [
+                [
+                    'rel' => 'approve',
+                    'href' => 'https://www.sandbox.paypal.com/billing/subscriptions/revise?token=I-SUB-123',
+                ],
+            ],
+        ]),
+    ]);
+
+    $response = $this->signInAs($this->user)
+        ->postJson('/api/subscription/change-plan', [
+            'plan_id' => $this->pro->id,
+            'billing_interval' => 'annual',
+        ])
+        ->assertOk();
+
+    expect($response->json('data.interval'))->toBe('monthly')
+        ->and($response->json('data.pending_plan_id'))->toBe($this->pro->id)
+        ->and($response->json('data.pending_plan_interval'))->toBe('annual')
+        ->and($subscription->fresh()->interval)->toBe('monthly');
+
+    Http::assertSent(fn ($request) => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/v1/billing/subscriptions/I-SUB-123/revise')
+        && data_get($request->data(), 'plan_id') === 'P-PRO-ANNUAL');
+});
+
 it('prevents organization members from changing shared billing', function () {
     $organization = Organization::factory()->create();
     $member = User::factory()->memberOf($organization)->create();
@@ -197,6 +239,34 @@ it('prevents organization members from changing shared billing', function () {
         ->assertForbidden();
 
     expect($subscription->fresh()->plan_id)->toBe($this->standard->id);
+});
+
+it('prevents a removed organization admin from managing shared billing', function () {
+    $organization = Organization::factory()->create();
+    $formerAdmin = User::factory()->ownerOf($organization)->create();
+    $subscription = Subscription::factory()->for($formerAdmin)->create([
+        'organization_id' => $organization->id,
+        'plan_id' => $this->standard->id,
+        'gateway' => Subscription::GATEWAY_PAYPAL,
+        'paypal_subscription_id' => 'I-SUB-123',
+    ]);
+
+    $formerAdmin->update([
+        'organization_id' => null,
+        'org_role' => null,
+        'org_status' => null,
+    ]);
+
+    $this->signInAs($formerAdmin)
+        ->postJson('/api/subscription/change-plan', ['plan_id' => $this->pro->id])
+        ->assertForbidden();
+
+    $this->signInAs($formerAdmin)
+        ->postJson('/api/subscription/cancel')
+        ->assertForbidden();
+
+    expect($subscription->fresh()->status)->toBe(Subscription::STATUS_ACTIVE)
+        ->and($subscription->fresh()->plan_id)->toBe($this->standard->id);
 });
 
 it('does not expose a shared PayPal approval URL to organization members', function () {
@@ -510,6 +580,51 @@ it('cancels a PayPal subscription through PayPal', function () {
 
     Http::assertSent(fn ($request) => $request->method() === 'POST'
         && str_ends_with($request->url(), '/v1/billing/subscriptions/I-SUB-123/cancel'));
+});
+
+it('does not resurrect a locally cancelled subscription from a late active webhook', function () {
+    Subscription::factory()->for($this->user)->create([
+        'plan_id' => $this->standard->id,
+        'gateway' => Subscription::GATEWAY_PAYPAL,
+        'paypal_subscription_id' => 'I-SUB-123',
+    ]);
+
+    Http::fake([
+        'https://api-m.sandbox.paypal.com/v1/oauth2/token' => Http::response([
+            'access_token' => 'access-token',
+            'expires_in' => 3600,
+        ]),
+        'https://api-m.sandbox.paypal.com/v1/billing/subscriptions/I-SUB-123/cancel' => Http::response([], 204),
+    ]);
+
+    $this->signInAs($this->user)
+        ->postJson('/api/subscription/cancel')
+        ->assertOk();
+
+    Http::fake([
+        'https://api-m.sandbox.paypal.com/v1/notifications/verify-webhook-signature' => Http::response([
+            'verification_status' => 'SUCCESS',
+        ]),
+    ]);
+
+    $this->postJson('/api/paypal/webhook', [
+        'id' => 'WH-LATE-ACTIVE',
+        'event_type' => 'BILLING.SUBSCRIPTION.UPDATED',
+        'create_time' => '2026-08-26T12:00:00Z',
+        'resource' => [
+            'id' => 'I-SUB-123',
+            'status' => 'ACTIVE',
+            'plan_id' => 'P-STANDARD-MONTHLY',
+        ],
+    ], [
+        'Paypal-Auth-Algo' => 'SHA256withRSA',
+        'Paypal-Cert-Url' => 'https://api.paypal.com/cert.pem',
+        'Paypal-Transmission-Id' => 'transmission-id',
+        'Paypal-Transmission-Sig' => 'transmission-signature',
+        'Paypal-Transmission-Time' => '2026-08-26T12:00:00Z',
+    ])->assertOk();
+
+    expect($this->user->fresh()->subscription->status)->toBe(Subscription::STATUS_CANCELLED);
 });
 
 it('keeps existing PayMongo subscriptions on the PayMongo gateway', function () {
