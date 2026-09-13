@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\Cases\CaseDigestService;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -11,6 +12,25 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class Todo extends Model
 {
     use HasFactory, HasUuids;
+
+    protected static function booted(): void
+    {
+        static::saved(function (Todo $todo): void {
+            $case = $todo->conversation?->case;
+
+            if ($case !== null) {
+                app(CaseDigestService::class)->queue($case);
+            }
+        });
+
+        static::deleted(function (Todo $todo): void {
+            $case = $todo->conversation?->case;
+
+            if ($case !== null) {
+                app(CaseDigestService::class)->queue($case);
+            }
+        });
+    }
 
     /**
      * The statuses the column accepts. Declared here because it is a database

@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'user_id',
     'plan_id',
     'pending_plan_id',
+    'pending_plan_interval',
     'pending_plan_checkout_url',
     'interval',
     'gateway',

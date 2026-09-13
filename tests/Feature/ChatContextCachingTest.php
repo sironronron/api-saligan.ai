@@ -89,3 +89,31 @@ it('does not create a context cache when streaming on Ollama', function () {
 
     expect(geminiRequests())->toBeEmpty();
 });
+
+it('persists the native engine and active prompt identity with the reply', function () {
+    config([
+        'saligan.chat.engine' => 'laravel',
+        'saligan.chat.provider' => 'ollama',
+    ]);
+
+    Http::fake([
+        '*/api/embed' => Http::response(['embeddings' => [array_fill(0, 768, 1.0)]], 200),
+    ]);
+
+    $conversation = Conversation::factory()->for($this->user)->create();
+    $prompt = SystemPrompt::query()->where('name', 'saligan')->firstOrFail();
+
+    foreach (app(ChatService::class)->stream($conversation, 'What is RA 6657?') as $event) {
+        // Consume the stream so the completion callback persists the reply.
+    }
+
+    $assistant = $conversation->messages()->where('role', 'assistant')->firstOrFail();
+
+    expect($assistant->metadata)->toMatchArray([
+        'engine' => 'laravel',
+        'prompt' => [
+            'id' => (string) $prompt->id,
+            'version' => 1,
+        ],
+    ]);
+});

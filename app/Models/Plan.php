@@ -29,6 +29,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'lemonsqueezy_variant_id_annual',
     'is_active',
     'contact_sales',
+    'annual_only',
     'sort_order',
 ])]
 class Plan extends Model
@@ -39,9 +40,8 @@ class Plan extends Model
     use HasUuids;
 
     /**
-     * The plan a code-granted free trial runs on. Never sold: it is seeded
-     * inactive so it stays out of the pricing page and out of checkout, and
-     * exists only to give a trial its own, smaller allowance.
+     * The plan an automatic or code-granted free trial runs on. Never sold: it
+     * is seeded inactive so it stays out of paid pricing and checkout.
      */
     public const SLUG_TRIAL = 'trial';
 
@@ -52,9 +52,8 @@ class Plan extends Model
     public const SLUG_FIRM = 'firm';
 
     /**
-     * The contract-priced tier. Listed on the pricing page so it can be asked
-     * for, but never sold through checkout: its price is agreed with sales and
-     * the subscription is granted by the `plan:business` command.
+     * Legacy slug retained so historical migrations can still run against a
+     * fresh database. It is no longer seeded or exposed as an active tier.
      */
     public const SLUG_BUSINESS = 'business';
 
@@ -81,6 +80,7 @@ class Plan extends Model
             'features' => 'array',
             'is_active' => 'boolean',
             'contact_sales' => 'boolean',
+            'annual_only' => 'boolean',
             'sort_order' => 'integer',
             'lemonsqueezy_variant_id' => 'integer',
             'lemonsqueezy_variant_id_annual' => 'integer',
@@ -104,6 +104,27 @@ class Plan extends Model
     public function isSelfServe(): bool
     {
         return ! $this->contact_sales;
+    }
+
+    /**
+     * Whether the plan can be purchased or changed to on the given interval.
+     */
+    public function supportsInterval(string $interval): bool
+    {
+        return $interval === self::INTERVAL_ANNUAL
+            || ($interval === self::INTERVAL_MONTHLY && ! $this->annual_only);
+    }
+
+    /**
+     * The billing intervals that should have provider price objects provisioned.
+     *
+     * @return list<string>
+     */
+    public function supportedIntervals(): array
+    {
+        return $this->annual_only
+            ? [self::INTERVAL_ANNUAL]
+            : [self::INTERVAL_MONTHLY, self::INTERVAL_ANNUAL];
     }
 
     /**

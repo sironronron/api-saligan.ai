@@ -6,13 +6,13 @@ use App\Models\Subscription;
 use App\Models\User;
 
 beforeEach(function () {
-    $this->business = Plan::factory()->business()->create();
+    $this->firm = Plan::factory()->firm()->create();
 });
 
-it('creates an organization and puts the user on the Business plan', function () {
+it('creates an organization and puts the user on the Firm plan', function () {
     $user = User::factory()->create(['organization_id' => null]);
 
-    $this->artisan('plan:business', [
+    $this->artisan('plan:firm', [
         'user' => $user->email,
         '--org' => 'Acme Legal Aid',
         '--seats' => 12,
@@ -29,7 +29,7 @@ it('creates an organization and puts the user on the Business plan', function ()
     $subscription = $organization->subscription;
 
     expect($subscription)->not->toBeNull()
-        ->and($subscription->plan_id)->toBe($this->business->id)
+        ->and($subscription->plan_id)->toBe($this->firm->id)
         ->and($subscription->user_id)->toBe($user->id)
         ->and($subscription->status)->toBe(Subscription::STATUS_ACTIVE)
         ->and($subscription->seats_purchased)->toBe(12)
@@ -42,7 +42,7 @@ it('creates an organization and puts the user on the Business plan', function ()
 it('names the organization after the user when none is given', function () {
     $user = User::factory()->create(['organization_id' => null, 'name' => 'Rene Santos']);
 
-    $this->artisan('plan:business', ['user' => $user->email])->assertExitCode(0);
+    $this->artisan('plan:firm', ['user' => $user->email])->assertExitCode(0);
 
     expect($user->refresh()->organization->name)->toBe("Rene Santos's organization");
 });
@@ -55,28 +55,28 @@ it('keeps the existing organization instead of creating a second one', function 
         'org_status' => User::ORG_STATUS_ACTIVE,
     ]);
 
-    $this->artisan('plan:business', [
+    $this->artisan('plan:firm', [
         'user' => $user->email,
         '--org' => 'Ignored Name',
     ])->assertExitCode(0);
 
     expect(Organization::count())->toBe(1)
         ->and($user->refresh()->organization_id)->toBe($organization->id)
-        ->and($organization->subscription->plan_id)->toBe($this->business->id);
+        ->and($organization->subscription->plan_id)->toBe($this->firm->id);
 });
 
 it('accepts the user id instead of the email', function () {
     $user = User::factory()->create(['organization_id' => null]);
 
-    $this->artisan('plan:business', ['user' => (string) $user->id])->assertExitCode(0);
+    $this->artisan('plan:firm', ['user' => (string) $user->id])->assertExitCode(0);
 
-    expect($user->refresh()->subscription->plan->slug)->toBe(Plan::SLUG_BUSINESS);
+    expect($user->refresh()->subscription->plan->slug)->toBe(Plan::SLUG_FIRM);
 });
 
 it('runs an annual term for twelve months by default', function () {
     $user = User::factory()->create(['organization_id' => null]);
 
-    $this->artisan('plan:business', [
+    $this->artisan('plan:firm', [
         'user' => $user->email,
         '--interval' => Plan::INTERVAL_ANNUAL,
     ])->assertExitCode(0);
@@ -90,7 +90,7 @@ it('runs an annual term for twelve months by default', function () {
 it('honours an explicit term in months', function () {
     $user = User::factory()->create(['organization_id' => null]);
 
-    $this->artisan('plan:business', [
+    $this->artisan('plan:firm', [
         'user' => $user->email,
         '--months' => 6,
     ])->assertExitCode(0);
@@ -115,10 +115,10 @@ it('moves an existing subscription rather than leaving a second row behind', fun
         'cancelled_at' => now()->subDay(),
     ]);
 
-    $this->artisan('plan:business', ['user' => $user->email])->assertExitCode(0);
+    $this->artisan('plan:firm', ['user' => $user->email])->assertExitCode(0);
 
     expect(Subscription::count())->toBe(1)
-        ->and($organization->refresh()->subscription->plan_id)->toBe($this->business->id)
+        ->and($organization->refresh()->subscription->plan_id)->toBe($this->firm->id)
         ->and($organization->subscription->status)->toBe(Subscription::STATUS_ACTIVE)
         ->and($organization->subscription->cancelled_at)->toBeNull();
 });
@@ -133,11 +133,11 @@ it('adopts a pre-organization subscription row when it creates the organization'
         'status' => Subscription::STATUS_CANCELLED,
     ]);
 
-    $this->artisan('plan:business', ['user' => $user->email])->assertExitCode(0);
+    $this->artisan('plan:firm', ['user' => $user->email])->assertExitCode(0);
 
     expect(Subscription::count())->toBe(1)
         ->and($user->refresh()->subscription->organization_id)->toBe($user->organization_id)
-        ->and($user->subscription->plan_id)->toBe($this->business->id);
+        ->and($user->subscription->plan_id)->toBe($this->firm->id);
 });
 
 it('asks before overwriting an active subscription', function () {
@@ -155,8 +155,8 @@ it('asks before overwriting an active subscription', function () {
         'status' => Subscription::STATUS_ACTIVE,
     ]);
 
-    $this->artisan('plan:business', ['user' => $user->email])
-        ->expectsConfirmation('Move it to Business anyway?', 'no')
+    $this->artisan('plan:firm', ['user' => $user->email])
+        ->expectsConfirmation('Move it to Firm anyway?', 'no')
         ->assertExitCode(1);
 
     expect($organization->refresh()->subscription->plan_id)->toBe($pro->id);
@@ -177,10 +177,10 @@ it('skips the confirmation with --force', function () {
         'status' => Subscription::STATUS_ACTIVE,
     ]);
 
-    $this->artisan('plan:business', ['user' => $user->email, '--force' => true])
+    $this->artisan('plan:firm', ['user' => $user->email, '--force' => true])
         ->assertExitCode(0);
 
-    expect($organization->refresh()->subscription->plan_id)->toBe($this->business->id);
+    expect($organization->refresh()->subscription->plan_id)->toBe($this->firm->id);
 });
 
 it('leaves an organization that has trialled unable to trial again', function () {
@@ -199,32 +199,32 @@ it('leaves an organization that has trialled unable to trial again', function ()
         'trial_ends_at' => now()->addDays(5),
     ]);
 
-    $this->artisan('plan:business', ['user' => $user->email, '--force' => true])
+    $this->artisan('plan:firm', ['user' => $user->email, '--force' => true])
         ->assertExitCode(0);
 
     $subscription = $organization->refresh()->subscription;
 
     // `trial_ends_at` is what TrialRedeemer reads to know a trial was used, so
-    // converting to Business must not wipe it and hand back a second trial.
+    // Converting to Firm must not wipe it and hand back a second trial.
     expect($subscription->status)->toBe(Subscription::STATUS_ACTIVE)
         ->and($subscription->onTrial())->toBeFalse()
         ->and($subscription->trial_ends_at)->not->toBeNull();
 });
 
 it('fails when the user does not exist', function () {
-    $this->artisan('plan:business', ['user' => 'nobody@example.com'])->assertExitCode(1);
+    $this->artisan('plan:firm', ['user' => 'nobody@example.com'])->assertExitCode(1);
 });
 
-it('fails when no Business plan has been seeded', function () {
-    $this->business->delete();
+it('fails when no Firm plan has been seeded', function () {
+    $this->firm->delete();
     $user = User::factory()->create();
 
-    $this->artisan('plan:business', ['user' => $user->email])->assertExitCode(1);
+    $this->artisan('plan:firm', ['user' => $user->email])->assertExitCode(1);
 });
 
-it('rejects an interval that is neither monthly nor annual', function () {
+it('rejects a monthly Firm grant', function () {
     $user = User::factory()->create();
 
-    $this->artisan('plan:business', ['user' => $user->email, '--interval' => 'weekly'])
+    $this->artisan('plan:firm', ['user' => $user->email, '--interval' => 'monthly'])
         ->assertExitCode(1);
 });

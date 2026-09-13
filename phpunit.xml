@@ -34,6 +34,8 @@
         <env name="AI_EMBED_PROVIDER" value="ollama"/>
         <env name="AI_EMBED_MODEL" value="qwen3-embedding:latest"/>
         <env name="AI_CHAT_PROVIDER" value="ollama"/>
+        <env name="AI_CHAT_ENGINE" value="laravel"/>
+        <env name="AI_BATCH_ENGINE" value="laravel"/>
         <!-- Classification reaches a model, so it stays off unless a test turns it on. -->
         <env name="DOCUMENT_CLASSIFICATION_ENABLED" value="false"/>
         <!-- Crawler tests fake HTTP against hostnames that do not resolve, so

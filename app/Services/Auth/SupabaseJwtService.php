@@ -301,6 +301,11 @@ class SupabaseJwtService
             return $user;
         }
 
+        // No subscription is created here on purpose. The trial starts only
+        // when the user picks it on /choose-plan (POST /api/subscription/trial):
+        // provisioning at import time would grant access before the plan
+        // selector is ever shown, sending every new registration straight to
+        // the dashboard instead of the tiers screen.
         return User::create([
             'supabase_uid' => $uid,
             'name' => $this->nameFromClaims($claims),

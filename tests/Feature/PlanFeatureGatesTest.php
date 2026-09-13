@@ -1,7 +1,9 @@
 <?php
 
 use App\Enums\MessageRole;
+use App\Jobs\ProcessDocumentUpload;
 use App\Models\Conversation;
+use App\Models\Document;
 use App\Models\Message;
 use App\Models\Organization;
 use App\Models\Plan;
@@ -54,13 +56,57 @@ it('refuses a PDF export without the exports feature', function () {
         ->assertStatus(402);
 });
 
-it('allows an export on a plan that carries it', function () {
+it('refuses a PDF export without the PDF documents feature', function () {
     $user = onPlanWith(['exports']);
+    $message = messageFor($user);
+
+    $this->signInAs($user)
+        ->post("/api/messages/{$message->id}/export/pdf")
+        ->assertStatus(402)
+        ->assertJsonPath('upgrade_required', true);
+});
+
+it('allows an export on a plan that carries it', function () {
+    $user = onPlanWith(['exports', 'pdf_documents']);
     $message = messageFor($user);
 
     $this->signInAs($user)
         ->post("/api/messages/{$message->id}/export/word")
         ->assertOk();
+});
+
+it('refuses PDF uploads without the PDF documents feature', function () {
+    Queue::fake();
+    Storage::fake('local');
+
+    $user = onPlanWith(['drafting']);
+
+    $this->signInAs($user)
+        ->postJson('/api/documents', [
+            'file' => UploadedFile::fake()->createWithContent('brief.pdf', '%PDF-1.4 fake content'),
+        ])
+        ->assertStatus(402)
+        ->assertJsonPath('upgrade_required', true);
+
+    Queue::assertNotPushed(ProcessDocumentUpload::class);
+});
+
+it('refuses PDF document content and files without the PDF documents feature', function () {
+    Storage::fake('local');
+    $user = onPlanWith(['drafting']);
+    $document = Document::factory()->for($user)->create([
+        'storage_path' => 'documents/brief.pdf',
+        'original_filename' => 'brief.pdf',
+        'mime_type' => 'application/pdf',
+    ]);
+    Storage::put($document->storage_path, '%PDF-1.4 fake content');
+
+    $this->signInAs($user)
+        ->getJson("/api/documents/{$document->id}/content")
+        ->assertStatus(402);
+
+    $this->getJson("/api/documents/{$document->id}/file")
+        ->assertStatus(402);
 });
 
 it('refuses saving a template without the drafting feature', function () {
@@ -179,7 +225,7 @@ it('refuses buying seats on a team plan that sells none', function () {
     $this->signInAs($owner)
         ->postJson('/api/subscription/seats', ['quantity' => 1])
         ->assertStatus(422)
-        ->assertJsonPath('message', 'Your plan does not sell additional seats. Talk to us about a Business plan sized to your team.');
+        ->assertJsonPath('message', 'Your plan does not sell additional seats. Talk to us about a Firm plan sized to your team.');
 });
 
 /** An assistant message the given user owns, ready to export. */

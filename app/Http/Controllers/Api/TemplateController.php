@@ -94,6 +94,10 @@ class TemplateController extends Controller
                 default => 'text/plain',
             };
 
+            if ($extension === 'pdf') {
+                PlanFeatures::ensureHas($request->user(), PlanFeatures::PDF_DOCUMENTS);
+            }
+
             // Encrypted at rest like every other upload. A template is a
             // document a user handed us: the ones people upload are their own
             // pleadings and contracts with the particulars swapped for

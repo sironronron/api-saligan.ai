@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\ChatProvider;
 use App\Models\Concerns\HasLabels;
+use App\Services\Cases\CaseDigestService;
 use Database\Factories\ConversationFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Builder;
@@ -28,6 +29,25 @@ class Conversation extends Model
 
     use HasLabels;
     use HasUuids;
+
+    protected static function booted(): void
+    {
+        static::saved(function (Conversation $conversation): void {
+            $case = $conversation->case;
+
+            if ($case !== null) {
+                app(CaseDigestService::class)->queue($case);
+            }
+        });
+
+        static::deleted(function (Conversation $conversation): void {
+            $case = $conversation->case;
+
+            if ($case !== null) {
+                app(CaseDigestService::class)->queue($case);
+            }
+        });
+    }
 
     /**
      * Get the attributes that should be cast.

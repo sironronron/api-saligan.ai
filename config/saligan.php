@@ -161,6 +161,15 @@ return [
     ],
 
     /*
+     | Case digests are asynchronous so chat and document writes never wait on
+     | a second model call. A database-backed connection is the deployment
+     | default even when the request queue uses a different connection.
+     */
+    'case_digest' => [
+        'connection' => env('CASE_DIGEST_QUEUE_CONNECTION', 'database'),
+    ],
+
+    /*
     |--------------------------------------------------------------------------
     | Context caching
     |--------------------------------------------------------------------------
@@ -271,6 +280,7 @@ return [
     */
 
     'trials' => [
+        'automatic_days' => (int) env('AUTOMATIC_TRIAL_DAYS', 14),
         'warn_days_remaining' => (int) env('TRIAL_WARN_DAYS', 3),
         'warn_messages_remaining' => (int) env('TRIAL_WARN_MESSAGES', 10),
     ],

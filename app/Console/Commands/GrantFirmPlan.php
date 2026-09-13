@@ -13,16 +13,16 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
-#[Signature('plan:business
+#[Signature('plan:firm
     {user : User id or email}
     {--org= : Organization name to create when the user has none}
-    {--seats=1 : Seats the contract covers}
-    {--price= : Contracted price per seat, in pesos (e.g. 2500)}
-    {--interval=monthly : Billing interval (monthly, annual)}
+    {--seats=3 : Seats the plan covers}
+    {--price= : Custom price per seat, in pesos (e.g. 2500)}
+    {--interval=annual : Billing interval (annual only)}
     {--months= : Term length in months (defaults to the interval)}
     {--force : Skip the confirmation when the organization already has an active subscription}')]
-#[Description('Put a user (and their organization) on the contract-priced Business plan')]
-class GrantBusinessPlan extends Command
+#[Description('Put a user (and their organization) on the annual Firm plan')]
+class GrantFirmPlan extends Command
 {
     /**
      * Execute the console command.
@@ -37,18 +37,18 @@ class GrantBusinessPlan extends Command
             return self::FAILURE;
         }
 
-        $plan = Plan::query()->where('slug', Plan::SLUG_BUSINESS)->first();
+        $plan = Plan::query()->where('slug', Plan::SLUG_FIRM)->first();
 
         if ($plan === null) {
-            $this->error('No Business plan exists yet. Run `php artisan db:seed --class=PlansSeeder` first.');
+            $this->error('No Firm plan exists yet. Run `php artisan db:seed --class=PlansSeeder` first.');
 
             return self::FAILURE;
         }
 
         $interval = (string) $this->option('interval');
 
-        if (! in_array($interval, [Plan::INTERVAL_MONTHLY, Plan::INTERVAL_ANNUAL], true)) {
-            $this->error('Interval must be monthly or annual.');
+        if (! $plan->supportsInterval($interval)) {
+            $this->error('The Firm plan is only available with annual billing.');
 
             return self::FAILURE;
         }
@@ -110,13 +110,13 @@ class GrantBusinessPlan extends Command
             $this->warn('It has a live gateway subscription ('.$current->gatewaySubscriptionId().') — cancel that separately, or it keeps billing.');
         }
 
-        return $this->confirm('Move it to Business anyway?', false);
+        return $this->confirm('Move it to Firm anyway?', false);
     }
 
     /**
      * The organization the subscription hangs off: the user's own when they
      * already have one, otherwise a new organization created with them as its
-     * owner. Subscriptions belong to the organization, so a Business account
+     * owner. Subscriptions belong to the organization, so a Firm account
      * without one would have nowhere to put its seats.
      */
     protected function resolveOrganization(User $user, OrganizationService $organizations): Organization
@@ -156,10 +156,9 @@ class GrantBusinessPlan extends Command
     }
 
     /**
-     * Create or move the organization's subscription onto the Business plan,
-     * active immediately. The contracted seats and per-seat price are written
-     * onto the subscription rather than the plan: the plan carries no price
-     * precisely because every Business contract sets its own.
+     * Create or move the organization's subscription onto the Firm plan, active
+     * immediately. A custom per-seat price is written onto the subscription
+     * rather than the plan when a contract requires one.
      */
     protected function grantSubscription(User $user, Organization $organization, Plan $plan, string $interval): Subscription
     {
@@ -176,7 +175,9 @@ class GrantBusinessPlan extends Command
             'interval' => $interval,
             'status' => Subscription::STATUS_ACTIVE,
             'seats_purchased' => max(1, (int) $this->option('seats')),
-            'price_per_seat' => $price === null ? null : (int) round((float) $price * 100),
+            'price_per_seat' => $price === null
+                ? $plan->seat_price
+                : (int) round((float) $price * 100),
             'current_period_start' => now()->startOfDay(),
             'current_period_end' => now()->addMonths($months),
             // Invoiced off-platform, so no gateway holds this subscription.

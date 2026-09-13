@@ -33,6 +33,7 @@ interface PaymentGateway
     public function changePlan(
         Subscription $subscription,
         Plan $plan,
+        string $interval,
         string $successUrl,
         string $cancelUrl,
     ): ?array;

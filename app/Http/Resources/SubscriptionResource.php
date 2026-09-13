@@ -61,6 +61,7 @@ class SubscriptionResource extends JsonResource
             'interval' => $this->interval,
             'plan' => new PlanResource($plan),
             'pending_plan_id' => $this->pending_plan_id,
+            'pending_plan_interval' => $this->pending_plan_interval,
             // PayPal approval URLs are continuation credentials. Do not hand
             // one for shared billing to a member who cannot manage the plan.
             'pending_plan_checkout_url' => $canManageBilling ? $this->pending_plan_checkout_url : null,

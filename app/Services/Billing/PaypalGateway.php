@@ -75,10 +75,10 @@ class PaypalGateway implements PaymentGateway
     public function changePlan(
         Subscription $subscription,
         Plan $plan,
+        string $interval,
         string $successUrl,
         string $cancelUrl,
     ): ?array {
-        $interval = $subscription->interval ?? Plan::INTERVAL_MONTHLY;
         $planId = $this->planId($plan, $interval);
 
         abort_if(

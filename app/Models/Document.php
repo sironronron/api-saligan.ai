@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\DocumentStatus;
 use App\Models\Concerns\HasLabels;
+use App\Services\Cases\CaseDigestService;
 use Database\Factories\DocumentFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Builder;
@@ -31,6 +32,35 @@ class Document extends Model
 
     use HasLabels;
     use HasUuids;
+
+    protected static function booted(): void
+    {
+        static::saved(function (Document $document): void {
+            if (! $document->wasRecentlyCreated && ! $document->wasChanged([
+                'case_id',
+                'title',
+                'status',
+                'digest',
+                'digest_generated_at',
+            ])) {
+                return;
+            }
+
+            $case = $document->case;
+
+            if ($case !== null) {
+                app(CaseDigestService::class)->queue($case);
+            }
+        });
+
+        static::deleted(function (Document $document): void {
+            $case = $document->case;
+
+            if ($case !== null) {
+                app(CaseDigestService::class)->queue($case);
+            }
+        });
+    }
 
     /**
      * Get the attributes that should be cast.

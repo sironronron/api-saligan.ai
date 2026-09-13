@@ -620,6 +620,14 @@ it('cancels an unassigned request and releases the held payment', function () {
         'status' => VettingMatchStatus::Notified,
     ]);
 
+    VettingPayment::factory()->authorized()
+        ->for($request)
+        ->for($this->submitter, 'submitter')
+        ->create([
+            'gateway_payment_intent_id' => 'pi_test123',
+            'kind' => VettingPayment::KIND_NOTARIZATION,
+        ]);
+
     Http::fake([
         'api.paymongo.com/v1/payment_intents/pi_test123/cancel' => Http::response([
             'data' => ['id' => 'pi_test123', 'type' => 'payment_intent', 'attributes' => []],
@@ -796,6 +804,14 @@ it('notarizes an accepted document end to end', function () {
             'data' => ['id' => 'pi_test123', 'type' => 'payment_intent', 'attributes' => []],
         ]),
     ]);
+
+    VettingPayment::factory()->authorized()
+        ->for($request)
+        ->for($this->submitter, 'submitter')
+        ->create([
+            'gateway_payment_intent_id' => 'pi_test123',
+            'kind' => VettingPayment::KIND_NOTARIZATION,
+        ]);
 
     $this->signInAs($lawyer)
         ->patchJson("/api/lawyer/vetting-requests/{$request->id}/status", ['status' => 'vetted'])

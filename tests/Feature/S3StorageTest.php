@@ -16,6 +16,8 @@ use App\Services\Documents\ImageOcrExtractor;
 use App\Services\Documents\StoredFiles;
 use App\Services\Documents\TextExtractor;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 
 uses(RefreshDatabase::class);
@@ -38,6 +40,19 @@ beforeEach(function () {
 
     // Legacy v1 files are irrelevant here and the local .env may forbid them.
     config()->set('saligan.documents.require_authenticated_encryption', false);
+
+    Http::fake([
+        '*/api/embed' => function (Request $request) {
+            $inputs = $request->data()['input'] ?? [];
+
+            return Http::response([
+                'embeddings' => array_map(
+                    fn () => array_fill(0, 768, 0.5),
+                    $inputs,
+                ),
+            ], 200);
+        },
+    ]);
 });
 
 it('encrypts to and decrypts from a non-local disk', function () {

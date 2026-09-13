@@ -2,7 +2,6 @@
 
 namespace Database\Factories;
 
-use App\Models\Organization;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\User;
@@ -21,7 +20,7 @@ class SubscriptionFactory extends Factory
     public function definition(): array
     {
         return [
-            'organization_id' => Organization::factory(),
+            'organization_id' => null,
             'user_id' => User::factory(),
             'plan_id' => Plan::factory(),
             'status' => Subscription::STATUS_ACTIVE,

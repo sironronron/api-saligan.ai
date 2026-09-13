@@ -56,7 +56,7 @@ it('returns the aggregated summary scoped to the authenticated user', function (
     // Vetting: one open (under review) and one terminal (completed) for the user.
     VettingRequest::factory()->create(['submitter_id' => $this->user->id, 'status' => VettingRequestStatus::UnderReview]);
     VettingRequest::factory()->create(['submitter_id' => $this->user->id, 'status' => VettingRequestStatus::Completed]);
-    VettingRequest::factory()->create(['submitter_id' => User::factory()->id, 'status' => VettingRequestStatus::UnderReview]);
+    VettingRequest::factory()->create(['submitter_id' => User::factory()->create()->id, 'status' => VettingRequestStatus::UnderReview]);
 
     $response = $this->signInAs($this->user)
         ->getJson('/api/dashboard/summary')

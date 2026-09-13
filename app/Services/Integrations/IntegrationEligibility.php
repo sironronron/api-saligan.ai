@@ -13,8 +13,8 @@ use App\Support\PlanLimits;
  * Plan gating for add-ons, and what happens to connections when a plan
  * changes.
  *
- * Add-ons ride on the `integrations` plan feature: Pro, Firm, and Business
- * carry it, the tiers below do not. The check here is the server-side truth —
+ * Add-ons ride on the `integrations` plan feature: Pro and Firm carry it, the
+ * tier below does not. The check here is the server-side truth —
  * the locked cards on the add-ons page are an upsell, not a gate, and every
  * connect, toggle, and sync runs through this class first.
  */

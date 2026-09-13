@@ -138,6 +138,8 @@ Route::middleware(['auth:supabase', 'track_last_used', 'not_suspended'])->group(
         ->middleware('throttle:6,1');
 
     Route::get('/subscription', [SubscriptionController::class, 'show']);
+    Route::post('/subscription/trial', [SubscriptionController::class, 'startTrial'])
+        ->middleware('throttle:6,1');
     Route::post('/subscription', [SubscriptionController::class, 'store']);
     Route::post('/subscription/change-plan', [SubscriptionController::class, 'changePlan']);
     Route::post('/subscription/change-plan/cancel', [SubscriptionController::class, 'cancelPlanChange']);

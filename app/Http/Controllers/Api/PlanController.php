@@ -24,7 +24,14 @@ class PlanController extends Controller
     public function index(Request $request): AnonymousResourceCollection
     {
         $plans = Plan::query()
-            ->where('is_active', true)
+            ->where('slug', '!=', Plan::SLUG_BUSINESS)
+            ->where(function ($query) use ($request): void {
+                $query->where('is_active', true);
+
+                if ($request->boolean('include_trial')) {
+                    $query->orWhere('slug', Plan::SLUG_TRIAL);
+                }
+            })
             ->orderBy('sort_order')
             ->get();
 

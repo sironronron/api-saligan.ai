@@ -10,8 +10,11 @@ use App\Models\MatterMemory;
 use App\Models\Message;
 use App\Models\Plan;
 use App\Models\Subscription;
+use App\Models\SystemPrompt;
+use App\Models\Template;
 use App\Models\Todo;
 use App\Models\User;
+use App\Support\PlanFeatures;
 use App\Support\UserProfile;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
@@ -29,6 +32,7 @@ beforeEach(function () {
     Subscription::factory()->for($this->user)->create([
         'plan_id' => Plan::factory()->pro()->create()->id,
     ]);
+    SystemPrompt::factory()->create();
 });
 
 function internalAiPost(string $path, array $payload = []): TestResponse
@@ -51,6 +55,192 @@ it('returns the prompt-building context', function () {
         ->assertJsonPath('messages', []);
 
     expect($response->getContent())->toContain('"recent_intake_values":{}');
+});
+
+it('sends plan capabilities and a bounded web-search budget', function () {
+    config([
+        'saligan.web_search.enabled' => true,
+        'saligan.web_search.base_max_searches' => 2,
+        'saligan.web_search.max_searches' => 4,
+    ]);
+
+    $basePlan = Plan::factory()->create([
+        'features' => [PlanFeatures::DRAFTING],
+    ]);
+    Subscription::query()->where('user_id', $this->user->id)->update(['plan_id' => $basePlan->id]);
+
+    $this->withToken('test-internal-secret')
+        ->getJson("/internal/conversations/{$this->conversation->id}/context")
+        ->assertOk()
+        ->assertJsonPath('context_contract_version', 1)
+        ->assertJsonPath('web_search_enabled', false)
+        ->assertJsonPath('web_search_max_calls', 0)
+        ->assertJsonPath('capabilities', [PlanFeatures::DRAFTING])
+        ->assertJsonPath('model', config('saligan.chat.ollama_model'));
+
+    $searchPlan = Plan::factory()->create([
+        'features' => [PlanFeatures::DRAFTING, PlanFeatures::WEB_SEARCH],
+    ]);
+    Subscription::query()->where('user_id', $this->user->id)->update(['plan_id' => $searchPlan->id]);
+
+    $this->withToken('test-internal-secret')
+        ->getJson("/internal/conversations/{$this->conversation->id}/context")
+        ->assertOk()
+        ->assertJsonPath('web_search_enabled', true)
+        ->assertJsonPath('web_search_max_calls', 2)
+        ->assertJsonPath('capabilities', [PlanFeatures::DRAFTING, PlanFeatures::WEB_SEARCH]);
+
+    $deepResearchPlan = Plan::factory()->create([
+        'features' => [PlanFeatures::DRAFTING, PlanFeatures::WEB_SEARCH, PlanFeatures::DEEP_RESEARCH],
+    ]);
+    Subscription::query()->where('user_id', $this->user->id)->update(['plan_id' => $deepResearchPlan->id]);
+
+    $this->withToken('test-internal-secret')
+        ->getJson("/internal/conversations/{$this->conversation->id}/context")
+        ->assertOk()
+        ->assertJsonPath('deep_research', true)
+        ->assertJsonPath('web_search_enabled', true)
+        ->assertJsonPath('web_search_max_calls', 4)
+        ->assertJsonPath('capabilities', [PlanFeatures::DRAFTING, PlanFeatures::WEB_SEARCH, PlanFeatures::DEEP_RESEARCH]);
+
+    config(['saligan.web_search.enabled' => false]);
+
+    $this->withToken('test-internal-secret')
+        ->getJson("/internal/conversations/{$this->conversation->id}/context")
+        ->assertOk()
+        ->assertJsonPath('web_search_enabled', false)
+        ->assertJsonPath('web_search_max_calls', 0);
+});
+
+it('uses an explicit visible template instead of the case default', function () {
+    $default = Template::factory()->system()->create([
+        'name' => 'Case default',
+        'category' => 'formal',
+    ]);
+    $explicit = Template::factory()->system()->create([
+        'name' => 'Selected template',
+        'category' => 'legal',
+        'legal_subtype' => 'notice_to_explain',
+        'content' => 'Selected template content.',
+        'structure' => ['Heading', 'Facts', 'Request'],
+        'placeholder_fields' => [['key' => 'recipient_name', 'label' => 'Recipient']],
+    ]);
+    $case = LegalCase::factory()->for($this->user)->create([
+        'default_template_id' => $default->id,
+    ]);
+    $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+
+    $response = $this->withToken('test-internal-secret')
+        ->getJson("/internal/conversations/{$conversation->id}/context?current_message=".urlencode("[Template: {$explicit->id}]\nDraft this document."))
+        ->assertOk()
+        ->assertJsonPath('resolved_template.id', $explicit->id)
+        ->assertJsonPath('resolved_template.mode', 'structured')
+        ->assertJsonPath('resolved_template.name', 'Selected template')
+        ->assertJsonPath('resolved_template.category', 'legal')
+        ->assertJsonPath('resolved_template.legal_subtype', 'notice_to_explain')
+        ->assertJsonPath('resolved_template.content', 'Selected template content.')
+        ->assertJsonPath('resolved_template.structure', ['Heading', 'Facts', 'Request'])
+        ->assertJsonPath('resolved_template.placeholder_fields', [['key' => 'recipient_name', 'label' => 'Recipient']]);
+
+    expect($response->json('template'))
+        ->toContain('Selected template')
+        ->not->toContain('Case default');
+});
+
+it('does not expose an invisible explicit template or fall back to the case default', function () {
+    $default = Template::factory()->system()->create(['name' => 'Case default']);
+    $invisible = Template::factory()->for(User::factory())->create(['name' => 'Private template']);
+    $case = LegalCase::factory()->for($this->user)->create([
+        'default_template_id' => $default->id,
+    ]);
+    $conversation = Conversation::factory()->for($this->user)->create(['case_id' => $case->id]);
+
+    $response = $this->withToken('test-internal-secret')
+        ->getJson("/internal/conversations/{$conversation->id}/context?current_message=".urlencode("[Template: {$invisible->id}]\nDraft this document."))
+        ->assertOk();
+
+    expect($response->json('resolved_template'))->toBeNull()
+        ->and($response->json('template'))->toBe('');
+});
+
+it('marks an uploaded template with placeholders as verbatim', function () {
+    $template = Template::factory()->create([
+        'name' => 'Uploaded letterhead',
+        'original_path' => 'templates/uploaded-letterhead.docx',
+        'placeholder_fields' => ['recipient_name'],
+    ]);
+
+    $response = $this->withToken('test-internal-secret')
+        ->getJson("/internal/conversations/{$this->conversation->id}/context?current_message=".urlencode("[Template: {$template->id}]\nFill this template."))
+        ->assertOk();
+
+    expect($response->json('resolved_template'))
+        ->toMatchArray([
+            'id' => $template->id,
+            'mode' => 'verbatim',
+            'name' => 'Uploaded letterhead',
+        ]);
+});
+
+it('round-trips verbatim template fields with the template identity', function () {
+    $template = Template::factory()->create([
+        'user_id' => $this->user->id,
+        'original_path' => 'templates/letterhead.docx',
+        'placeholder_fields' => ['[Recipient]'],
+    ]);
+
+    internalAiPost("/internal/conversations/{$this->conversation->id}/letters", [
+        'title' => 'Filled letterhead',
+        'template_id' => $template->id,
+        'template_fields' => ['[Recipient]' => 'Juan Dela Cruz'],
+        'tool_call_id' => 'fill-template-1',
+    ])
+        ->assertOk()
+        ->assertJsonPath('ok', true)
+        ->assertJsonPath('template_id', $template->id)
+        ->assertJsonPath('template_fields.[Recipient]', 'Juan Dela Cruz');
+});
+
+it('rejects a template callback for an inaccessible or non-verbatim template', function () {
+    $template = Template::factory()->system()->create([
+        'name' => 'Structured only',
+        'placeholder_fields' => [],
+    ]);
+
+    internalAiPost("/internal/conversations/{$this->conversation->id}/letters", [
+        'title' => 'Invalid fill',
+        'template_id' => $template->id,
+        'template_fields' => ['[Recipient]' => 'Someone'],
+    ])->assertUnprocessable();
+});
+
+it('identifies the canonical active system prompt in the context', function () {
+    $prompt = SystemPrompt::factory()->create([
+        'name' => 'batayan',
+        'version' => 7,
+        'content' => 'The canonical Batayan prompt.',
+    ]);
+
+    $response = $this->withToken('test-internal-secret')
+        ->getJson("/internal/conversations/{$this->conversation->id}/context")
+        ->assertOk()
+        ->assertJsonPath('system_prompt.id', $prompt->id)
+        ->assertJsonPath('system_prompt.version', 7)
+        ->assertJsonPath('system_prompt.content', 'The canonical Batayan prompt.');
+
+    expect($response->json('persistence'))
+        ->toMatchArray([
+            'conversation_id' => $this->conversation->id,
+            'user_id' => $this->user->id,
+            'case_id' => null,
+        ]);
+});
+
+it('validates the optional current message before building context', function () {
+    $this->withToken('test-internal-secret')
+        ->getJson("/internal/conversations/{$this->conversation->id}/context?current_message=".urlencode(str_repeat('x', 8001)))
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['current_message']);
 });
 
 it('returns onboarding profile calibration in the prompt-building context', function () {

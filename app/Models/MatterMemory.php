@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\Cases\CaseDigestService;
 use Database\Factories\MatterMemoryFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
@@ -24,6 +25,25 @@ class MatterMemory extends Model
     use HasFactory;
 
     use HasUuids;
+
+    protected static function booted(): void
+    {
+        static::saved(function (MatterMemory $memory): void {
+            $case = $memory->case;
+
+            if ($case !== null) {
+                app(CaseDigestService::class)->queue($case);
+            }
+        });
+
+        static::deleted(function (MatterMemory $memory): void {
+            $case = $memory->case;
+
+            if ($case !== null) {
+                app(CaseDigestService::class)->queue($case);
+            }
+        });
+    }
 
     /**
      * The table associated with the model.

@@ -124,6 +124,11 @@ class DocumentController extends Controller
 
         $file = $validated['file'];
         $isImage = str_starts_with((string) $file->getClientMimeType(), 'image/');
+        $isPdf = strtolower((string) $file->getClientOriginalExtension()) === 'pdf';
+
+        if ($isPdf) {
+            PlanFeatures::ensureHas($request->user(), PlanFeatures::PDF_DOCUMENTS);
+        }
 
         // An image is nothing but a picture of text: without the OCR that
         // document intelligence pays for, ingesting it can only fail. Refusing
@@ -250,6 +255,10 @@ class DocumentController extends Controller
     {
         abort_unless($document->isAccessibleBy($request->user()), 403);
 
+        if ($this->isPdf($document)) {
+            PlanFeatures::ensureHas($request->user(), PlanFeatures::PDF_DOCUMENTS);
+        }
+
         abort_unless($document->status === DocumentStatus::Failed, 422, 'Only a failed document can be retried.');
 
         // The failed attempt's hold was released when it failed, so the retry
@@ -287,6 +296,10 @@ class DocumentController extends Controller
     public function content(Request $request, Document $document): JsonResponse
     {
         abort_unless($document->isAccessibleBy($request->user()), 403);
+
+        if ($this->isPdf($document)) {
+            PlanFeatures::ensureHas($request->user(), PlanFeatures::PDF_DOCUMENTS);
+        }
 
         $chunks = $document->chunks()
             ->orderBy('chunk_index')
@@ -362,6 +375,10 @@ class DocumentController extends Controller
     public function file(Request $request, Document $document): StreamedResponse
     {
         abort_unless($document->isAccessibleBy($request->user()), 403);
+
+        if ($this->isPdf($document)) {
+            PlanFeatures::ensureHas($request->user(), PlanFeatures::PDF_DOCUMENTS);
+        }
 
         $validated = $request->validate([
             'disposition' => ['nullable', 'in:inline,attachment'],
@@ -470,6 +487,12 @@ class DocumentController extends Controller
             'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             default => 'application/octet-stream',
         };
+    }
+
+    private function isPdf(Document $document): bool
+    {
+        return strtolower(pathinfo($document->storage_path, PATHINFO_EXTENSION)) === 'pdf'
+            || $document->mime_type === 'application/pdf';
     }
 
     /**

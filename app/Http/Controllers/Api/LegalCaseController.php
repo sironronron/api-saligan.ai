@@ -9,6 +9,7 @@ use App\Http\Resources\LegalCaseResource;
 use App\Models\LegalCase;
 use App\Models\Message;
 use App\Models\Template;
+use App\Services\Cases\CaseDigestService;
 use App\Support\PlanLimits;
 use Closure;
 use Illuminate\Database\Eloquent\Collection;
@@ -21,6 +22,10 @@ use Illuminate\Validation\Rule;
 
 class LegalCaseController extends Controller
 {
+    public function __construct(
+        private readonly CaseDigestService $digests,
+    ) {}
+
     /**
      * The case types offered in the intake form.
      */
@@ -74,7 +79,13 @@ class LegalCaseController extends Controller
         $this->applySearch($query, $request->string('search')->toString());
         $this->applySort($query, $request->string('sort')->toString(), $request->string('dir')->toString());
 
-        return LegalCaseResource::collection($query->paginate(50));
+        $cases = $query->paginate(50);
+
+        foreach ($cases->getCollection() as $case) {
+            $this->digests->queueIfMissing($case);
+        }
+
+        return LegalCaseResource::collection($cases);
     }
 
     /**
@@ -154,6 +165,7 @@ class LegalCaseController extends Controller
             $activeConversation ? $activeConversation->messages()->orderBy('created_at')->get() : new Collection,
         );
         $case->load(['defaultTemplate', 'tasks', 'owner', 'assignees']);
+        $this->digests->queueIfMissing($case);
 
         return new LegalCaseResource($case);
     }
@@ -324,6 +336,13 @@ class LegalCaseController extends Controller
     protected function rules(bool $excludeRequired = false, ?Request $request = null, ?LegalCase $case = null): array
     {
         $required = fn (string $rule): array => $excludeRequired ? ['sometimes', $rule] : ['required', $rule];
+        $dueDateRules = ['nullable', 'date'];
+
+        // Preserve an overdue deadline already recorded on an existing case,
+        // but do not allow a new deadline to be set in the past.
+        if ($case === null || $request?->input('due_date') !== $case->due_date?->toDateString()) {
+            $dueDateRules[] = 'after_or_equal:today';
+        }
 
         return [
             'title' => [...$required('string'), 'max:255'],
@@ -346,7 +365,7 @@ class LegalCaseController extends Controller
             'description' => ['nullable', 'string'],
             'related_parties' => ['nullable', 'array'],
             'related_parties.*' => ['string', 'max:255'],
-            'due_date' => ['nullable', 'date'],
+            'due_date' => $dueDateRules,
             'tags' => ['nullable', 'array'],
             'tags.*' => ['string', 'max:50'],
             // Only system templates, the user's own templates, or templates

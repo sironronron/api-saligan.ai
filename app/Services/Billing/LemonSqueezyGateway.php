@@ -83,12 +83,13 @@ class LemonSqueezyGateway implements PaymentGateway
     public function changePlan(
         Subscription $subscription,
         Plan $plan,
+        string $interval,
         string $successUrl,
         string $cancelUrl,
     ): ?array {
         abort_if($subscription->lemonsqueezy_subscription_id === null, 422, 'This subscription is not active on LemonSqueezy yet.');
 
-        $variantId = $plan->lemonSqueezyVariantIdForInterval($subscription->interval ?? Plan::INTERVAL_MONTHLY);
+        $variantId = $plan->lemonSqueezyVariantIdForInterval($interval);
 
         abort_if($variantId === null, 422, 'This plan is not yet available on LemonSqueezy.');
 

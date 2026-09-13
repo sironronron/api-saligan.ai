@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\ChatProvider;
 use App\Enums\MessageRole;
+use App\Services\Cases\CaseDigestService;
 use Database\Factories\MessageFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
@@ -32,6 +33,29 @@ class Message extends Model
     use HasFactory;
 
     use HasUuids;
+
+    protected static function booted(): void
+    {
+        static::saved(function (Message $message): void {
+            if (! $message->wasRecentlyCreated && ! $message->wasChanged(['conversation_id', 'role', 'content', 'metadata'])) {
+                return;
+            }
+
+            $case = $message->conversation?->case;
+
+            if ($case !== null) {
+                app(CaseDigestService::class)->queue($case);
+            }
+        });
+
+        static::deleted(function (Message $message): void {
+            $case = $message->conversation?->case;
+
+            if ($case !== null) {
+                app(CaseDigestService::class)->queue($case);
+            }
+        });
+    }
 
     /**
      * Get the attributes that should be cast.

@@ -11,6 +11,7 @@ use App\Models\AiUsage;
 use App\Models\Conversation;
 use App\Models\MatterMemory;
 use App\Models\Message;
+use App\Models\Template;
 use App\Services\Ai\PythonConversationContext;
 use App\Services\Billing\AiBudget;
 use App\Services\MatterMemory\MatterMemoryService;
@@ -29,9 +30,13 @@ class InternalAiController extends Controller
         private readonly MatterMemoryService $memory,
     ) {}
 
-    public function context(Conversation $conversation): JsonResponse
+    public function context(Request $request, Conversation $conversation): JsonResponse
     {
-        return response()->json($this->context->for($conversation));
+        $validated = $request->validate([
+            'current_message' => ['sometimes', 'nullable', 'string', 'max:8000'],
+        ]);
+
+        return response()->json($this->context->for($conversation, $validated['current_message'] ?? null));
     }
 
     public function messages(Request $request, Conversation $conversation): JsonResponse
@@ -200,7 +205,7 @@ class InternalAiController extends Controller
         ));
     }
 
-    public function letters(Request $request): JsonResponse
+    public function letters(Request $request, Conversation $conversation): JsonResponse
     {
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
@@ -209,14 +214,25 @@ class InternalAiController extends Controller
             'content.content' => ['required_with:content', 'array'],
             'template_fields' => ['required_without:content', 'array'],
             'template_fields.*' => ['string', 'max:10000'],
+            'template_id' => ['nullable', 'uuid'],
             'tool_call_id' => ['nullable', 'string', 'max:255'],
         ]);
+
+        if (($validated['template_id'] ?? null) !== null) {
+            $template = Template::query()
+                ->visibleTo($conversation->user)
+                ->whereKey($validated['template_id'])
+                ->first();
+
+            abort_unless($template?->isVerbatimTemplate(), 422, 'The selected template is not a verbatim template.');
+        }
 
         return response()->json(array_filter([
             'ok' => true,
             'title' => $validated['title'],
             'content' => $validated['content'] ?? null,
             'template_fields' => $validated['template_fields'] ?? null,
+            'template_id' => $validated['template_id'] ?? null,
         ], fn (mixed $value): bool => $value !== null));
     }
 
